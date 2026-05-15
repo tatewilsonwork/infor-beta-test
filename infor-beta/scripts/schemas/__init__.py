@@ -10,6 +10,7 @@ from .company import Company
 from .filing import Filing, FilingType
 from .slide_plan import SlidePlan, SlideEntry
 from .deal_context import DealContext, DeliverableType
+from .plan import Plan, Stage, CheckpointMode
 from .skill_manifest import (
     SkillManifest,
     InputSpec,
@@ -25,6 +26,9 @@ __all__ = [
     "SlideEntry",
     "DealContext",
     "DeliverableType",
+    "Plan",
+    "Stage",
+    "CheckpointMode",
     "SkillManifest",
     "InputSpec",
     "OutputSpec",

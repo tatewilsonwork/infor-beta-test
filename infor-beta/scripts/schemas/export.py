@@ -22,6 +22,7 @@ from . import (
     Company,
     DealContext,
     Filing,
+    Plan,
     SkillManifest,
     SlidePlan,
 )
@@ -32,6 +33,7 @@ _MODELS = [
     ("filing", Filing),
     ("slide_plan", SlidePlan),
     ("deal_context", DealContext),
+    ("plan", Plan),
     ("skill_manifest", SkillManifest),
 ]
 

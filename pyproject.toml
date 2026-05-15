@@ -5,6 +5,7 @@ description = "INFOR Financial Group internal Claude Code plugin — clean-break
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2,<3",
+    "PyYAML>=6,<7",
 ]
 
 [project.optional-dependencies]

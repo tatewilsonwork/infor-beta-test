@@ -1,0 +1,181 @@
+{
+  "$defs": {
+    "InputSpec": {
+      "additionalProperties": false,
+      "description": "One typed input a skill consumes.",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable explanation.",
+          "title": "Description"
+        },
+        "name": {
+          "description": "Parameter name as referenced inside the skill.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "description": "Whether the conductor must supply this input.",
+          "title": "Required",
+          "type": "boolean"
+        },
+        "type": {
+          "description": "Type label. Free-form in Phase 1 \u2014 e.g. 'Company', 'list[Filing]', 'str', 'Path'.",
+          "minLength": 1,
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "InputSpec",
+      "type": "object"
+    },
+    "OutputSpec": {
+      "additionalProperties": false,
+      "description": "One typed output a skill produces.",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable explanation.",
+          "title": "Description"
+        },
+        "name": {
+          "description": "Output name as exported by the skill.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "description": "Type label. Free-form in Phase 1.",
+          "minLength": 1,
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "OutputSpec",
+      "type": "object"
+    },
+    "Stage": {
+      "additionalProperties": false,
+      "description": "One stage of a plan. Dispatched to a single skill via the `Agent` tool.",
+      "properties": {
+        "checkpoint": {
+          "default": "informational",
+          "description": "Checkpoint mode per H2 / A2: `required` halts and awaits explicit approval; `informational` surfaces a summary and proceeds; `silent` is reserved for autonomous mode later.",
+          "enum": [
+            "required",
+            "informational",
+            "silent"
+          ],
+          "title": "Checkpoint",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stage id, unique within the plan. Lowercase + underscores by convention.",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": true,
+          "description": "Inputs to pass to the skill. Values may be literals or reference strings (`$plan_inputs.x`, `$deal.x`, `$stages.<id>.<name>`); strings are resolved by `plan_refs.resolve_refs` at dispatch time.",
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outputs": {
+          "description": "Named outputs the stage is expected to write to its outputs.json.",
+          "items": {
+            "$ref": "#/$defs/OutputSpec"
+          },
+          "title": "Outputs",
+          "type": "array"
+        },
+        "skill": {
+          "description": "Name of the skill to dispatch (must match a skill directory name).",
+          "minLength": 1,
+          "title": "Skill",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "skill"
+      ],
+      "title": "Stage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A conductor plan. One file per deliverable under `infor-beta/plans/`.",
+  "properties": {
+    "deliverable_type": {
+      "description": "Which deliverable this plan produces. Must match a value in DeliverableType.",
+      "enum": [
+        "cim",
+        "pitch",
+        "teaser",
+        "earnings-update",
+        "fairness-opinion",
+        "valuation",
+        "one-off-skill"
+      ],
+      "title": "Deliverable Type",
+      "type": "string"
+    },
+    "description": {
+      "description": "One-line description shown in the conductor's plan summary.",
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "plan_inputs": {
+      "description": "Plan-specific inputs the conductor collects after deal-init (e.g. reporting quarter, EEO snip path). Owned by the plan, NOT deal-init.",
+      "items": {
+        "$ref": "#/$defs/InputSpec"
+      },
+      "title": "Plan Inputs",
+      "type": "array"
+    },
+    "stages": {
+      "description": "Stages, in execution order. Phase 2 executes them sequentially.",
+      "items": {
+        "$ref": "#/$defs/Stage"
+      },
+      "minItems": 1,
+      "title": "Stages",
+      "type": "array"
+    }
+  },
+  "required": [
+    "deliverable_type",
+    "description",
+    "stages"
+  ],
+  "title": "Plan",
+  "type": "object"
+}

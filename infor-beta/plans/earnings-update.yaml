@@ -1,0 +1,52 @@
+# Earnings-update plan — Phase 2 pilot
+#
+# Builds a quarterly earnings update deck + companion cap table for a public
+# subject company. Two sequential stages, both informational checkpoints.
+#
+# Decomposition into wireframe + deck-writing + deck-assembler is deferred to
+# Phase 3 (per locked decision H3). For Phase 2, earningsupdate-infor remains
+# monolithic and captable-infor runs as a sibling stage — the conductor
+# composes them instead of having earningsupdate invoke captable internally.
+
+deliverable_type: earnings-update
+description: Quarterly earnings update deck + companion cap table.
+
+plan_inputs:
+  - name: reporting_quarter
+    type: str
+    required: true
+    description: Reporting quarter, e.g. "Q4 2025".
+  - name: comparison_quarter
+    type: str
+    required: true
+    description: Prior-year comparison quarter, e.g. "Q4 2024".
+  - name: eeo_snip_path
+    type: Path
+    required: true
+    description: Absolute path to the Bloomberg EEO screenshot (image file).
+
+stages:
+  - id: earnings_update
+    skill: earningsupdate-infor
+    inputs:
+      company: $deal.subject_company
+      ticker: $deal.subject_company.ticker
+      reporting_quarter: $plan_inputs.reporting_quarter
+      comparison_quarter: $plan_inputs.comparison_quarter
+      eeo_snip_path: $plan_inputs.eeo_snip_path
+    outputs:
+      - name: deck_path
+        type: Path
+        description: Absolute path to the generated .pptx deck.
+    checkpoint: informational
+
+  - id: captable
+    skill: captable-infor
+    inputs:
+      company: $deal.subject_company
+      ticker: $deal.subject_company.ticker
+    outputs:
+      - name: workbook_path
+        type: Path
+        description: Absolute path to the generated cap table .xlsx.
+    checkpoint: informational
