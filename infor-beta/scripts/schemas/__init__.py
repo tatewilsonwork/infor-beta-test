@@ -9,6 +9,14 @@ Locked by Obsidian note `12 — Locked Decisions`, G-series.
 from .company import Company
 from .filing import Filing, FilingType
 from .slide_plan import SlidePlan, SlideEntry
+from .earnings_update_content import (
+    EarningsUpdateContent,
+    CompanyOverviewBullet,
+    KpiRow,
+    BrokerRow,
+    ManagementQuote,
+    SourceNote,
+)
 from .deal_context import DealContext, DeliverableType
 from .plan import Plan, Stage, CheckpointMode
 from .skill_manifest import (
@@ -24,6 +32,12 @@ __all__ = [
     "FilingType",
     "SlidePlan",
     "SlideEntry",
+    "EarningsUpdateContent",
+    "CompanyOverviewBullet",
+    "KpiRow",
+    "BrokerRow",
+    "ManagementQuote",
+    "SourceNote",
     "DealContext",
     "DeliverableType",
     "Plan",

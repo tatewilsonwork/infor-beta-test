@@ -40,10 +40,6 @@ class SlideEntry(BaseModel):
         default_factory=dict,
         description="Free-form placeholder data passed to the assembler / library entry.",
     )
-    layout_variant: str | None = Field(
-        default=None,
-        description="Optional variant key per C2 (e.g. 'two_col', 'three_col').",
-    )
 
 
 class SlidePlan(BaseModel):

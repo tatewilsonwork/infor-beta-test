@@ -1,6 +1,8 @@
 """Unit tests for the Plan / Stage schemas."""
 
 import pytest
+import yaml
+from pathlib import Path
 from pydantic import ValidationError
 
 from schemas import InputSpec, OutputSpec, Plan, Stage
@@ -82,6 +84,21 @@ def test_two_stage_plan_round_trip():
     p2 = Plan.model_validate_json(raw)
     assert p2 == p
     assert [s.id for s in p2.stages] == ["earnings_update", "captable"]
+
+
+def test_phase3_earnings_update_plan_has_decomposed_stage_order():
+    plan_path = Path(__file__).resolve().parents[2] / "plans" / "earnings-update.yaml"
+    plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))
+
+    assert [stage.id for stage in plan.stages] == ["wireframe", "content", "deck", "captable"]
+    assert [stage.skill for stage in plan.stages] == [
+        "earningsupdate-wireframe-infor",
+        "earningsupdate-content-infor",
+        "deck-assembler",
+        "captable-infor",
+    ]
+    assert plan.stages[1].inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
+    assert plan.stages[2].inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
 
 
 def test_invalid_deliverable_type_rejected():

@@ -1,15 +1,11 @@
-# Earnings-update plan — Phase 2 pilot
+# Earnings-update plan — Phase 3 POC
 #
-# Builds a quarterly earnings update deck + companion cap table for a public
-# subject company. Two sequential stages, both informational checkpoints.
-#
-# Decomposition into wireframe + deck-writing + deck-assembler is deferred to
-# Phase 3 (per locked decision H3). For Phase 2, earningsupdate-infor remains
-# monolithic and captable-infor runs as a sibling stage — the conductor
-# composes them instead of having earningsupdate invoke captable internally.
+# Decomposes the former monolithic earningsupdate-infor conductor stage into
+# typed handoffs: SlidePlan -> EarningsUpdateContent -> .pptx. The companion
+# cap table remains a sibling captable-infor stage.
 
 deliverable_type: earnings-update
-description: Quarterly earnings update deck + companion cap table.
+description: Quarterly earnings update deck + companion cap table via decomposed typed stages.
 
 plan_inputs:
   - name: reporting_quarter
@@ -26,18 +22,45 @@ plan_inputs:
     description: Absolute path to the Bloomberg EEO screenshot (image file).
 
 stages:
-  - id: earnings_update
-    skill: earningsupdate-infor
+  - id: wireframe
+    skill: earningsupdate-wireframe-infor
+    inputs:
+      company: $deal.subject_company
+      ticker: $deal.subject_company.ticker
+      reporting_quarter: $plan_inputs.reporting_quarter
+      comparison_quarter: $plan_inputs.comparison_quarter
+    outputs:
+      - name: slide_plan_path
+        type: Path
+        description: Absolute path to the typed SlidePlan JSON artefact.
+    checkpoint: informational
+
+  - id: content
+    skill: earningsupdate-content-infor
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker
       reporting_quarter: $plan_inputs.reporting_quarter
       comparison_quarter: $plan_inputs.comparison_quarter
       eeo_snip_path: $plan_inputs.eeo_snip_path
+      slide_plan_path: $stages.wireframe.slide_plan_path
+    outputs:
+      - name: content_bundle_path
+        type: Path
+        description: Absolute path to the typed EarningsUpdateContent JSON artefact.
+    checkpoint: informational
+
+  - id: deck
+    skill: deck-assembler
+    inputs:
+      slide_plan_path: $stages.wireframe.slide_plan_path
+      content_bundle_path: $stages.content.content_bundle_path
+      template_name: INFOR Earnings Update Template.pptx
+      output_dir: $deal.deal_dir
     outputs:
       - name: deck_path
         type: Path
-        description: Absolute path to the generated .pptx deck.
+        description: Absolute path to the generated earnings update .pptx deck.
     checkpoint: informational
 
   - id: captable
@@ -48,5 +71,5 @@ stages:
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the generated cap table .xlsx.
+        description: Absolute path to the generated companion cap table .xlsx.
     checkpoint: informational

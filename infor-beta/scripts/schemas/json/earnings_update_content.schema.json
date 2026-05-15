@@ -1,0 +1,314 @@
+{
+  "$defs": {
+    "BrokerRow": {
+      "additionalProperties": false,
+      "description": "One row in the Broker Estimates vs Actuals table.",
+      "properties": {
+        "estimate": {
+          "minLength": 1,
+          "title": "Estimate",
+          "type": "string"
+        },
+        "label": {
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "reported": {
+          "minLength": 1,
+          "title": "Reported",
+          "type": "string"
+        },
+        "variance": {
+          "minLength": 1,
+          "title": "Variance",
+          "type": "string"
+        },
+        "variance_sign": {
+          "description": "Positive=green, negative=red, zero=neutral.",
+          "enum": [
+            -1,
+            0,
+            1
+          ],
+          "title": "Variance Sign",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "label",
+        "reported",
+        "estimate",
+        "variance",
+        "variance_sign"
+      ],
+      "title": "BrokerRow",
+      "type": "object"
+    },
+    "CompanyOverviewBullet": {
+      "additionalProperties": false,
+      "description": "One bullet for slide 2's company overview block.",
+      "properties": {
+        "bold_prefix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional bold prefix such as a segment name.",
+          "title": "Bold Prefix"
+        },
+        "level": {
+          "default": 0,
+          "description": "Bullet indentation level; 0 main, 1 sub-bullet.",
+          "maximum": 2,
+          "minimum": 0,
+          "title": "Level",
+          "type": "integer"
+        },
+        "text": {
+          "description": "Bullet body text, without terminal period/semicolon.",
+          "maxLength": 250,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "CompanyOverviewBullet",
+      "type": "object"
+    },
+    "KpiRow": {
+      "additionalProperties": false,
+      "description": "One KPI tile row on slide 3.",
+      "properties": {
+        "current_value": {
+          "minLength": 1,
+          "title": "Current Value",
+          "type": "string"
+        },
+        "delta_sign": {
+          "description": "Positive=green, negative=red, zero=neutral.",
+          "enum": [
+            -1,
+            0,
+            1
+          ],
+          "title": "Delta Sign",
+          "type": "integer"
+        },
+        "delta_str": {
+          "minLength": 1,
+          "title": "Delta Str",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "prior_value": {
+          "minLength": 1,
+          "title": "Prior Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "prior_value",
+        "current_value",
+        "delta_str",
+        "delta_sign"
+      ],
+      "title": "KpiRow",
+      "type": "object"
+    },
+    "ManagementQuote": {
+      "additionalProperties": false,
+      "description": "One management quote block on slide 3.",
+      "properties": {
+        "quote": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Quote",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "speaker": {
+          "minLength": 1,
+          "title": "Speaker",
+          "type": "string"
+        }
+      },
+      "required": [
+        "quote",
+        "speaker",
+        "role"
+      ],
+      "title": "ManagementQuote",
+      "type": "object"
+    },
+    "SourceNote": {
+      "additionalProperties": false,
+      "description": "Simple source citation for a content block.",
+      "properties": {
+        "citation": {
+          "minLength": 1,
+          "title": "Citation",
+          "type": "string"
+        },
+        "section": {
+          "minLength": 1,
+          "title": "Section",
+          "type": "string"
+        }
+      },
+      "required": [
+        "section",
+        "citation"
+      ],
+      "title": "SourceNote",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Typed content bundle consumed by the POC deck assembler.",
+  "properties": {
+    "broker_rows": {
+      "items": {
+        "$ref": "#/$defs/BrokerRow"
+      },
+      "maxItems": 5,
+      "minItems": 5,
+      "title": "Broker Rows",
+      "type": "array"
+    },
+    "business_updates": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 6,
+      "minItems": 4,
+      "title": "Business Updates",
+      "type": "array"
+    },
+    "company_name": {
+      "minLength": 1,
+      "title": "Company Name",
+      "type": "string"
+    },
+    "company_overview_bullets": {
+      "items": {
+        "$ref": "#/$defs/CompanyOverviewBullet"
+      },
+      "maxItems": 12,
+      "minItems": 7,
+      "title": "Company Overview Bullets",
+      "type": "array"
+    },
+    "comparison_quarter": {
+      "minLength": 1,
+      "title": "Comparison Quarter",
+      "type": "string"
+    },
+    "cover_date": {
+      "description": "Current month/year shown on cover.",
+      "minLength": 1,
+      "title": "Cover Date",
+      "type": "string"
+    },
+    "currency": {
+      "description": "Footnote currency, e.g. C$MM or US$MM.",
+      "minLength": 1,
+      "title": "Currency",
+      "type": "string"
+    },
+    "currency_short": {
+      "description": "Broker-table currency header.",
+      "minLength": 1,
+      "title": "Currency Short",
+      "type": "string"
+    },
+    "kpi_rows": {
+      "items": {
+        "$ref": "#/$defs/KpiRow"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "title": "Kpi Rows",
+      "type": "array"
+    },
+    "management_quotes": {
+      "items": {
+        "$ref": "#/$defs/ManagementQuote"
+      },
+      "maxItems": 2,
+      "minItems": 2,
+      "title": "Management Quotes",
+      "type": "array"
+    },
+    "manual_steps": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Manual Steps",
+      "type": "array"
+    },
+    "performance_summary": {
+      "maxLength": 150,
+      "minLength": 1,
+      "title": "Performance Summary",
+      "type": "string"
+    },
+    "reporting_quarter": {
+      "minLength": 1,
+      "title": "Reporting Quarter",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/SourceNote"
+      },
+      "title": "Sources",
+      "type": "array"
+    },
+    "ticker": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ticker"
+    }
+  },
+  "required": [
+    "company_name",
+    "reporting_quarter",
+    "comparison_quarter",
+    "currency",
+    "currency_short",
+    "cover_date",
+    "company_overview_bullets",
+    "business_updates",
+    "kpi_rows",
+    "broker_rows",
+    "management_quotes",
+    "performance_summary"
+  ],
+  "title": "EarningsUpdateContent",
+  "type": "object"
+}

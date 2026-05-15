@@ -4,6 +4,25 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-15
+
+### Added
+- **Phase 3 earnings-update POC decomposition** — `plans/earnings-update.yaml` now runs four typed conductor stages: `wireframe` → `content` → `deck` → `captable`.
+- **`earningsupdate-wireframe-infor`** — new conductor-stage skill that emits a fixed five-slide typed `SlidePlan` for the INFOR Earnings Update Template.
+- **`earningsupdate-content-infor`** — new conductor-stage skill that emits a strict typed `EarningsUpdateContent` bundle for the deck stage.
+- **`deck-assembler`** — new POC assembler skill scoped only to `INFOR Earnings Update Template.pptx`; consumes `SlidePlan` + `EarningsUpdateContent` and writes the earnings update `.pptx`.
+- **`EarningsUpdateContent` schema** (`scripts/schemas/earnings_update_content.py`) plus JSON Schema export (`scripts/schemas/json/earnings_update_content.schema.json`).
+- **POC helper modules**: `scripts/earnings_update_wireframe.py` and `scripts/earnings_update_assembler.py`.
+- **Minimum template port**: `templates/INFOR Earnings Update Template.pptx` copied from production for the POC.
+
+### Changed
+- `SlideEntry.layout_variant` removed from `SlidePlan` per I1/I6; concrete `library_entry_id` is the sole selector.
+- All shipped skill `version:` frontmatter bumped to `0.3.0` per single-version policy (E3).
+- `marketplace.json` and `pyproject.toml` version bumped to `0.3.0`.
+
+### Notes
+- Broader slide-library work remains intentionally out of scope: no registry, no CIM/pitch/teaser library entries, no generalized assembler beyond the earnings-update template.
+
 ## [0.2.0] — 2026-05-15
 
 ### Added

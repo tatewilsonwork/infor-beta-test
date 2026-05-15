@@ -48,7 +48,6 @@ def test_slide_plan_round_trip():
                 section="Results",
                 order=1,
                 content_block={"highlight": "Beat consensus on EPS by $0.04."},
-                layout_variant="two_col",
             ),
         ],
         notes="Slim 5-slide layout.",
@@ -58,6 +57,12 @@ def test_slide_plan_round_trip():
     assert plan2 == plan
     assert len(plan2.slides) == 2
     assert plan2.slides[1].content_block["highlight"].startswith("Beat consensus")
+
+
+def test_layout_variant_is_rejected_after_i1_decision():
+    """Per I1/I6: library entry IDs are concrete; layout_variant is dead code."""
+    with pytest.raises(ValidationError):
+        SlideEntry(library_entry_id="cover", title="Cover", order=0, layout_variant="two_col")
 
 
 def test_empty_slides_allowed():

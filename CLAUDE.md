@@ -85,7 +85,7 @@ These are the load-bearing decisions made before any code is written. The full r
 `deck-assembler` (Phase 3 foundational), `valuation-infor` (football field over comps + precedents + LBO), `company-profile-public-infor`, `company-profile-private-infor`, `industry-research-infor` (low priority, late Phase 4).
 
 **Conductor plans:**
-`earnings-update.yaml` (pilot), `cim.yaml` (slim 30–35 slides), `pitch.yaml`, `teaser.yaml`, `fairness-opinion.yaml`, `valuation.yaml`.
+`earnings-update.yaml` (decomposed Phase 3 POC), `cim.yaml` (slim 30–35 slides), `pitch.yaml`, `teaser.yaml`, `fairness-opinion.yaml`, `valuation.yaml`.
 
 **Removed from scope:** management presentations, diligence support, research pipelines.
 
@@ -106,9 +106,11 @@ sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scri
 
 from pptx_helpers import set_text, write_bulleted_shape, set_cell_text, clone_slide, find_shape
 from schemas import (
-    Company, Filing, FilingType, SlidePlan, DealContext,
+    Company, Filing, FilingType, SlidePlan, EarningsUpdateContent, DealContext,
     Plan, Stage, CheckpointMode, SkillManifest,
 )
+from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
+from earnings_update_assembler import assemble_earnings_update_deck
 from codename import resolve, find_existing, disambiguate
 from deal_init import render_init_prompt, load_or_locate_deal, save_deal_context, load_deal_context
 from plan_refs import resolve_refs
@@ -135,7 +137,7 @@ Skills write to the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), 
 - Phase 0 — Stabilise & document. ✅ shipped 2026-05-14.
 - Phase 1 — Deal model + typed I/O contract (`Company`, `Filing`, `SlidePlan`, `DealContext`, `SkillManifest`). ✅ shipped 2026-05-14.
 - Phase 2 — Conductor v1 meta-skill + earnings-update plan pilot. Adds `Plan` / `Stage` schemas, `plan_refs` resolver, `deal_init` and `run_log` helpers, ports `earningsupdate-infor` + `captable-infor`. ✅ shipped 2026-05-15.
-- Phase 3 — Slide library + `deck-assembler` + decomposition of `earningsupdate` into wireframe + deck-writing + deck-assembler (deferred from Phase 2 per H3).
+- Phase 3 — Earnings-update proof-of-concept decomposition + POC `deck-assembler`. Adds `EarningsUpdateContent`, `earningsupdate-wireframe-infor`, `earningsupdate-content-infor`, template-specific `deck-assembler`, and a four-stage `earnings-update.yaml`. ✅ POC shipped 2026-05-15; broader slide library still pending.
 - Phase 4 — New skills (valuation, profiles, industry research).
 - Phase 5 — Quality + telemetry + per-skill URL allow-lists.
 - Phase 6 — MCP / portability — deferred indefinitely.

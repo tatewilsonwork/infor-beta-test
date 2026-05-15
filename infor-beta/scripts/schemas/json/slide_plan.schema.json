@@ -10,19 +10,6 @@
           "title": "Content Block",
           "type": "object"
         },
-        "layout_variant": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Optional variant key per C2 (e.g. 'two_col', 'three_col').",
-          "title": "Layout Variant"
-        },
         "library_entry_id": {
           "description": "Opaque ID referencing an entry in the slide library (validated in Phase 3).",
           "minLength": 1,

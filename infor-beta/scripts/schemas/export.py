@@ -25,6 +25,7 @@ from . import (
     Plan,
     SkillManifest,
     SlidePlan,
+    EarningsUpdateContent,
 )
 
 # (filename_stem, model class) pairs.
@@ -32,6 +33,7 @@ _MODELS = [
     ("company", Company),
     ("filing", Filing),
     ("slide_plan", SlidePlan),
+    ("earnings_update_content", EarningsUpdateContent),
     ("deal_context", DealContext),
     ("plan", Plan),
     ("skill_manifest", SkillManifest),
