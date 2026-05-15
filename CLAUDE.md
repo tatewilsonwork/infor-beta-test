@@ -14,7 +14,7 @@ A single Claude Code plugin, `infor-beta`, containing:
 
 - A **conductor meta-skill** that consumes a deliverable spec (CIM, pitch, earnings update, …) and orchestrates sub-skills via the `Agent` tool.
 - **Specialised skills** for data tables (comps, precedents, buyer lists, cap tables), modelling (LBO), writing (deck-writing), wireframing (typed `SlidePlan` output), QA (deckcheck), valuation aggregation (football field), and company / industry profiles.
-- A **parameterised slide library** of 30–50 reusable `.pptx` slide entries that the conductor and `deck-assembler` clone and fill.
+- A **slide library** of reusable `.pptx` entries (one entry per slide concept × layout combination) that the conductor and `deck-assembler` clone and fill.
 - A **typed I/O contract** so skills can compose cleanly without prompt glue.
 
 ## Layout
@@ -29,7 +29,7 @@ infor-beta/
 ├── plans/                         Conductor plan YAMLs (earnings-update, cim, pitch, teaser, fairness-opinion, valuation)
 ├── scripts/                       Shared helpers + tests (pptx_helpers.py, find_template.sh, sanitize_name.sh, ...)
 ├── templates/                     Excel + PowerPoint templates shipped with the plugin
-│   └── slide-library/             Parameterised slide entries — one directory per slide concept
+│   └── slide-library/             One directory per concrete slide entry (concept × layout)
 README.md
 CHANGELOG.md
 CLAUDE.md                          ← you are here
@@ -62,8 +62,8 @@ These are the load-bearing decisions made before any code is written. The full r
 - `earningsupdate-infor` is decomposed into `plans/earnings-update.yaml` (Phase 2 pilot).
 
 **Slide library**
-- 30–50 entries, sized to enumerate without search UX.
-- No layout variants — where layout differs, treat it as a `variants:` field in the entry manifest.
+- Multiple library entries per slide concept × layout combination (e.g. `company-overview-two-col`, `company-overview-full-bleed`). No parameterised `variants:` field. One `.pptx` per entry.
+- Realistic library size: 40–80 entries at v1 maturity. Enumerable via a categorised README — no search UX required until well past ~100.
 - Lives in the same repo (`templates/slide-library/`).
 
 **Data**
