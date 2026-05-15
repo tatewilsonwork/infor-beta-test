@@ -4,6 +4,14 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-15
+
+### Fixed
+- Added missing `INFOR Cap Table Template.xlsx` to `infor-beta/templates/` so the earnings-update plan's sibling `captable-infor` stage can copy the workbook template on a fresh plugin install.
+
+### Changed
+- Bumped marketplace, pyproject, and all shipped skill frontmatter versions to `0.3.1`.
+
 ## [0.3.0] — 2026-05-15
 
 ### Added

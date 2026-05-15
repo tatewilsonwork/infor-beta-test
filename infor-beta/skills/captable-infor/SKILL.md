@@ -5,7 +5,7 @@ description: >
   statements to populate a capitalization table. Activates on /captable-infor and on tasks involving
   shares outstanding, debt schedules, lease obligations, options/RSU/warrant tables, convertible
   debentures, cash balances, preferred shares, or non-controlling interest sourced from company filings.
-version: 0.3.0
+version: 0.3.1
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 

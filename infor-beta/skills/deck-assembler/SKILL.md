@@ -4,7 +4,7 @@ description: >
   Use this skill as the Phase 3 POC deck assembly stage. It consumes a typed SlidePlan and typed
   EarningsUpdateContent bundle and writes an INFOR Earnings Update .pptx from the existing
   INFOR Earnings Update Template. POC scope only; not the generalized slide-library assembler yet.
-version: 0.3.0
+version: 0.3.1
 allowed-tools: [Read, Write, Bash]
 ---
 
