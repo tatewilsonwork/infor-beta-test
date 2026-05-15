@@ -1,8 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/schemas/marketplace.schema.json",
   "name": "infor-beta",
-  "version": "0.0.1",
-  "description": "INFOR Financial Group analyst workflow platform — conductor-orchestrated investment-banking deliverables (CIM, pitch, teaser, earnings update, fairness opinion, valuation). Phase 0 scaffold; supersedes infor-workflows when ready.",
+  "version": "0.1.0",
+  "description": "INFOR Financial Group analyst workflow platform — conductor-orchestrated investment-banking deliverables (CIM, pitch, teaser, earnings update, fairness opinion, valuation). Supersedes infor-workflows when ready.",
   "author": "INFOR Financial Group",
   "plugins": [
     {

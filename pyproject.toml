@@ -1,0 +1,17 @@
+[project]
+name = "infor-beta"
+version = "0.1.0"
+description = "INFOR Financial Group internal Claude Code plugin — clean-break rebuild of infor-workflows."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7,<9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["infor-beta/scripts/tests"]
+pythonpath = ["infor-beta/scripts"]

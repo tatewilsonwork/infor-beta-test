@@ -1,0 +1,110 @@
+{
+  "$defs": {
+    "SlideEntry": {
+      "additionalProperties": false,
+      "description": "A single slide within a SlidePlan.\n\n`library_entry_id` is opaque in Phase 1 \u2014 any non-empty string is accepted.\n`content_block` is a free-form dict so wireframe-style skills can stash\nplaceholder data without locking the schema before the library exists.",
+      "properties": {
+        "content_block": {
+          "additionalProperties": true,
+          "description": "Free-form placeholder data passed to the assembler / library entry.",
+          "title": "Content Block",
+          "type": "object"
+        },
+        "layout_variant": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional variant key per C2 (e.g. 'two_col', 'three_col').",
+          "title": "Layout Variant"
+        },
+        "library_entry_id": {
+          "description": "Opaque ID referencing an entry in the slide library (validated in Phase 3).",
+          "minLength": 1,
+          "title": "Library Entry Id",
+          "type": "string"
+        },
+        "order": {
+          "description": "Zero-based position within the SlidePlan.",
+          "minimum": 0,
+          "title": "Order",
+          "type": "integer"
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional section grouping (e.g. 'Executive Summary', 'Valuation').",
+          "title": "Section"
+        },
+        "title": {
+          "description": "Slide title as it should appear in the deck.",
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "library_entry_id",
+        "title",
+        "order"
+      ],
+      "title": "SlideEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A typed plan for a deck. Markdown view is a downstream rendering of this object.",
+  "properties": {
+    "deck_title": {
+      "description": "Top-level deck title.",
+      "minLength": 1,
+      "title": "Deck Title",
+      "type": "string"
+    },
+    "deliverable_type": {
+      "description": "Free-form deliverable label (e.g. 'cim', 'earnings-update', 'pitch').",
+      "minLength": 1,
+      "title": "Deliverable Type",
+      "type": "string"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional plan-level notes for the assembler / analyst.",
+      "title": "Notes"
+    },
+    "slides": {
+      "description": "Ordered slides in the plan.",
+      "items": {
+        "$ref": "#/$defs/SlideEntry"
+      },
+      "title": "Slides",
+      "type": "array"
+    }
+  },
+  "required": [
+    "deliverable_type",
+    "deck_title"
+  ],
+  "title": "SlidePlan",
+  "type": "object"
+}

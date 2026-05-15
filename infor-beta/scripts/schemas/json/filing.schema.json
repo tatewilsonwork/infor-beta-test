@@ -1,0 +1,135 @@
+{
+  "$defs": {
+    "FilingType": {
+      "description": "Locked enum of recognised filing types (G2).",
+      "enum": [
+        "10-K",
+        "10-Q",
+        "8-K",
+        "proxy",
+        "S-1",
+        "20-F",
+        "6-K",
+        "AIF",
+        "MD&A",
+        "management-circular",
+        "annual-report",
+        "ARS",
+        "prospectus",
+        "press-release",
+        "transcript",
+        "investor-deck",
+        "other"
+      ],
+      "title": "FilingType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A single filing or attachment associated with a deal.\n\nThe path is the canonical on-disk location after the conductor saves the\nanalyst-attached file into the deal directory.",
+  "properties": {
+    "filed_on": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Date the filing was originally filed.",
+      "title": "Filed On"
+    },
+    "local_path": {
+      "anyOf": [
+        {
+          "format": "path",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Path under the deal directory once persisted by the conductor.",
+      "title": "Local Path"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Free-form analyst notes about this filing.",
+      "title": "Notes"
+    },
+    "period_end": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Fiscal period covered, where applicable.",
+      "title": "Period End"
+    },
+    "source_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Source URL (SEDAR / EDGAR / IR site).",
+      "title": "Source Url"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Display title (e.g. 'OpenText FY2025 10-K').",
+      "title": "Title"
+    },
+    "type": {
+      "$ref": "#/$defs/FilingType",
+      "description": "Filing class. Use FilingType.OTHER for anything not enumerated."
+    },
+    "type_other": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Free-text description, required when `type == FilingType.OTHER`.",
+      "title": "Type Other"
+    }
+  },
+  "required": [
+    "type"
+  ],
+  "title": "Filing",
+  "type": "object"
+}

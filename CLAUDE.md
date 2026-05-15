@@ -98,7 +98,25 @@ One version for the entire plugin. Any skill change bumps the plugin version, an
 Long workflows split into a short `SKILL.md` (workflow + step outline) + `references/<topic>.md` loaded on demand. New skills longer than ~250 lines should follow it.
 
 ### Shared helpers (don't re-implement)
-Templates, filename sanitization, python-pptx formatting helpers, and brand constants live in `scripts/`. Skills import via `CLAUDE_PLUGIN_ROOT`. (Details to be filled in as Phase 0/1 lands the scripts.)
+Templates, filename sanitization, python-pptx formatting helpers, brand constants, and the typed I/O contract live in `infor-beta/scripts/`. Skills import via `CLAUDE_PLUGIN_ROOT`:
+
+```python
+import sys, os
+sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
+
+from pptx_helpers import set_text, write_bulleted_shape, set_cell_text, clone_slide, find_shape
+from schemas import Company, Filing, FilingType, SlidePlan, DealContext, SkillManifest
+from codename import resolve, find_existing, disambiguate
+```
+
+For the bash helpers:
+
+```bash
+SANITIZED=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/sanitize_name.sh" "$RAW_NAME")
+TEMPLATE=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/find_template.sh" "INFOR Comps Template.xlsx")
+```
+
+Brand constants are in `pptx_helpers` (`PALATINO`, `COLOR_UP`, `COLOR_DOWN`). JSON-Schema views of every typed contract are emitted to `infor-beta/scripts/schemas/json/` — regenerate with `python -m schemas.export` (idempotent).
 
 ### Excel does the math, not the LLM
 Arithmetic lives in cell formulas for analyst auditability. Skills write inputs and let the workbook compute.

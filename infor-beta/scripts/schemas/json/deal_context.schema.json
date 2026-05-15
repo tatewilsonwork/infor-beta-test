@@ -1,0 +1,355 @@
+{
+  "$defs": {
+    "Company": {
+      "additionalProperties": false,
+      "description": "A subject company. Sourced from 10-K cover-page-class fields + analyst input.\n\nOnly `legal_name` is required. Everything else is optional so a profile can be\nbuilt up progressively during deal-init.",
+      "properties": {
+        "employees": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Approximate full-time-equivalent headcount.",
+          "title": "Employees"
+        },
+        "exchange": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Primary listing exchange if public (e.g. 'NASDAQ', 'TSX').",
+          "title": "Exchange"
+        },
+        "fy_end": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fiscal year end as MM-DD, e.g. '06-30', or a free-form description.",
+          "title": "Fy End"
+        },
+        "hq": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Headquarters location, free-form (e.g. 'Waterloo, Ontario, Canada').",
+          "title": "Hq"
+        },
+        "industry": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Narrower industry classification.",
+          "title": "Industry"
+        },
+        "jurisdiction_of_incorporation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where the entity is incorporated (e.g. 'Ontario', 'Delaware', 'England and Wales').",
+          "title": "Jurisdiction Of Incorporation"
+        },
+        "legal_name": {
+          "description": "Full legal name as it appears on the cover page of the latest annual filing.",
+          "minLength": 1,
+          "title": "Legal Name",
+          "type": "string"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Free-form analyst notes that do not fit the structured fields.",
+          "title": "Notes"
+        },
+        "revenue_range": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Free-form revenue indicator (e.g. '$1B\u2013$5B', 'Not disclosed').",
+          "title": "Revenue Range"
+        },
+        "sector": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "High-level sector classification.",
+          "title": "Sector"
+        },
+        "ticker": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Primary trading symbol if public (e.g. 'OTEX'). None for private companies.",
+          "title": "Ticker"
+        }
+      },
+      "required": [
+        "legal_name"
+      ],
+      "title": "Company",
+      "type": "object"
+    },
+    "Filing": {
+      "additionalProperties": false,
+      "description": "A single filing or attachment associated with a deal.\n\nThe path is the canonical on-disk location after the conductor saves the\nanalyst-attached file into the deal directory.",
+      "properties": {
+        "filed_on": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Date the filing was originally filed.",
+          "title": "Filed On"
+        },
+        "local_path": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Path under the deal directory once persisted by the conductor.",
+          "title": "Local Path"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Free-form analyst notes about this filing.",
+          "title": "Notes"
+        },
+        "period_end": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fiscal period covered, where applicable.",
+          "title": "Period End"
+        },
+        "source_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source URL (SEDAR / EDGAR / IR site).",
+          "title": "Source Url"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Display title (e.g. 'OpenText FY2025 10-K').",
+          "title": "Title"
+        },
+        "type": {
+          "$ref": "#/$defs/FilingType",
+          "description": "Filing class. Use FilingType.OTHER for anything not enumerated."
+        },
+        "type_other": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Free-text description, required when `type == FilingType.OTHER`.",
+          "title": "Type Other"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "Filing",
+      "type": "object"
+    },
+    "FilingType": {
+      "description": "Locked enum of recognised filing types (G2).",
+      "enum": [
+        "10-K",
+        "10-Q",
+        "8-K",
+        "proxy",
+        "S-1",
+        "20-F",
+        "6-K",
+        "AIF",
+        "MD&A",
+        "management-circular",
+        "annual-report",
+        "ARS",
+        "prospectus",
+        "press-release",
+        "transcript",
+        "investor-deck",
+        "other"
+      ],
+      "title": "FilingType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Runtime context for a single deal. Created at deal-init by the conductor.",
+  "properties": {
+    "codename": {
+      "description": "Display-form codename, e.g. 'Project OpenText'. Case is preserved (G3).",
+      "minLength": 1,
+      "title": "Codename",
+      "type": "string"
+    },
+    "deal_dir": {
+      "description": "Path to the deal directory (typically under ~/Documents/INFOR Deals/). Relative or absolute.",
+      "format": "path",
+      "title": "Deal Dir",
+      "type": "string"
+    },
+    "deliverable_type": {
+      "description": "Deliverable the analyst is producing for this deal. See G7 prompt.",
+      "enum": [
+        "cim",
+        "pitch",
+        "teaser",
+        "earnings-update",
+        "fairness-opinion",
+        "valuation",
+        "one-off-skill"
+      ],
+      "title": "Deliverable Type",
+      "type": "string"
+    },
+    "filings": {
+      "description": "Filings persisted into the deal directory.",
+      "items": {
+        "$ref": "#/$defs/Filing"
+      },
+      "title": "Filings",
+      "type": "array"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional analyst notes captured at deal-init (G7 item 7).",
+      "title": "Notes"
+    },
+    "subject_company": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Company"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Subject company, populated once deal-init facts are confirmed."
+    }
+  },
+  "required": [
+    "codename",
+    "deal_dir",
+    "deliverable_type"
+  ],
+  "title": "DealContext",
+  "type": "object"
+}

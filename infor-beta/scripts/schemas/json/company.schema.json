@@ -1,0 +1,148 @@
+{
+  "additionalProperties": false,
+  "description": "A subject company. Sourced from 10-K cover-page-class fields + analyst input.\n\nOnly `legal_name` is required. Everything else is optional so a profile can be\nbuilt up progressively during deal-init.",
+  "properties": {
+    "employees": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Approximate full-time-equivalent headcount.",
+      "title": "Employees"
+    },
+    "exchange": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Primary listing exchange if public (e.g. 'NASDAQ', 'TSX').",
+      "title": "Exchange"
+    },
+    "fy_end": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Fiscal year end as MM-DD, e.g. '06-30', or a free-form description.",
+      "title": "Fy End"
+    },
+    "hq": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Headquarters location, free-form (e.g. 'Waterloo, Ontario, Canada').",
+      "title": "Hq"
+    },
+    "industry": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Narrower industry classification.",
+      "title": "Industry"
+    },
+    "jurisdiction_of_incorporation": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Where the entity is incorporated (e.g. 'Ontario', 'Delaware', 'England and Wales').",
+      "title": "Jurisdiction Of Incorporation"
+    },
+    "legal_name": {
+      "description": "Full legal name as it appears on the cover page of the latest annual filing.",
+      "minLength": 1,
+      "title": "Legal Name",
+      "type": "string"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Free-form analyst notes that do not fit the structured fields.",
+      "title": "Notes"
+    },
+    "revenue_range": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Free-form revenue indicator (e.g. '$1B\u2013$5B', 'Not disclosed').",
+      "title": "Revenue Range"
+    },
+    "sector": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "High-level sector classification.",
+      "title": "Sector"
+    },
+    "ticker": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Primary trading symbol if public (e.g. 'OTEX'). None for private companies.",
+      "title": "Ticker"
+    }
+  },
+  "required": [
+    "legal_name"
+  ],
+  "title": "Company",
+  "type": "object"
+}

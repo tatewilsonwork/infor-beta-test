@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "InputSpec": {
+      "additionalProperties": false,
+      "description": "One typed input a skill consumes.",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable explanation.",
+          "title": "Description"
+        },
+        "name": {
+          "description": "Parameter name as referenced inside the skill.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "description": "Whether the conductor must supply this input.",
+          "title": "Required",
+          "type": "boolean"
+        },
+        "type": {
+          "description": "Type label. Free-form in Phase 1 \u2014 e.g. 'Company', 'list[Filing]', 'str', 'Path'.",
+          "minLength": 1,
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "InputSpec",
+      "type": "object"
+    },
+    "OutputSpec": {
+      "additionalProperties": false,
+      "description": "One typed output a skill produces.",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable explanation.",
+          "title": "Description"
+        },
+        "name": {
+          "description": "Output name as exported by the skill.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "description": "Type label. Free-form in Phase 1.",
+          "minLength": 1,
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "title": "OutputSpec",
+      "type": "object"
+    },
+    "SideEffectSpec": {
+      "additionalProperties": false,
+      "description": "One observable side effect (file written, external call, etc.).",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Human-readable explanation.",
+          "title": "Description"
+        },
+        "kind": {
+          "description": "Side-effect class, e.g. 'file_write', 'web_search', 'shell'.",
+          "minLength": 1,
+          "title": "Kind",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Specific target where meaningful (e.g. relative path, hostname).",
+          "title": "Target"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "SideEffectSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The seven-field Phase 1 manifest a skill declares to the conductor.",
+  "properties": {
+    "allowed_tools": {
+      "description": "Claude Code allowed-tools allowlist (Read, Bash, Write, Glob, WebSearch, ...).",
+      "items": {
+        "type": "string"
+      },
+      "title": "Allowed Tools",
+      "type": "array"
+    },
+    "description": {
+      "description": "One-paragraph description; lead with the trigger phrases.",
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    },
+    "inputs": {
+      "description": "Typed inputs the skill consumes.",
+      "items": {
+        "$ref": "#/$defs/InputSpec"
+      },
+      "title": "Inputs",
+      "type": "array"
+    },
+    "name": {
+      "description": "Skill name. Must match the skill directory name.",
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "outputs": {
+      "description": "Typed outputs the skill produces.",
+      "items": {
+        "$ref": "#/$defs/OutputSpec"
+      },
+      "title": "Outputs",
+      "type": "array"
+    },
+    "side_effects": {
+      "description": "Observable side effects (file writes, web calls, shell, etc.).",
+      "items": {
+        "$ref": "#/$defs/SideEffectSpec"
+      },
+      "title": "Side Effects",
+      "type": "array"
+    },
+    "version": {
+      "description": "SemVer x.y.z. Single-version policy (E3): must equal plugin version at install.",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "description",
+    "version"
+  ],
+  "title": "SkillManifest",
+  "type": "object"
+}
