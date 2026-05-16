@@ -1,0 +1,185 @@
+{
+  "$defs": {
+    "PitchBullet": {
+      "additionalProperties": false,
+      "description": "Flexible bullet item used by the deck-content POC.",
+      "properties": {
+        "level": {
+          "default": 0,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Level",
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 220,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "PitchBullet",
+      "type": "object"
+    },
+    "PitchSourceNote": {
+      "additionalProperties": false,
+      "description": "Source note for analyst-auditable citations.",
+      "properties": {
+        "citation": {
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Citation",
+          "type": "string"
+        },
+        "section": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Section",
+          "type": "string"
+        }
+      },
+      "required": [
+        "section",
+        "citation"
+      ],
+      "title": "PitchSourceNote",
+      "type": "object"
+    },
+    "RiskMitigantRow": {
+      "additionalProperties": false,
+      "description": "One acquirer risk with exactly three concise mitigants.",
+      "properties": {
+        "mitigants": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Mitigants",
+          "type": "array"
+        },
+        "risk": {
+          "maxLength": 180,
+          "minLength": 1,
+          "title": "Risk",
+          "type": "string"
+        }
+      },
+      "required": [
+        "risk",
+        "mitigants"
+      ],
+      "title": "RiskMitigantRow",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Single broad typed content bundle for the slide-library POC deck.",
+  "properties": {
+    "client_name": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Client Name",
+      "type": "string"
+    },
+    "company_overview_bullets": {
+      "items": {
+        "$ref": "#/$defs/PitchBullet"
+      },
+      "maxItems": 10,
+      "minItems": 1,
+      "title": "Company Overview Bullets",
+      "type": "array"
+    },
+    "comps_takeaway": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Comps Takeaway",
+      "type": "string"
+    },
+    "current_section": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Current Section",
+      "type": "string"
+    },
+    "executive_summary_bullets": {
+      "items": {
+        "$ref": "#/$defs/PitchBullet"
+      },
+      "maxItems": 12,
+      "minItems": 1,
+      "title": "Executive Summary Bullets",
+      "type": "array"
+    },
+    "financial_metric_labels": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "title": "Financial Metric Labels",
+      "type": "array"
+    },
+    "manual_steps": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Manual Steps",
+      "type": "array"
+    },
+    "presentation_date": {
+      "description": "Fully spelled-out month plus four-digit year, e.g. 'April 2026'.",
+      "title": "Presentation Date",
+      "type": "string"
+    },
+    "risk_mitigants": {
+      "items": {
+        "$ref": "#/$defs/RiskMitigantRow"
+      },
+      "maxItems": 5,
+      "minItems": 1,
+      "title": "Risk Mitigants",
+      "type": "array"
+    },
+    "risks_tagline": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Risks Tagline",
+      "type": "string"
+    },
+    "section_labels": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Section Labels",
+      "type": "array"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/PitchSourceNote"
+      },
+      "title": "Sources",
+      "type": "array"
+    }
+  },
+  "required": [
+    "client_name",
+    "presentation_date",
+    "executive_summary_bullets",
+    "section_labels",
+    "current_section",
+    "company_overview_bullets",
+    "financial_metric_labels",
+    "risk_mitigants",
+    "risks_tagline",
+    "comps_takeaway"
+  ],
+  "title": "PitchDeckContent",
+  "type": "object"
+}

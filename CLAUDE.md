@@ -106,11 +106,14 @@ sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scri
 
 from pptx_helpers import set_text, write_bulleted_shape, set_cell_text, clone_slide, find_shape
 from schemas import (
-    Company, Filing, FilingType, SlidePlan, EarningsUpdateContent, DealContext,
+    Company, Filing, FilingType, SlidePlan, EarningsUpdateContent, PitchDeckContent, DealContext,
     Plan, Stage, CheckpointMode, SkillManifest,
 )
 from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
 from earnings_update_assembler import assemble_earnings_update_deck
+from pitch_deck_wireframe import build_pitch_deck_slide_plan
+from pitch_deck_assembler import assemble_pitch_deck
+from slide_library_registry import load_slide_library_registry
 from codename import resolve, find_existing, disambiguate
 from deal_init import render_init_prompt, load_or_locate_deal, save_deal_context, load_deal_context
 from plan_refs import resolve_refs
@@ -137,7 +140,8 @@ Skills write to the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), 
 - Phase 0 — Stabilise & document. ✅ shipped 2026-05-14.
 - Phase 1 — Deal model + typed I/O contract (`Company`, `Filing`, `SlidePlan`, `DealContext`, `SkillManifest`). ✅ shipped 2026-05-14.
 - Phase 2 — Conductor v1 meta-skill + earnings-update plan pilot. Adds `Plan` / `Stage` schemas, `plan_refs` resolver, `deal_init` and `run_log` helpers, ports `earningsupdate-infor` + `captable-infor`. ✅ shipped 2026-05-15.
-- Phase 3 — Earnings-update proof-of-concept decomposition + POC `deck-assembler`. Adds `EarningsUpdateContent`, `earningsupdate-wireframe-infor`, `earningsupdate-content-infor`, template-specific `deck-assembler`, and a four-stage `earnings-update.yaml`. ✅ POC shipped 2026-05-15; broader slide library still pending.
+- Phase 3 — Earnings-update proof-of-concept decomposition + POC `deck-assembler`. Adds `EarningsUpdateContent`, `earningsupdate-wireframe-infor`, `earningsupdate-content-infor`, template-specific `deck-assembler`, and a four-stage `earnings-update.yaml`. ✅ POC shipped 2026-05-15.
+- Phase 3 slide-library POC — 12-slide `INFOR Slide Library.pptx` proof-of-concept with `PitchDeckContent`, `pitch-wireframe-infor`, `pitch-content-infor`, `excel-to-powerpoint-infor`, `pitch-library-poc.yaml`, and generalized deck-assembler support. ✅ POC shipped 2026-05-16.
 - Phase 4 — New skills (valuation, profiles, industry research).
 - Phase 5 — Quality + telemetry + per-skill URL allow-lists.
 - Phase 6 — MCP / portability — deferred indefinitely.

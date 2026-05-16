@@ -1,0 +1,103 @@
+# Pitch library POC plan — Phase 3 slide-library POC
+#
+# Fills the canonical 12-slide INFOR Slide Library template end-to-end while
+# preserving static credential/disclaimer/contact slides and deferring complex
+# chart generation.
+
+deliverable_type: pitch
+description: 12-slide INFOR slide-library POC deck.
+
+plan_inputs:
+  - name: client_name
+    type: str
+    required: true
+    description: Client/company name to place on cover and company overview slide.
+  - name: presentation_date
+    type: str
+    required: true
+    description: Fully spelled-out month plus four-digit year, e.g. "April 2026".
+  - name: analyst_notes
+    type: str
+    required: true
+    description: Required analyst notes for executive summary, company overview, risks, and takeaway drafting.
+  - name: section_labels
+    type: list[str]
+    required: false
+    description: Optional section divider labels; wireframe infers defaults if omitted.
+  - name: current_section
+    type: str
+    required: false
+    description: Optional current section label to mark dark blue on divider slide.
+  - name: cim_path
+    type: Path
+    required: false
+    description: Optional CIM / management presentation source path.
+  - name: valuation_range
+    type: str
+    required: false
+    description: Optional valuation range language for executive summary.
+  - name: risk_notes
+    type: str
+    required: false
+    description: Optional analyst risk notes to steer acquirer risks and mitigants.
+  - name: comps_workbook_path
+    type: Path
+    required: false
+    description: Optional existing comps workbook/chart artefact for insertion.
+
+stages:
+  - id: wireframe
+    skill: pitch-wireframe-infor
+    inputs:
+      company: $deal.subject_company
+      client_name: $plan_inputs.client_name
+      section_labels: $plan_inputs.section_labels
+      current_section: $plan_inputs.current_section
+    outputs:
+      - name: slide_plan_path
+        type: Path
+        description: Absolute path to the typed SlidePlan JSON artefact.
+    checkpoint: informational
+
+  - id: content
+    skill: pitch-content-infor
+    inputs:
+      company: $deal.subject_company
+      client_name: $plan_inputs.client_name
+      presentation_date: $plan_inputs.presentation_date
+      analyst_notes: $plan_inputs.analyst_notes
+      cim_path: $plan_inputs.cim_path
+      valuation_range: $plan_inputs.valuation_range
+      risk_notes: $plan_inputs.risk_notes
+      slide_plan_path: $stages.wireframe.slide_plan_path
+    outputs:
+      - name: content_bundle_path
+        type: Path
+        description: Absolute path to the typed PitchDeckContent JSON artefact.
+    checkpoint: informational
+
+  - id: captable
+    skill: captable-infor
+    inputs:
+      company: $deal.subject_company
+      ticker: $deal.subject_company.ticker
+    outputs:
+      - name: workbook_path
+        type: Path
+        description: Absolute path to the generated cap table .xlsx workbook.
+    checkpoint: informational
+
+  - id: deck
+    skill: deck-assembler
+    inputs:
+      slide_plan_path: $stages.wireframe.slide_plan_path
+      content_bundle_path: $stages.content.content_bundle_path
+      captable_workbook_path: $stages.captable.workbook_path
+      comps_workbook_path: $plan_inputs.comps_workbook_path
+      template_name: INFOR Slide Library.pptx
+      output_dir: $deal.deal_dir
+    outputs:
+      - name: deck_path
+        type: Path
+        description: Absolute path to the generated 12-slide POC .pptx deck.
+    checkpoint: informational

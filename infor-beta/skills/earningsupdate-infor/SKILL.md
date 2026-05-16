@@ -8,7 +8,7 @@ description: >
   performance summary. Activates on "earnings update", "earnings deck", "quarterly earnings",
   "earnings summary deck", or any request to build a branded update deck off a recent 10-Q/10-K
   and Bloomberg EEO snip.
-version: 0.3.1
+version: 0.4.0
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
