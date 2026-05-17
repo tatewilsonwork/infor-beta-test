@@ -4,6 +4,14 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-05-16
+
+### Added
+- Added inner plugin manifest at `infor-beta/.claude-plugin/plugin.json` so Claude Co-work marketplace installs can validate the plugin declared by the root marketplace.
+
+### Changed
+- Bumped marketplace, plugin manifest, pyproject, and shipped skill frontmatter versions to `0.4.1`.
+
 ## [0.4.0] — 2026-05-16
 
 ### Added

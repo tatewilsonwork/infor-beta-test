@@ -3,7 +3,7 @@ name: deck-assembler
 description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the decomposed earnings-update POC deck or the 12-slide INFOR slide-library POC deck.
-version: 0.4.0
+version: 0.4.1
 allowed-tools: [Read, Write, Bash]
 ---
 
