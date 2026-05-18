@@ -3,5 +3,5 @@
   "name": "infor-beta",
   "version": "0.4.1",
   "description": "INFOR Financial Group analyst workflow platform — conductor-orchestrated investment-banking deliverables with typed handoffs, templates, plans, and specialised skills.",
-  "author": "INFOR Financial Group"
+  "author": { "name": "INFOR Financial Group" }
 }
