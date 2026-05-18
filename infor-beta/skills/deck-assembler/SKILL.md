@@ -3,7 +3,7 @@ name: deck-assembler
 description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the decomposed earnings-update POC deck or the 12-slide INFOR slide-library POC deck.
-version: 0.4.1
+version: 0.4.2
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -38,7 +38,7 @@ When invoked by the conductor, read:
 1. Read `$STAGE_INPUTS`.
 2. Resolve `template_name` under `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/templates/`.
 3. Inspect the `SlidePlan.deliverable_type`.
-4. If `earnings-update`, call `assemble_earnings_update_deck(...)`.
+4. If `earnings-update`, call `assemble_earnings_update_deck(...)` and pass `captable_workbook_path` when supplied so slide 2's cap-table placeholder is replaced.
 5. If `pitch`, call `assemble_pitch_deck(...)`.
 6. Write the deck under `$DEAL_DIR/artefacts/` when `$DEAL_DIR` is set; otherwise use the supplied `output_dir`.
 7. Write `$STAGE_OUTPUTS` as:
@@ -85,6 +85,7 @@ if slide_plan.deliverable_type == "earnings-update":
         content_path=inputs["content_bundle_path"],
         template_path=template_path,
         output_dir=output_dir,
+        captable_workbook_path=inputs.get("captable_workbook_path"),
     )
 elif slide_plan.deliverable_type == "pitch":
     deck_path = assemble_pitch_deck(

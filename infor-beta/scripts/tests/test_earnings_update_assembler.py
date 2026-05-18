@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
+from openpyxl import Workbook
 from pptx import Presentation
-
 from earnings_update_assembler import assemble_earnings_update_deck
 from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
 from schemas import Company, EarningsUpdateContent
@@ -57,7 +57,29 @@ def _sample_content() -> EarningsUpdateContent:
     )
 
 
-def test_assemble_earnings_update_deck_populates_template(tmp_path: Path):
+def _write_sample_cap_table(path: Path) -> Path:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cap with Links"
+    ws["B13"] = "SampleCo Cap Table"
+    rows = {
+        15: ("Company Ticker:", "TSX:SMPL"),
+        16: ("Share Price (21-Apr-26)", "C$12.34"),
+        17: ("Basic Shares Outstanding", "100.0"),
+        18: ("Basic Market Cap", "C$1,234.0"),
+        21: ("Fully-Diluted Shares Outstanding", "104.0"),
+        22: ("Fully-Diluted Market Cap", "C$1,283.4"),
+        28: ("Net Debt", "C$200.0"),
+        31: ("Enterprise Value", "C$1,483.4"),
+    }
+    for row, (label, value) in rows.items():
+        ws.cell(row=row, column=2).value = label
+        ws.cell(row=row, column=6).value = value
+    wb.save(path)
+    return path
+
+
+def _assemble_sample_deck(tmp_path: Path, content: EarningsUpdateContent | None = None, **kwargs) -> Path:
     template = Path("infor-beta/templates/INFOR Earnings Update Template.pptx")
     slide_plan = build_earnings_update_slide_plan(
         company=Company(legal_name="SampleCo", ticker="TSX:SMPL"),
@@ -65,16 +87,21 @@ def test_assemble_earnings_update_deck_populates_template(tmp_path: Path):
         comparison_quarter="Q4 2024",
     )
     slide_plan_path = write_slide_plan(slide_plan, tmp_path / "slide_plan.json")
-    content = _sample_content()
+    content = content or _sample_content()
     content_path = tmp_path / "content.json"
     content_path.write_text(content.model_dump_json(indent=2), encoding="utf-8")
 
-    deck_path = assemble_earnings_update_deck(
+    return assemble_earnings_update_deck(
         slide_plan_path=slide_plan_path,
         content_path=content_path,
         template_path=template,
         output_dir=tmp_path,
+        **kwargs,
     )
+
+
+def test_assemble_earnings_update_deck_populates_template(tmp_path: Path):
+    deck_path = _assemble_sample_deck(tmp_path)
 
     assert deck_path.exists()
     prs = Presentation(deck_path)
@@ -86,3 +113,65 @@ def test_assemble_earnings_update_deck_populates_template(tmp_path: Path):
     assert "SampleCo Overview" in all_text
     assert "SampleCo Q4 2025 Earnings Summary" in all_text
     assert "[Macabacus Placeholder]" in all_text
+
+
+def test_assemble_earnings_update_deck_strips_currency_units_from_kpi_labels(tmp_path: Path):
+    content = _sample_content()
+    content.kpi_rows[0].name = "Cloud Revenue (C$MM)"
+    content.kpi_rows[1].name = "Recurring Revenue (C$MM)"
+    content.kpi_rows[2].name = "Adjusted EBITDA (C$MM)"
+
+    deck_path = _assemble_sample_deck(tmp_path, content)
+
+    slide3_text = "\n".join(
+        shape.text
+        for shape in Presentation(deck_path).slides[2].shapes
+        if getattr(shape, "has_text_frame", False)
+    )
+    assert "Q4 2025 Cloud Revenue" in slide3_text
+    assert "Q4 2025 Cloud Revenue (C$MM)" not in slide3_text
+    assert "Q4 2026 Recurring Revenue (C$MM)" not in slide3_text
+    assert "Q4 2025 Adjusted EBITDA (C$MM)" not in slide3_text
+    assert "Note: All figures in C$MM" in slide3_text
+
+
+def test_assemble_earnings_update_deck_does_not_bold_overview_headers(tmp_path: Path):
+    content = _sample_content()
+    content.company_overview_bullets[0].bold_prefix = "Header:"
+    content.company_overview_bullets[0].text = " Enterprise software provider with recurring revenue visibility across regulated markets and a diversified global customer base supporting resilient growth"
+
+    deck_path = _assemble_sample_deck(tmp_path, content)
+
+    overview_shape = next(
+        shape for shape in Presentation(deck_path).slides[1].shapes if shape.name == "TextBox 16"
+    )
+    header_runs = [
+        run
+        for para in overview_shape.text_frame.paragraphs
+        for run in para.runs
+        if "Header:" in run.text
+    ]
+    assert header_runs, "expected the overview bullet prefix text to be present"
+    assert all(run.font.bold is not True for run in header_runs)
+
+
+def test_assemble_earnings_update_deck_inserts_cap_table_from_workbook(tmp_path: Path):
+    workbook_path = _write_sample_cap_table(tmp_path / "cap-table.xlsx")
+
+    deck_path = _assemble_sample_deck(tmp_path, captable_workbook_path=workbook_path)
+
+    prs = Presentation(deck_path)
+    slide2_parts = []
+    for shape in prs.slides[1].shapes:
+        if getattr(shape, "has_text_frame", False):
+            slide2_parts.append(shape.text)
+        if getattr(shape, "has_table", False):
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    slide2_parts.append(cell.text)
+    slide2_text = "\n".join(slide2_parts)
+    assert "[Macabacus Placeholder]" not in slide2_text
+    assert "Company Ticker:" in slide2_text
+    assert "TSX:SMPL" in slide2_text
+    assert "Enterprise Value" in slide2_text
+    assert "C$1,483.4" in slide2_text

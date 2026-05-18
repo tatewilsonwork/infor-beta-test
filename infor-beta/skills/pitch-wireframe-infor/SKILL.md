@@ -1,7 +1,7 @@
 ---
 name: pitch-wireframe-infor
 description: Builds the typed SlidePlan for the 12-slide INFOR slide-library POC deck, using the blank INFOR Slide Library order as canonical.
-version: 0.4.1
+version: 0.4.2
 allowed-tools:
   - Read
   - Write

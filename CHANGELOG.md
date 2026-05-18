@@ -4,6 +4,18 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-05-18
+
+### Added
+- Implemented first real Excel-to-PowerPoint cap-table insertion for the earnings-update deck: the deck stage now accepts `captable_workbook_path` and replaces slide 2's Macabacus placeholder with a PowerPoint table extracted from the cap-table workbook summary.
+- Added `openpyxl` and `python-pptx` as explicit runtime dependencies for workbook extraction and deck assembly.
+
+### Changed
+- Reordered `plans/earnings-update.yaml` to run `wireframe → content → captable → deck` so the deck stage can consume the cap-table workbook.
+- Company-overview content guidance now avoids bold `Header:` formatting except for true product/service segment bullets.
+- Earnings-summary KPI labels now strip inline currency-unit suffixes such as `(C$MM)` and rely on the slide footnote/table header for units, avoiding label wrap/overlap in KPI tiles.
+- Bumped marketplace, plugin manifest, pyproject, and shipped skill frontmatter versions to `0.4.2`.
+
 ## [0.4.1] — 2026-05-16
 
 ### Added

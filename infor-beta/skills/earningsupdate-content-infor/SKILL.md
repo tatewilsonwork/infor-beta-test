@@ -4,7 +4,7 @@ description: >
   Use this skill as the Phase 3 POC content stage for a quarterly earnings update. It consumes a
   typed SlidePlan plus source inputs and emits a strict EarningsUpdateContent JSON bundle for the
   deck-assembler stage. Activates inside the conductor plan stage `content`.
-version: 0.4.1
+version: 0.4.2
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -35,6 +35,8 @@ The schema is exported at `scripts/schemas/json/earnings_update_content.schema.j
 ## Content rules carried forward from the monolith
 
 - Company overview bullets: 7–12 bullets, each ≤250 chars, 1,200–1,500 chars total, no terminal periods or semicolons.
+  - Use sentence-long or max two-sentence-long bullets that concisely explain what the company does and who they are.
+  - Do **not** use bold `Header:` / `Topic:` prefix formatting for general overview bullets. Only use `bold_prefix` for true product / service segment names when the bullet is specifically walking through business segments.
 - Business updates: 4–6 bullets, each ≤250 chars, ≤900 chars total, no terminal periods or semicolons.
 - KPI rows: exactly 4 rows; rate deltas in `%`, never bps; `delta_sign` is `1`, `0`, or `-1` and controls green/red formatting downstream.
 - Broker rows: exactly 5 rows; no `N/A`, `NA`, or `-` cells; `variance_sign` is `1`, `0`, or `-1`.

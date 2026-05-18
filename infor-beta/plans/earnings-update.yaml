@@ -50,19 +50,6 @@ stages:
         description: Absolute path to the typed EarningsUpdateContent JSON artefact.
     checkpoint: informational
 
-  - id: deck
-    skill: deck-assembler
-    inputs:
-      slide_plan_path: $stages.wireframe.slide_plan_path
-      content_bundle_path: $stages.content.content_bundle_path
-      template_name: INFOR Earnings Update Template.pptx
-      output_dir: $deal.deal_dir
-    outputs:
-      - name: deck_path
-        type: Path
-        description: Absolute path to the generated earnings update .pptx deck.
-    checkpoint: informational
-
   - id: captable
     skill: captable-infor
     inputs:
@@ -72,4 +59,18 @@ stages:
       - name: workbook_path
         type: Path
         description: Absolute path to the generated companion cap table .xlsx.
+    checkpoint: informational
+
+  - id: deck
+    skill: deck-assembler
+    inputs:
+      slide_plan_path: $stages.wireframe.slide_plan_path
+      content_bundle_path: $stages.content.content_bundle_path
+      captable_workbook_path: $stages.captable.workbook_path
+      template_name: INFOR Earnings Update Template.pptx
+      output_dir: $deal.deal_dir
+    outputs:
+      - name: deck_path
+        type: Path
+        description: Absolute path to the generated earnings update .pptx deck with the cap table inserted.
     checkpoint: informational

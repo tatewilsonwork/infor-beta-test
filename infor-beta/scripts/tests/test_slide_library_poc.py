@@ -160,6 +160,14 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
     assert "These materials are confidential and proprietary" in all_text
 
 
+def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
+    plan_path = PLUGIN_ROOT / "plans" / "earnings-update.yaml"
+    plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))
+
+    assert [stage.id for stage in plan.stages] == ["wireframe", "content", "captable", "deck"]
+    assert plan.stages[3].inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+
+
 def test_pitch_library_poc_plan_stage_order():
     plan_path = PLUGIN_ROOT / "plans" / "pitch-library-poc.yaml"
     plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))

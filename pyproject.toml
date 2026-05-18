@@ -1,11 +1,13 @@
 [project]
 name = "infor-beta"
-version = "0.4.1"
+version = "0.4.2"
 description = "INFOR Financial Group internal Claude Code plugin — clean-break rebuild of infor-workflows."
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2,<3",
     "PyYAML>=6,<7",
+    "python-pptx>=1,<2",
+    "openpyxl>=3,<4",
 ]
 
 [project.optional-dependencies]

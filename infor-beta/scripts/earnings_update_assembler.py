@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pptx import Presentation
 
+from excel_to_powerpoint import insert_cap_table_into_placeholder
 from pptx_helpers import (
     COLOR_DOWN,
     COLOR_UP,
@@ -35,10 +36,18 @@ def _quarter_parts(quarter: str) -> tuple[str, str]:
     return f"Q{q}", year
 
 
-def _bullet_tuple(bullet) -> tuple[str, str, int] | tuple[str, int]:
-    if bullet.bold_prefix:
-        return (bullet.bold_prefix, bullet.text, bullet.level)
-    return (bullet.text, bullet.level)
+def _bullet_tuple(bullet) -> tuple[str, int]:
+    text = f"{bullet.bold_prefix or ''}{bullet.text}"
+    return (text, bullet.level)
+
+
+def _strip_currency_unit(label: str) -> str:
+    """Remove inline currency-unit suffixes that make KPI labels wrap."""
+    return re.sub(r"\s*\([A-Z]{0,3}\$?MM\)\s*$", "", label).strip()
+
+
+def _kpi_label(quarter: str, name: str) -> str:
+    return f"{quarter} {_strip_currency_unit(name)}"
 
 
 def _table_shape(slide):
@@ -54,6 +63,7 @@ def assemble_earnings_update_deck(
     content_path: Path | str,
     template_path: Path | str,
     output_dir: Path | str,
+    captable_workbook_path: Path | str | None = None,
 ) -> Path:
     """Fill the existing INFOR Earnings Update Template from typed inputs.
 
@@ -115,8 +125,8 @@ def assemble_earnings_update_deck(
         ("Rectangle 1057", "Rectangle 1058", "Rectangle 1064", content.kpi_rows[3]),
     ]
     for prior_shape, current_shape, delta_shape, kpi in rows:
-        prior_label = f"{content.comparison_quarter} {kpi.name}"
-        current_label = f"{content.reporting_quarter} {kpi.name}"
+        prior_label = _kpi_label(content.comparison_quarter, kpi.name)
+        current_label = _kpi_label(content.reporting_quarter, kpi.name)
         # Preserve template's two-line value + metric label pattern.
         set_text(find_shape(slide3, prior_shape), [kpi.prior_value, prior_label])
         set_text(find_shape(slide3, current_shape), [kpi.current_value, current_label])
@@ -145,11 +155,19 @@ def assemble_earnings_update_deck(
     set_text(find_shape(slide3, "Rectangle 1111"), [content.performance_summary])
 
     prs.save(output_path)
-    _verify_output(output_path)
+    if captable_workbook_path is not None:
+        insert_cap_table_into_placeholder(
+            deck_path=output_path,
+            workbook_path=captable_workbook_path,
+            output_path=output_path,
+            slide_index=1,
+            placeholder_name="Rectangle 4",
+        )
+    _verify_output(output_path, cap_table_inserted=captable_workbook_path is not None)
     return output_path
 
 
-def _verify_output(path: Path) -> None:
+def _verify_output(path: Path, *, cap_table_inserted: bool = False) -> None:
     prs = Presentation(path)
     all_text = "\n".join(
         shape.text
@@ -164,5 +182,8 @@ def _verify_output(path: Path) -> None:
     slide2_text = "\n".join(
         shape.text for shape in prs.slides[1].shapes if getattr(shape, "has_text_frame", False)
     )
-    if "[Macabacus Placeholder]" not in slide2_text:
-        raise ValueError("slide 2 Macabacus placeholder was modified; it must remain for manual cap-table paste")
+    has_placeholder = "[Macabacus Placeholder]" in slide2_text
+    if cap_table_inserted and has_placeholder:
+        raise ValueError("slide 2 cap-table placeholder was not replaced by the Excel insertion stage")
+    if not cap_table_inserted and not has_placeholder:
+        raise ValueError("slide 2 Macabacus placeholder was modified; it must remain when no cap table workbook is supplied")
