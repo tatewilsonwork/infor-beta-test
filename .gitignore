@@ -34,3 +34,6 @@ venv/
 # Local environment
 .env
 .env.local
+
+# Claude Code per-user state
+.claude/settings.local.json
