@@ -4,6 +4,19 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-05-27
+
+### Changed
+- **Cap-table insertion now renders the Excel range as a picture** instead of building an editable PowerPoint table. `insert_cap_table_into_placeholder` opens the workbook via Excel COM, copies `Cap with Links!B13:F31` as a metafile, pastes it into a temporary `ChartObject`, exports the chart to PNG via `Chart.Export`, and inserts the PNG into the slide 2 `Rectangle 4` placeholder stretched to the placeholder's width/height. The chart-export round-trip avoids the system clipboard so Excel stays invisible (no flashing window). Removes ~50 lines of cell-by-cell extraction logic and the `extract_cap_table_rows` helper.
+- Tune the cap-table workbook's column widths and row heights so the source range's natural aspect ratio matches the placeholder (~0.84 w/h); the picture is stretched to fit either way.
+- Bumped marketplace, plugin manifest, pyproject, and shipped skill frontmatter versions to `0.4.3`.
+
+### Added
+- `pywin32` as a Windows-only runtime dependency (`sys_platform == 'win32'` env marker).
+
+### Notes
+- Cap-table insertion now requires Microsoft Excel installed on Windows. On non-Windows platforms the earnings-update assembler test is skipped via `pytest.importorskip`.
+
 ## [0.4.2] — 2026-05-18
 
 ### Added

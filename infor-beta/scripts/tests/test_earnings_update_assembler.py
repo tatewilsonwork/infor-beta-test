@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+import pytest
 from openpyxl import Workbook
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from earnings_update_assembler import assemble_earnings_update_deck
 from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
 from schemas import Company, EarningsUpdateContent
@@ -156,22 +158,22 @@ def test_assemble_earnings_update_deck_does_not_bold_overview_headers(tmp_path: 
 
 
 def test_assemble_earnings_update_deck_inserts_cap_table_from_workbook(tmp_path: Path):
+    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
+
     workbook_path = _write_sample_cap_table(tmp_path / "cap-table.xlsx")
 
     deck_path = _assemble_sample_deck(tmp_path, captable_workbook_path=workbook_path)
 
     prs = Presentation(deck_path)
-    slide2_parts = []
-    for shape in prs.slides[1].shapes:
-        if getattr(shape, "has_text_frame", False):
-            slide2_parts.append(shape.text)
-        if getattr(shape, "has_table", False):
-            for row in shape.table.rows:
-                for cell in row.cells:
-                    slide2_parts.append(cell.text)
-    slide2_text = "\n".join(slide2_parts)
-    assert "[Macabacus Placeholder]" not in slide2_text
-    assert "Company Ticker:" in slide2_text
-    assert "TSX:SMPL" in slide2_text
-    assert "Enterprise Value" in slide2_text
-    assert "C$1,483.4" in slide2_text
+    slide2 = prs.slides[1]
+
+    assert next((s for s in slide2.shapes if s.name == "Rectangle 4"), None) is None, (
+        "slide 2 Macabacus placeholder should be removed after picture insertion"
+    )
+
+    pictures = [s for s in slide2.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    assert pictures, "expected a picture shape on slide 2 after cap-table insertion"
+
+    pic = pictures[-1]
+    assert pic.width == 4140000, f"picture width should match placeholder (4140000 EMU), got {pic.width}"
+    assert pic.height == 4947508, f"picture height should match placeholder (4947508 EMU), got {pic.height}"
