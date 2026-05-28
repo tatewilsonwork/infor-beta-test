@@ -4,7 +4,7 @@ description: >
   Use this skill as the Phase 3 POC content stage for a quarterly earnings update. It consumes a
   typed SlidePlan plus source inputs and emits a strict EarningsUpdateContent JSON bundle for the
   deck-assembler stage. Activates inside the conductor plan stage `content`.
-version: 0.4.3
+version: 0.4.4
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -40,7 +40,9 @@ The schema is exported at `scripts/schemas/json/earnings_update_content.schema.j
 - Business updates: 4–6 bullets, each ≤250 chars, ≤900 chars total, no terminal periods or semicolons.
 - KPI rows: exactly 4 rows; rate deltas in `%`, never bps; `delta_sign` is `1`, `0`, or `-1` and controls green/red formatting downstream.
 - Broker rows: exactly 5 rows; no `N/A`, `NA`, or `-` cells; `variance_sign` is `1`, `0`, or `-1`.
+  - Do **not** repeat the table's MM-currency scope in row labels. The table header already prints "Figures in {currency_short}", so write plain labels like `Revenue`, `Adj. EBITDA`, `Operating income`, `Free cashflow`. Only per-share metrics carry an inline unit such as `EPS (US$)` or `EPS (C$)` (the assembler defensively strips `(US$MM)` / `(C$MM)` / `(MM)` suffixes but does not strip non-MM markers).
 - Management quotes: exactly 2 quotes; each ≤200 chars and ≤30 words.
+  - Use abbreviated role titles on the `role` field: `CEO`, `CFO`, `Interim CEO`, `Executive VP and CFO`, `COO`, etc. Do not spell out "Chief Executive Officer" or "Chief Financial Officer" — abbreviations keep the quote attribution on one line at the template font size.
 - Performance summary: ≤25 words and ≤150 chars.
 - Currency footnote convention: full code in footnotes / broker table header (`C$MM`, `US$MM`, etc.); on-slide values may use plain `$` where the footnote scopes the currency.
 

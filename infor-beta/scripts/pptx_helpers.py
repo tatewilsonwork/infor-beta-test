@@ -27,6 +27,7 @@ decks so they don't depend on the INFOR template files.
 
 from copy import deepcopy
 
+from lxml import etree
 from pptx.dml.color import RGBColor
 from pptx.oxml.ns import qn
 from pptx.util import Pt
@@ -284,6 +285,38 @@ def write_bulleted_shape(shape, items):
                 f"Shape {shape.name!r} paragraph {i} has no bullet character — "
                 f"pPr template was not propagated. Refusing to ship a broken deck."
             )
+
+
+# ─── Autofit (shrink text on overflow) ───────────────────────────────────────
+
+def enable_normal_autofit(shape, font_scale=None, line_space_reduction=None):
+    """Set the text frame's body autofit to 'Shrink text on overflow'.
+
+    PowerPoint's `<a:normAutofit/>` autofit makes the renderer scale the font
+    down at display time when the text would overflow the frame. Use this on
+    any shape whose copy length varies from deck to deck — bulleted overview
+    blocks, business-updates lists, etc. — so an over-budget LLM run doesn't
+    silently render text past the divider line.
+
+    Pass `font_scale` (0-100, percent of original) and `line_space_reduction`
+    (0-100, percent reduction in line spacing) to pre-apply a specific
+    scaling instead of letting PowerPoint compute one on first render. The
+    OOXML stores both as integer thousandths-of-a-percent.
+    """
+    tf = shape.text_frame
+    txBody = tf._txBody
+    bodyPr = txBody.find(qn("a:bodyPr"))
+    if bodyPr is None:
+        bodyPr = etree.SubElement(txBody, qn("a:bodyPr"))
+        txBody.insert(0, bodyPr)
+    for child in list(bodyPr):
+        if child.tag in (qn("a:noAutofit"), qn("a:normAutofit"), qn("a:spAutoFit")):
+            bodyPr.remove(child)
+    norm = etree.SubElement(bodyPr, qn("a:normAutofit"))
+    if font_scale is not None:
+        norm.set("fontScale", str(int(round(font_scale * 1000))))
+    if line_space_reduction is not None:
+        norm.set("lnSpcReduction", str(int(round(line_space_reduction * 1000))))
 
 
 # ─── Number formatting ───────────────────────────────────────────────────────

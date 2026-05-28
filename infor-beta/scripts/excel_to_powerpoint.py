@@ -1,24 +1,32 @@
 """Reusable Excel-to-PowerPoint insertion helpers.
 
-The cap-table insertion path renders the Excel source range as a picture via
-Excel COM automation, then pastes it into the deck placeholder at the
-placeholder's exact width and height. Tune the workbook's column widths and
-row heights so the natural aspect ratio of the source range matches the
-target placeholder; the script stretches the picture to fit either way.
+The cap-table insertion path renders the Excel source range as a picture and
+pastes it into the deck placeholder at the placeholder's exact width and
+height. Two render backends are wired in:
 
-Mechanism: `Range.CopyPicture(Format=xlPicture)` puts a metafile on the
-Office clipboard; we then paste it into a temporary `ChartObject` sized to
-the range, export the chart as PNG via `Chart.Export`, and feed those bytes
-to python-pptx. The chart-export round-trip bypasses the system clipboard,
-so Excel can stay invisible — no flashing window for the analyst.
+  - **Excel COM** (Windows + Excel) — `Range.CopyPicture(Format=xlPicture)`
+    puts a metafile on the Office clipboard; we then paste it into a
+    temporary `ChartObject` sized to the range, export the chart as PNG via
+    `Chart.Export`, and feed those bytes to python-pptx. The chart-export
+    round-trip bypasses the system clipboard, so Excel can stay invisible.
 
-Requires Microsoft Excel on Windows. `pywin32` is a runtime dependency.
+  - **LibreOffice headless** (Cowork / Linux / macOS) — set the print area
+    to the source range via openpyxl, convert the workbook to PDF with
+    `soffice --headless --convert-to pdf`, render PDF page 1 to PIL via
+    `pypdfium2`, and feed the bytes to python-pptx.
+
+Tune the workbook's column widths and row heights so the natural aspect
+ratio of the source range matches the target placeholder; the picture is
+stretched to fit either way.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -54,7 +62,7 @@ def insert_cap_table_into_placeholder(
         raise KeyError(f"placeholder {placeholder_name!r} not found on slide {slide_index + 1}")
     left, top, width, height = placeholder.left, placeholder.top, placeholder.width, placeholder.height
 
-    png_buffer = _excel_range_to_png(workbook, sheet_name, source_range)
+    png_buffer = _render_range_to_png(workbook, sheet_name, source_range)
 
     placeholder._element.getparent().remove(placeholder._element)
     slide.shapes.add_picture(png_buffer, left, top, width=width, height=height)
@@ -64,14 +72,33 @@ def insert_cap_table_into_placeholder(
     return out
 
 
-def _excel_range_to_png(workbook: Path, sheet_name: str, source_range: str) -> io.BytesIO:
+def _render_range_to_png(workbook: Path, sheet_name: str, source_range: str) -> io.BytesIO:
+    """Render an Excel range as PNG, preferring Excel COM on Windows.
+
+    On Windows the Excel COM path matches what the analyst sees in Excel
+    (fonts, formats, conditional formatting, cached CapIQ values). On other
+    platforms — notably Claude Cowork's Linux sandbox — we fall back to a
+    LibreOffice headless PDF round-trip. Fidelity is close but not pixel
+    perfect; tune the workbook to render cleanly under both backends.
+    """
+    if sys.platform == "win32":
+        try:
+            return _excel_com_range_to_png(workbook, sheet_name, source_range)
+        except RuntimeError:
+            # Excel COM unavailable on this Windows machine (no Excel install
+            # or pywin32 missing). Fall through to LibreOffice.
+            pass
+    return _libreoffice_range_to_png(workbook, sheet_name, source_range)
+
+
+def _excel_com_range_to_png(workbook: Path, sheet_name: str, source_range: str) -> io.BytesIO:
     """Open Excel via COM, copy the range, export as PNG via a temporary chart."""
     try:
         import pythoncom
         import win32com.client
     except ImportError as exc:
         raise RuntimeError(
-            "pywin32 is required for picture-based cap-table insertion "
+            "pywin32 is required for COM-based cap-table insertion "
             "(Windows + Microsoft Excel only)"
         ) from exc
 
@@ -111,6 +138,108 @@ def _excel_range_to_png(workbook: Path, sheet_name: str, source_range: str) -> i
         pythoncom.CoUninitialize()
         if tmp_png_path is not None and os.path.exists(tmp_png_path):
             os.unlink(tmp_png_path)
+
+
+def _libreoffice_range_to_png(workbook: Path, sheet_name: str, source_range: str) -> io.BytesIO:
+    """Render an Excel range as PNG via LibreOffice headless PDF export.
+
+    Strategy: open the workbook with openpyxl, hide every sheet except the
+    target, set the target sheet's print area to the source range, force
+    fit-to-1-page, and save to a temp copy. Convert that copy to PDF with
+    `soffice --headless --convert-to pdf`, render PDF page 1 via pypdfium2
+    at 200 DPI, and return as PNG bytes.
+
+    Requires `soffice` (or `libreoffice`) on PATH and the `pypdfium2`
+    package. Raises RuntimeError with a clear message if either is
+    missing — the conductor surfaces this to the analyst.
+    """
+    from openpyxl import load_workbook
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        raise RuntimeError(
+            "LibreOffice (soffice/libreoffice) not found on PATH; required "
+            "for the non-Windows cap-table renderer. Install LibreOffice or "
+            "run the conductor on a Windows machine with Excel."
+        )
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as exc:
+        raise RuntimeError(
+            "pypdfium2 is required for the non-Windows cap-table renderer; "
+            "run `pip install pypdfium2`."
+        ) from exc
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_xlsx = Path(tmp_dir) / "captable_print.xlsx"
+        wb = load_workbook(workbook)
+        if sheet_name not in wb.sheetnames:
+            raise KeyError(
+                f"sheet {sheet_name!r} not found in workbook (available: {wb.sheetnames})"
+            )
+        for name in wb.sheetnames:
+            wb[name].sheet_state = "visible" if name == sheet_name else "hidden"
+        ws = wb[sheet_name]
+        ws.print_area = source_range
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 1
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        ws.page_margins.left = 0.25
+        ws.page_margins.right = 0.25
+        ws.page_margins.top = 0.25
+        ws.page_margins.bottom = 0.25
+        wb.save(tmp_xlsx)
+
+        try:
+            subprocess.run(
+                [
+                    soffice,
+                    "--headless",
+                    "--nologo",
+                    "--nodefault",
+                    "--nofirststartwizard",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    str(tmp_dir),
+                    str(tmp_xlsx),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=180,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"LibreOffice PDF conversion failed: {exc.stderr.decode(errors='replace')}"
+            ) from exc
+
+        pdf_path = Path(tmp_dir) / "captable_print.pdf"
+        if not pdf_path.exists():
+            raise RuntimeError("LibreOffice produced no PDF output for the cap-table workbook")
+
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        try:
+            page = pdf[0]
+            pil_image = page.render(scale=200 / 72).to_pil().convert("RGB")
+            pil_image = _trim_white_margins(pil_image)
+            buf = io.BytesIO()
+            pil_image.save(buf, format="PNG")
+            buf.seek(0)
+            return buf
+        finally:
+            pdf.close()
+
+
+def _trim_white_margins(image, threshold: int = 250):
+    """Crop solid-white borders left by LibreOffice's print-area PDF export."""
+    from PIL import ImageChops, Image
+
+    bg = Image.new("RGB", image.size, (255, 255, 255))
+    diff = ImageChops.difference(image, bg)
+    # Treat near-white as background by quantising
+    diff = diff.point(lambda p: 0 if p < (255 - threshold) else 255)
+    bbox = diff.getbbox()
+    return image.crop(bbox) if bbox else image
 
 
 def record_insertion_intent(

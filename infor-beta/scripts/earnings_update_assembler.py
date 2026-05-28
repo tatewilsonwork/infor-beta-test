@@ -11,6 +11,7 @@ from excel_to_powerpoint import insert_cap_table_into_placeholder
 from pptx_helpers import (
     COLOR_DOWN,
     COLOR_UP,
+    enable_normal_autofit,
     find_shape,
     find_shape_in_group,
     set_cell_text,
@@ -42,7 +43,11 @@ def _bullet_tuple(bullet) -> tuple[str, int]:
 
 
 def _strip_currency_unit(label: str) -> str:
-    """Remove inline currency-unit suffixes that make KPI labels wrap."""
+    """Strip "(C$MM)" / "(US$MM)" / "(MM)" suffixes from labels.
+
+    Leaves non-MM markers such as "(US$)" and "(C$)" intact — per-share
+    metrics need them since the table header announces the MM scope only.
+    """
     return re.sub(r"\s*\([A-Z]{0,3}\$?MM\)\s*$", "", label).strip()
 
 
@@ -94,7 +99,9 @@ def assemble_earnings_update_deck(
     # Slide 2 — company overview. Leave Rectangle 4 untouched.
     slide2 = prs.slides[1]
     set_text(find_shape(slide2, "Title 1"), [f"{content.company_name} Overview"])
-    write_bulleted_shape(find_shape(slide2, "TextBox 16"), [_bullet_tuple(b) for b in content.company_overview_bullets])
+    overview_shape = find_shape(slide2, "TextBox 16")
+    write_bulleted_shape(overview_shape, [_bullet_tuple(b) for b in content.company_overview_bullets])
+    enable_normal_autofit(overview_shape)
     set_text(
         find_shape(slide2, "Text Placeholder 1"),
         [
@@ -116,7 +123,9 @@ def assemble_earnings_update_deck(
             f"Note: All figures in {content.currency}, except where indicated otherwise",
         ],
     )
-    write_bulleted_shape(find_shape(slide3, "TextBox 1067"), [(b, 0) for b in content.business_updates])
+    business_updates_shape = find_shape(slide3, "TextBox 1067")
+    write_bulleted_shape(business_updates_shape, [(b, 0) for b in content.business_updates])
+    enable_normal_autofit(business_updates_shape)
 
     rows = [
         ("Rectangle 1032", "Rectangle 1034", "Rectangle 1041", content.kpi_rows[0]),
@@ -139,7 +148,7 @@ def assemble_earnings_update_deck(
     set_cell_text(tbl.cell(0, 2), "Bloomberg Estimate", size_pt=9)
     set_cell_text(tbl.cell(0, 3), "Variance", size_pt=9)
     for i, row in enumerate(content.broker_rows, start=1):
-        set_cell_text(tbl.cell(i, 0), row.label, size_pt=9)
+        set_cell_text(tbl.cell(i, 0), _strip_currency_unit(row.label), size_pt=9)
         set_cell_text(tbl.cell(i, 1), row.reported, size_pt=9)
         set_cell_text(tbl.cell(i, 2), row.estimate, size_pt=9)
         color = COLOR_UP if row.variance_sign > 0 else (COLOR_DOWN if row.variance_sign < 0 else None)

@@ -4,6 +4,18 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-05-28
+
+### Added
+- **Non-Windows cap-table renderer.** Cap-table picture insertion now falls back to LibreOffice headless on non-Windows hosts (including Claude Cowork's Linux sandbox). `_render_range_to_png` in `excel_to_powerpoint.py` dispatches: Excel COM on Windows, LibreOffice → PDF → `pypdfium2` → PNG elsewhere. Requires `soffice`/`libreoffice` on PATH and the new `pypdfium2` runtime dep (`sys_platform != 'win32'`).
+- **Shrink-on-overflow autofit** on slide 2 `TextBox 16` (company overview) and slide 3 `TextBox 1067` (business updates). New helper `enable_normal_autofit(shape)` in `pptx_helpers.py` writes `<a:normAutofit/>` into the text frame's `bodyPr` so PowerPoint scales the font down at render time when the analyst-written copy would otherwise overflow the section divider.
+- Tests for the broker-label strip, the autofit XML, and a soffice-gated LibreOffice fallback test that skips on Windows / when LibreOffice isn't installed.
+
+### Changed
+- **Broker-estimates row labels** in slide 3 are now stripped of redundant `(US$MM)` / `(C$MM)` / `(MM)` suffixes via the existing `_strip_currency_unit` regex. Non-MM markers such as `EPS (US$)` are preserved so per-share metrics keep their explicit unit. The broker table header already prints "Figures in {currency_short}" — repeating it per row wasted horizontal space.
+- `earningsupdate-content-infor/SKILL.md` content rules now require plain broker labels (no inline MM suffix) and abbreviated management-quote roles (`CEO`, `CFO`, `Interim CEO`, `Executive VP and CFO`) — not the spelled-out "Chief Executive Officer".
+- Bumped marketplace, plugin manifest, pyproject, and shipped skill frontmatter versions to `0.4.4`.
+
 ## [0.4.3] — 2026-05-27
 
 ### Changed
