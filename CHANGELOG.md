@@ -4,6 +4,16 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.4.5] — 2026-05-28
+
+### Added
+- **Two new slide-library entries**, expanding the INFOR Slide Library POC from 12 to 14 slides. `key-investment-highlights` (slide 11, four numbered quadrants) and `market-entry-targets` (slide 12, two-target comparison table) are inserted before Disclaimer/Contact, which move to slides 13/14.
+- **Full fill wiring** for both slides. New `InvestmentHighlight` and `MarketEntryTarget` schema models plus optional `PitchDeckContent` fields (`investment_highlights`, `investment_highlights_tagline`, `market_entry_market`, `market_entry_row_labels`, `market_entry_targets`). `pitch_deck_assembler` fills the highlight quadrants/tagline and the market-entry title/table when content is supplied; target logos remain deferred image placeholders. Fields are optional, so decks that omit them keep the blank placeholders.
+
+### Changed
+- `slide_library_registry`, `pitch_deck_wireframe`, and `pitch_deck_assembler` now expect 14 slides; `pitch-content-infor` / `pitch-wireframe-infor` / `deck-assembler` SKILL docs updated.
+- Bumped marketplace, plugin manifest, pyproject, and shipped skill frontmatter versions to `0.4.5`.
+
 ## [0.4.4] — 2026-05-28
 
 ### Added

@@ -1,7 +1,7 @@
 ---
 name: pitch-content-infor
-description: Drafts the broad typed content bundle for the 12-slide INFOR slide-library POC deck from analyst notes and optional supporting sources.
-version: 0.4.4
+description: Drafts the broad typed content bundle for the 14-slide INFOR slide-library POC deck from analyst notes and optional supporting sources.
+version: 0.4.5
 allowed-tools:
   - Read
   - Write
@@ -38,6 +38,8 @@ Scope:
 - Financial Summary metric labels only; charts remain placeholders.
 - Acquirer risks/mitigants: concise rows, exactly three short mitigants each.
 - Comps takeaway: one sentence.
+- Key investment highlights: up to 4 numbered quadrants, each a short header + 1–3 concise bullets, plus an optional one-line tagline. Optional — omit to leave the slide's placeholders.
+- Market-entry targets: optional `market_entry_market` (fills the title), `market_entry_row_labels` (the comparison row labels), and up to 2 target columns whose `cells` align 1:1 with the labels. Target logos stay as deferred image placeholders.
 
 Required source:
 - analyst notes

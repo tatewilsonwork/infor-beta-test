@@ -1,9 +1,10 @@
-"""TDD tests for the 12-slide INFOR slide-library POC."""
+"""TDD tests for the 14-slide INFOR slide-library POC."""
 
 from pathlib import Path
 
 import yaml
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pydantic import ValidationError
 import pytest
 
@@ -63,6 +64,19 @@ def _sample_content() -> PitchDeckContent:
         ],
         risks_tagline="INFOR will help proactively frame key diligence topics to support a constructive acquiror dialogue.",
         comps_takeaway="SampleCo trades at a discount to higher-growth peers, creating a clear valuation framing opportunity.",
+        investment_highlights=[
+            {"header": "Durable Recurring Revenue", "bullets": ["High retention across multi-year contracts", "Predictable cash conversion through cycles"]},
+            {"header": "Fragmented, Underpenetrated Market", "bullets": ["Few scaled competitors", "Clear whitespace for consolidation"]},
+            {"header": "Strategic Buyer Interest", "bullets": ["Active strategic and sponsor consolidation", "Scarcity value for scaled assets"]},
+            {"header": "Multiple Expansion Paths", "bullets": ["Organic, greenfield and M&A optionality", "Growth not reliant on any single lever"]},
+        ],
+        investment_highlights_tagline="SampleCo offers a scarce, scaled platform in a structurally attractive market with multiple value-creation paths.",
+        market_entry_market="Canada",
+        market_entry_row_labels=["Overview", "Headquarters", "Year Founded", "Product / Channel", "Target Segment", "Funding Model", "Scale KPIs", "Strategic Rationale"],
+        market_entry_targets=[
+            {"cells": ["Digital lender", "Toronto, ON", "2014", "Online & retail", "Prime / near-prime", "Equity and debt facilities", ">1MM customers", "Scaled platform with brand recognition"]},
+            {"cells": ["Mobile-first lender", "Vancouver, BC", "2017", "Direct-to-consumer app", "Thin-file", "Venture capital and debt warehouse", "~0.5MM customers", "Actionable platform subject to diligence"]},
+        ],
         sources=[{"section": "Company Overview", "citation": "Company filings, company website and analyst notes"}],
         manual_steps=["LTM revenue breakdown and financial summary charts remain placeholders in this POC."],
     )
@@ -84,14 +98,20 @@ def test_pitch_deck_content_schema_validates_concise_risk_mitigants():
         PitchDeckContent.model_validate(bad)
 
 
-def test_registry_loads_12_blank_slide_library_entries():
+def test_registry_loads_14_blank_slide_library_entries():
     entries = load_slide_library_registry()
 
-    assert len(entries) == 12
+    assert len(entries) == 14
     assert entries[0].library_entry_id == "pitch-cover"
     assert entries[6].library_entry_id == "public-company-overview"
-    assert entries[10].static is True
-    assert entries[11].static is True
+    assert entries[10].library_entry_id == "key-investment-highlights"
+    assert entries[11].library_entry_id == "market-entry-targets"
+    assert entries[10].static is False
+    assert entries[11].static is False
+    assert entries[12].library_entry_id == "disclaimer"
+    assert entries[12].static is True
+    assert entries[13].library_entry_id == "contact"
+    assert entries[13].static is True
 
 
 def test_pitch_deck_wireframe_uses_blank_library_order():
@@ -101,7 +121,13 @@ def test_pitch_deck_wireframe_uses_blank_library_order():
     )
 
     assert plan.deliverable_type == "pitch"
-    assert len(plan.slides) == 12
+    assert len(plan.slides) == 14
+    assert [slide.library_entry_id for slide in plan.slides[10:12]] == [
+        "key-investment-highlights",
+        "market-entry-targets",
+    ]
+    assert plan.slides[10].content_block["requires"] == ["investment_highlights"]
+    assert plan.slides[11].content_block["requires"] == ["market_entry_row_labels", "market_entry_targets"]
     assert [slide.library_entry_id for slide in plan.slides[:8]] == [
         "pitch-cover",
         "executive-summary",
@@ -135,16 +161,22 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
 
     assert deck_path.exists()
     prs = Presentation(deck_path)
-    assert len(prs.slides) == 12
+    assert len(prs.slides) == 14
     text_parts = []
-    for slide in prs.slides:
-        for shape in slide.shapes:
+
+    def _collect(shapes):
+        for shape in shapes:
             if getattr(shape, "has_text_frame", False):
                 text_parts.append(shape.text)
             if getattr(shape, "has_table", False):
                 for row in shape.table.rows:
                     for cell in row.cells:
                         text_parts.append(cell.text)
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                _collect(shape.shapes)
+
+    for slide in prs.slides:
+        _collect(slide.shapes)
     all_text = "\n".join(text_parts)
     assert "[CLIENT NAME]" not in all_text
     assert "[Date]" not in all_text
@@ -154,6 +186,15 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
     assert "[Pie Chart Placeholder]" in all_text  # intentionally deferred
     assert "[Placeholder for Metric #1 Chart]" in all_text  # intentionally deferred
     assert "Neil Selfe, Managing Principal" in all_text
+
+    # New content slides are filled and their placeholders replaced.
+    assert "Durable Recurring Revenue" in all_text
+    assert "SampleCo offers a scarce, scaled platform" in all_text
+    assert "Potential Canada Market Entry Targets" in all_text
+    assert "[Investment Highlight #1]" not in all_text
+    assert "Potential [x] Market Entry Targets" not in all_text
+    # Logo placeholders on the market-entry slide remain deferred.
+    assert "[Placeholder for Logo]" in all_text
 
     # Static credential slide text remains present.
     assert "INFOR is Canada’s leading provider of innovative, independent, forward thinking financial & strategic advice" in all_text

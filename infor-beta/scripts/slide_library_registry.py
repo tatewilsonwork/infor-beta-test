@@ -1,4 +1,4 @@
-"""Simple registry for the 12-slide INFOR slide-library POC."""
+"""Simple registry for the 14-slide INFOR slide-library POC."""
 
 from __future__ import annotations
 
@@ -24,8 +24,10 @@ _ENTRIES: tuple[SlideLibraryEntry, ...] = (
     SlideLibraryEntry("financial-summary", 8, "Financial Summary"),
     SlideLibraryEntry("acquirer-considerations-mitigants", 9, "Potential Perceived Acquiror Considerations and Mitigants"),
     SlideLibraryEntry("comparable-companies", 10, "Comparable Companies Financial Analysis"),
-    SlideLibraryEntry("disclaimer", 11, "Disclaimer", static=True),
-    SlideLibraryEntry("contact", 12, "Contact", static=True),
+    SlideLibraryEntry("key-investment-highlights", 11, "Key Investment Highlights"),
+    SlideLibraryEntry("market-entry-targets", 12, "Potential [Market] Market Entry Targets"),
+    SlideLibraryEntry("disclaimer", 13, "Disclaimer", static=True),
+    SlideLibraryEntry("contact", 14, "Contact", static=True),
 )
 
 
