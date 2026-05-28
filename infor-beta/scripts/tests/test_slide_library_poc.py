@@ -205,8 +205,16 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
     plan_path = PLUGIN_ROOT / "plans" / "earnings-update.yaml"
     plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))
 
-    assert [stage.id for stage in plan.stages] == ["wireframe", "content", "captable", "deck"]
-    assert plan.stages[3].inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+    assert [stage.id for stage in plan.stages] == [
+        "wireframe",
+        "content",
+        "captable",
+        "ltm-revenue",
+        "deck",
+    ]
+    deck_stage = next(s for s in plan.stages if s.id == "deck")
+    assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+    assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
 
 
 def test_pitch_library_poc_plan_stage_order():

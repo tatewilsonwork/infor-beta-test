@@ -23,14 +23,13 @@ def _valid_content(**overrides):
         "currency_short": "C$MM",
         "cover_date": "May 2026",
         "company_overview_bullets": [
-                {"bold_prefix": "", "text": "Leading provider of mission-critical software serving blue-chip enterprise customers across Canada with a platform spanning compliance, workflow automation and analytics", "level": 0},
-                {"bold_prefix": "", "text": "Recurring revenue model supported by multi-year contracts, high customer retention and a growing installed base across regulated end markets", "level": 0},
-                {"bold_prefix": "", "text": "Diversified product suite addressing daily operational pain points for finance, legal and compliance teams that require reliable data and auditability", "level": 0},
-                {"bold_prefix": "", "text": "Established go-to-market platform with direct sales coverage, partner channels and a repeatable land-and-expand motion across enterprise accounts", "level": 0},
-                {"bold_prefix": "", "text": "Meaningful operating leverage as the Company scales across existing infrastructure while maintaining disciplined product investment and customer support", "level": 0},
-                {"bold_prefix": "", "text": "Experienced Management team with a demonstrated record of disciplined execution, prudent capital allocation and successful integration of tuck-in acquisitions", "level": 0},
-                {"bold_prefix": "", "text": "Strong balance sheet and flexible capital structure supporting organic growth initiatives, selective acquisitions and continued investment in the platform", "level": 0},
-                {"bold_prefix": "", "text": "Well-positioned to benefit from continued digitization of compliance workflows as customers prioritize efficiency, accuracy and defensible reporting", "level": 0},
+                {"bold_prefix": "", "text": "Leading provider of mission-critical compliance and workflow software serving blue-chip enterprises across Canada", "level": 0},
+                {"bold_prefix": "", "text": "Recurring revenue model supported by multi-year contracts and a high-retention installed base in regulated markets", "level": 0},
+                {"bold_prefix": "", "text": "Diversified product suite addressing daily operational needs for finance, legal and compliance teams", "level": 0},
+                {"bold_prefix": "", "text": "Experienced management team with a record of disciplined execution and successful tuck-in acquisitions", "level": 0},
+                {"bold_prefix": "", "text": "Strong balance sheet supporting organic growth, selective acquisitions and continued platform investment", "level": 0},
+                {"bold_prefix": "", "text": "Established go-to-market platform with direct sales coverage and a repeatable land-and-expand motion", "level": 0},
+                {"bold_prefix": "", "text": "Well-positioned to benefit from the ongoing digitization of enterprise compliance workflows", "level": 0},
         ],
         "business_updates": [
             "Revenue growth reflected continued enterprise demand and disciplined customer expansion",
@@ -71,9 +70,18 @@ def test_valid_earnings_update_content_round_trips():
     assert restored.broker_rows[0].variance_sign == 1
 
 
-def test_company_overview_requires_7_to_12_bullets():
+def test_company_overview_requires_6_to_10_bullets():
     with pytest.raises(ValidationError):
-        _valid_content(company_overview_bullets=[{"text": "Too few", "level": 0}] * 6)
+        _valid_content(company_overview_bullets=[{"text": "Too few", "level": 0}] * 5)
+    with pytest.raises(ValidationError):
+        _valid_content(company_overview_bullets=[{"text": "Too many", "level": 0}] * 11)
+
+
+def test_company_overview_rejects_text_over_char_budget():
+    # 10 bullets of ~120 chars each blows past the 1,050-char ceiling.
+    long_bullet = {"text": "x" * 120, "level": 0}
+    with pytest.raises(ValidationError):
+        _valid_content(company_overview_bullets=[long_bullet] * 10)
 
 
 def test_company_overview_rejects_trailing_period_or_semicolon():

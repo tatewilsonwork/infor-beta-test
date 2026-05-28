@@ -211,8 +211,8 @@
       "items": {
         "$ref": "#/$defs/CompanyOverviewBullet"
       },
-      "maxItems": 12,
-      "minItems": 7,
+      "maxItems": 10,
+      "minItems": 6,
       "title": "Company Overview Bullets",
       "type": "array"
     },

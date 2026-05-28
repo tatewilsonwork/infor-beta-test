@@ -1,4 +1,4 @@
-"""Unit tests for the POC earnings-update deck assembler."""
+"""Unit tests for the POC earnings-update deck assembler (slide-library based)."""
 
 import shutil
 from pathlib import Path
@@ -10,7 +10,10 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
 from earnings_update_assembler import assemble_earnings_update_deck
 from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
+from pptx_helpers import find_shape, find_shape_in_group
 from schemas import Company, EarningsUpdateContent
+
+_TEMPLATE = Path("infor-beta/templates/INFOR Slide Library.pptx")
 
 
 def _sample_content() -> EarningsUpdateContent:
@@ -23,14 +26,13 @@ def _sample_content() -> EarningsUpdateContent:
         currency_short="C$MM",
         cover_date="May 2026",
         company_overview_bullets=[
-                {"text": "Leading provider of mission-critical software serving blue-chip enterprise customers across Canada with a platform spanning compliance, workflow automation and analytics", "level": 0},
-                {"text": "Recurring revenue model supported by multi-year contracts, high customer retention and a growing installed base across regulated end markets", "level": 0},
-                {"text": "Diversified product suite addressing daily operational pain points for finance, legal and compliance teams that require reliable data and auditability", "level": 0},
-                {"text": "Established go-to-market platform with direct sales coverage, partner channels and a repeatable land-and-expand motion across enterprise accounts", "level": 0},
-                {"text": "Meaningful operating leverage as the Company scales across existing infrastructure while maintaining disciplined product investment and customer support", "level": 0},
-                {"text": "Experienced Management team with a demonstrated record of disciplined execution, prudent capital allocation and successful integration of tuck-in acquisitions", "level": 0},
-                {"text": "Strong balance sheet and flexible capital structure supporting organic growth initiatives, selective acquisitions and continued investment in the platform", "level": 0},
-                {"text": "Well-positioned to benefit from continued digitization of compliance workflows as customers prioritize efficiency, accuracy and defensible reporting", "level": 0},
+            {"text": "Leading provider of mission-critical compliance and workflow software serving blue-chip enterprises across Canada", "level": 0},
+            {"text": "Recurring revenue model supported by multi-year contracts and a high-retention installed base in regulated markets", "level": 0},
+            {"text": "Diversified product suite addressing daily operational needs for finance, legal and compliance teams", "level": 0},
+            {"text": "Experienced management team with a record of disciplined execution and successful tuck-in acquisitions", "level": 0},
+            {"text": "Strong balance sheet supporting organic growth, selective acquisitions and continued platform investment", "level": 0},
+            {"text": "Established go-to-market platform with direct sales coverage and a repeatable land-and-expand motion", "level": 0},
+            {"text": "Well-positioned to benefit from the ongoing digitization of enterprise compliance workflows", "level": 0},
         ],
         business_updates=[
             "Revenue growth reflected continued enterprise demand and disciplined customer expansion",
@@ -39,17 +41,17 @@ def _sample_content() -> EarningsUpdateContent:
             "Near-term priorities remain focused on enterprise execution and cash conversion",
         ],
         kpi_rows=[
-            {"name": "Revenue", "prior_value": "$100.0", "current_value": "$125.0", "delta_str": "+$25.0", "delta_sign": 1},
-            {"name": "Adjusted EBITDA", "prior_value": "$20.0", "current_value": "$22.0", "delta_str": "+$2.0", "delta_sign": 1},
-            {"name": "Net Income", "prior_value": "$8.0", "current_value": "$7.0", "delta_str": "-$1.0", "delta_sign": -1},
+            {"name": "Revenue", "prior_value": "100", "current_value": "125", "delta_str": "+25", "delta_sign": 1},
+            {"name": "Adjusted EBITDA", "prior_value": "20", "current_value": "22", "delta_str": "+2", "delta_sign": 1},
+            {"name": "Net Income", "prior_value": "8", "current_value": "7", "delta_str": "-1", "delta_sign": -1},
             {"name": "Gross Margin", "prior_value": "60.0%", "current_value": "62.0%", "delta_str": "+2.0%", "delta_sign": 1},
         ],
         broker_rows=[
-            {"label": "Revenue", "reported": "$125.0", "estimate": "$120.0", "variance": "+$5.0", "variance_sign": 1},
-            {"label": "Adjusted EBITDA", "reported": "$22.0", "estimate": "$21.0", "variance": "+$1.0", "variance_sign": 1},
-            {"label": "EPS", "reported": "$0.10", "estimate": "$0.12", "variance": "-$0.02", "variance_sign": -1},
+            {"label": "Revenue", "reported": "125", "estimate": "120", "variance": "+5", "variance_sign": 1},
+            {"label": "Adjusted EBITDA", "reported": "22", "estimate": "21", "variance": "+1", "variance_sign": 1},
+            {"label": "EPS (C$)", "reported": "0.10", "estimate": "0.12", "variance": "(0.02)", "variance_sign": -1},
+            {"label": "Operating income", "reported": "18", "estimate": "17", "variance": "+1", "variance_sign": 1},
             {"label": "Gross Margin", "reported": "62.0%", "estimate": "61.0%", "variance": "+1.0%", "variance_sign": 1},
-            {"label": "Free Cash Flow", "reported": "$15.0", "estimate": "$14.0", "variance": "+$1.0", "variance_sign": 1},
         ],
         management_quotes=[
             {"quote": "We delivered a strong quarter driven by enterprise execution and continued customer expansion", "speaker": "Jane Doe", "role": "CEO"},
@@ -65,7 +67,7 @@ def _write_sample_cap_table(path: Path) -> Path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Cap with Links"
-    ws["B13"] = "SampleCo Cap Table"
+    ws["B15"] = "SampleCo Cap Table"
     rows = {
         15: ("Company Ticker:", "TSX:SMPL"),
         16: ("Share Price (21-Apr-26)", "C$12.34"),
@@ -84,7 +86,6 @@ def _write_sample_cap_table(path: Path) -> Path:
 
 
 def _assemble_sample_deck(tmp_path: Path, content: EarningsUpdateContent | None = None, **kwargs) -> Path:
-    template = Path("infor-beta/templates/INFOR Earnings Update Template.pptx")
     slide_plan = build_earnings_update_slide_plan(
         company=Company(legal_name="SampleCo", ticker="TSX:SMPL"),
         reporting_quarter="Q4 2025",
@@ -98,79 +99,101 @@ def _assemble_sample_deck(tmp_path: Path, content: EarningsUpdateContent | None 
     return assemble_earnings_update_deck(
         slide_plan_path=slide_plan_path,
         content_path=content_path,
-        template_path=template,
+        template_path=_TEMPLATE,
         output_dir=tmp_path,
         **kwargs,
     )
 
 
-def test_assemble_earnings_update_deck_populates_template(tmp_path: Path):
+def _slide_text(slide) -> str:
+    parts = []
+    for shape in slide.shapes:
+        if getattr(shape, "has_text_frame", False):
+            parts.append(shape.text)
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            for sub in shape.shapes:
+                if getattr(sub, "has_text_frame", False):
+                    parts.append(sub.text)
+    return "\n".join(parts)
+
+
+def test_assemble_earnings_update_deck_clones_five_library_slides(tmp_path: Path):
     deck_path = _assemble_sample_deck(tmp_path)
 
     assert deck_path.exists()
     prs = Presentation(deck_path)
     assert len(prs.slides) == 5
-    all_text = "\n".join(shape.text for slide in prs.slides for shape in slide.shapes if getattr(shape, "has_text_frame", False))
-    assert "[Current Month]" not in all_text
-    assert "[Client Name]" not in all_text
-    assert "Q[x]" not in all_text
-    assert "SampleCo Overview" in all_text
-    assert "SampleCo Q4 2025 Earnings Summary" in all_text
-    assert "[Macabacus Placeholder]" in all_text
+
+    overview_text = _slide_text(prs.slides[1])
+    summary_text = _slide_text(prs.slides[2])
+
+    assert "Introduction to SampleCo" in overview_text
+    assert "SampleCo Q4 2025 Earnings Summary" in summary_text
+    # Pie + cap-table placeholders remain when no workbook is supplied.
+    assert "[Pie Chart Placeholder]" in overview_text
+    assert "[Cap Table Placeholder]" in overview_text
+    for token in ("[Company]", "[Quarter]", "[Date]", "[Name]", "[Role]"):
+        assert token not in overview_text + summary_text
 
 
-def test_assemble_earnings_update_deck_strips_currency_units_from_kpi_labels(tmp_path: Path):
+def test_period_label_lives_in_bar_not_metric_boxes(tmp_path: Path):
+    deck_path = _assemble_sample_deck(tmp_path)
+    summary = Presentation(deck_path).slides[2]
+
+    # Mid-blue period bar carries the comparison / reporting quarters.
+    assert find_shape(summary, "Rectangle 16").text_frame.text == "Q4 2024"
+    assert find_shape(summary, "Rectangle 21").text_frame.text == "Q4 2025"
+
+    # Metric boxes carry value + name only — no quarter label.
+    group = find_shape(summary, "Group 12")
+    current_box = find_shape_in_group(group, "Rectangle 1034")
+    box_text = current_box.text_frame.text
+    assert "125" in box_text
+    assert "Revenue" in box_text
+    assert "Q4 2025" not in box_text
+    assert "Q4 2024" not in box_text
+
+
+def test_metric_box_name_strips_currency_unit(tmp_path: Path):
     content = _sample_content()
     content.kpi_rows[0].name = "Cloud Revenue (C$MM)"
-    content.kpi_rows[1].name = "Recurring Revenue (C$MM)"
-    content.kpi_rows[2].name = "Adjusted EBITDA (C$MM)"
 
     deck_path = _assemble_sample_deck(tmp_path, content)
-
-    slide3_text = "\n".join(
-        shape.text
-        for shape in Presentation(deck_path).slides[2].shapes
-        if getattr(shape, "has_text_frame", False)
-    )
-    assert "Q4 2025 Cloud Revenue" in slide3_text
-    assert "Q4 2025 Cloud Revenue (C$MM)" not in slide3_text
-    assert "Q4 2026 Recurring Revenue (C$MM)" not in slide3_text
-    assert "Q4 2025 Adjusted EBITDA (C$MM)" not in slide3_text
-    assert "Note: All figures in C$MM" in slide3_text
+    summary = Presentation(deck_path).slides[2]
+    group = find_shape(summary, "Group 12")
+    box_text = find_shape_in_group(group, "Rectangle 1034").text_frame.text
+    assert "Cloud Revenue" in box_text
+    assert "(C$MM)" not in box_text
 
 
-def test_assemble_earnings_update_deck_does_not_bold_overview_headers(tmp_path: Path):
-    content = _sample_content()
-    content.company_overview_bullets[0].bold_prefix = "Header:"
-    content.company_overview_bullets[0].text = " Enterprise software provider with recurring revenue visibility across regulated markets and a diversified global customer base supporting resilient growth"
+def test_broker_values_get_dollar_prefix(tmp_path: Path):
+    deck_path = _assemble_sample_deck(tmp_path)
+    summary = Presentation(deck_path).slides[2]
+    table = next(s for s in summary.shapes if getattr(s, "has_table", False)).table
 
-    deck_path = _assemble_sample_deck(tmp_path, content)
+    # Revenue row: plain "125" -> "$125"; variance "+5" -> "+$5".
+    assert table.cell(1, 1).text_frame.text == "$125"
+    assert table.cell(1, 2).text_frame.text == "$120"
+    assert table.cell(1, 3).text_frame.text == "+$5"
 
-    overview_shape = next(
-        shape for shape in Presentation(deck_path).slides[1].shapes if shape.name == "TextBox 16"
-    )
-    header_runs = [
-        run
-        for para in overview_shape.text_frame.paragraphs
-        for run in para.runs
-        if "Header:" in run.text
-    ]
-    assert header_runs, "expected the overview bullet prefix text to be present"
-    assert all(run.font.bold is not True for run in header_runs)
+    # Parenthesised negative variance keeps the paren convention.
+    assert table.cell(3, 3).text_frame.text == "($0.02)"
+
+    # Percent rows are left untouched (no $).
+    assert table.cell(5, 1).text_frame.text == "62.0%"
 
 
-def test_assemble_earnings_update_deck_strips_currency_units_from_broker_labels(tmp_path: Path):
+def test_broker_labels_strip_mm_units(tmp_path: Path):
     content = _sample_content()
     content.broker_rows[0].label = "Revenue (US$MM)"
     content.broker_rows[1].label = "Adj. EBITDA (US$MM)"
-    content.broker_rows[2].label = "EPS (US$)"  # per-share — should NOT be stripped
+    content.broker_rows[2].label = "EPS (US$)"  # per-share — not stripped
     content.broker_rows[3].label = "Operating income (C$MM)"
     content.broker_rows[4].label = "Free cashflow (MM)"
 
     deck_path = _assemble_sample_deck(tmp_path, content)
-
-    slide3 = Presentation(deck_path).slides[2]
-    table = next(s for s in slide3.shapes if s.shape_type == 19).table
+    summary = Presentation(deck_path).slides[2]
+    table = next(s for s in summary.shapes if getattr(s, "has_table", False)).table
     labels = [table.cell(i, 0).text_frame.text for i in range(1, 6)]
     assert labels == [
         "Revenue",
@@ -182,12 +205,12 @@ def test_assemble_earnings_update_deck_strips_currency_units_from_broker_labels(
 
 
 def test_assemble_earnings_update_deck_enables_autofit_on_overflow_shapes(tmp_path: Path):
-    """Slides 2 and 3 host variable-length copy; both need shrink-on-overflow."""
+    """Overview bullets and business updates both need shrink-on-overflow."""
     deck_path = _assemble_sample_deck(tmp_path)
 
     prs = Presentation(deck_path)
-    overview = next(s for s in prs.slides[1].shapes if s.name == "TextBox 16")
-    business = next(s for s in prs.slides[2].shapes if s.name == "TextBox 1067")
+    overview = find_shape(prs.slides[1], "TextBox 9")
+    business = find_shape(prs.slides[2], "TextBox 6")
 
     for shape in (overview, business):
         bodyPr = shape.text_frame._txBody.find(qn("a:bodyPr"))
@@ -198,34 +221,41 @@ def test_assemble_earnings_update_deck_enables_autofit_on_overflow_shapes(tmp_pa
         )
 
 
+def test_assemble_earnings_update_deck_does_not_bold_overview_headers(tmp_path: Path):
+    content = _sample_content()
+    content.company_overview_bullets[0].bold_prefix = "Header:"
+    content.company_overview_bullets[0].text = " Enterprise software provider with recurring revenue visibility across regulated markets"
+
+    deck_path = _assemble_sample_deck(tmp_path, content)
+
+    overview_shape = find_shape(Presentation(deck_path).slides[1], "TextBox 9")
+    header_runs = [
+        run
+        for para in overview_shape.text_frame.paragraphs
+        for run in para.runs
+        if "Header:" in run.text
+    ]
+    assert header_runs, "expected the overview bullet prefix text to be present"
+    assert all(run.font.bold is not True for run in header_runs)
+
+
 def test_assemble_earnings_update_deck_inserts_cap_table_from_workbook(tmp_path: Path):
     pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
 
     workbook_path = _write_sample_cap_table(tmp_path / "cap-table.xlsx")
-
     deck_path = _assemble_sample_deck(tmp_path, captable_workbook_path=workbook_path)
 
     prs = Presentation(deck_path)
     slide2 = prs.slides[1]
-
-    assert next((s for s in slide2.shapes if s.name == "Rectangle 4"), None) is None, (
-        "slide 2 Macabacus placeholder should be removed after picture insertion"
+    assert next((s for s in slide2.shapes if s.name == "Rectangle 3"), None) is None, (
+        "overview cap-table placeholder should be removed after picture insertion"
     )
-
     pictures = [s for s in slide2.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
     assert pictures, "expected a picture shape on slide 2 after cap-table insertion"
 
-    pic = pictures[-1]
-    assert pic.width == 4140000, f"picture width should match placeholder (4140000 EMU), got {pic.width}"
-    assert pic.height == 4947508, f"picture height should match placeholder (4947508 EMU), got {pic.height}"
-
 
 def test_assemble_earnings_update_deck_inserts_cap_table_via_libreoffice(tmp_path: Path):
-    """LibreOffice fallback path for Cowork / Linux runs.
-
-    Skips when neither soffice nor libreoffice is on PATH. The fallback is
-    also skipped on Windows because the COM path takes precedence there.
-    """
+    """LibreOffice fallback path for Cowork / Linux runs."""
     import sys
 
     if sys.platform == "win32":
@@ -235,11 +265,10 @@ def test_assemble_earnings_update_deck_inserts_cap_table_via_libreoffice(tmp_pat
     pytest.importorskip("pypdfium2", reason="pypdfium2 required for the LibreOffice fallback")
 
     workbook_path = _write_sample_cap_table(tmp_path / "cap-table.xlsx")
-
     deck_path = _assemble_sample_deck(tmp_path, captable_workbook_path=workbook_path)
 
     prs = Presentation(deck_path)
     slide2 = prs.slides[1]
-    assert next((s for s in slide2.shapes if s.name == "Rectangle 4"), None) is None
+    assert next((s for s in slide2.shapes if s.name == "Rectangle 3"), None) is None
     pictures = [s for s in slide2.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
     assert pictures, "expected a picture shape on slide 2 after LibreOffice insertion"

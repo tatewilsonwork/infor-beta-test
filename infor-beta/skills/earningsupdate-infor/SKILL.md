@@ -2,44 +2,55 @@
 name: earningsupdate-infor
 description: >
   Use this skill when the user invokes /earningsupdate-infor or asks to build a quarterly earnings
-  update deck for a public company. Populates the INFOR Earnings Update Template with a company
-  overview, four KPI tiles (actual vs prior-year quarter), a Broker Estimates vs Actuals table
-  sourced from a Bloomberg EEO snip, business-update bullets, management quotes, and a short
-  performance summary. Activates on "earnings update", "earnings deck", "quarterly earnings",
-  "earnings summary deck", or any request to build a branded update deck off a recent 10-Q/10-K
-  and Bloomberg EEO snip.
-version: 0.4.5
+  update deck for a public company. Builds a branded 5-slide deck cloned from the shared INFOR Slide
+  Library (cover, public-company overview, earnings summary, disclaimer, contact) with a company
+  overview, an LTM revenue pie placeholder, a Capitalization Summary cap table, four KPI metric
+  boxes (actual vs prior-year quarter), a Broker Estimates vs Actuals table sourced from a Bloomberg
+  EEO snip, business-update bullets, management quotes, and a short performance summary. Activates on
+  "earnings update", "earnings deck", "quarterly earnings", "earnings summary deck", or any request
+  to build a branded update deck off a recent 10-Q/10-K and Bloomberg EEO snip.
+version: 0.5.0
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
 # INFOR Earnings Update — Workflow
 
-This skill builds a branded 5-slide earnings update deck from a company's most recent quarter of financials, a Bloomberg EEO screenshot, and optionally an earnings call transcript. It also produces a companion capitalization table XLSX that the analyst manually inserts into the deck in place of the Macabacus placeholder on slide 2.
+This skill builds a branded 5-slide earnings update deck for direct (`/earningsupdate-infor`)
+invocation. It is a thin orchestrator over the same typed pipeline the conductor's
+`earnings-update.yaml` plan runs stage-by-stage — there is no longer a separate monolith
+implementation and no standalone earnings template. The deck is cloned from the shared
+`INFOR Slide Library.pptx`; the same helpers and content rules apply whether you reach them through
+the conductor or this command.
 
-Today's date is available from the system context (`currentDate`) — do not shell out to `date`. Earnings template, cap table template, and working directory are resolved inline in their respective steps.
+The pipeline, in order:
 
-**Detailed references** (loaded on demand — not in this file's main flow):
-- [`references/slide2-company-overview.md`](references/slide2-company-overview.md) — bullet structure, density caps, segment-name bolding, content focus rules for Step 5
-- [`references/slide3-earnings-summary.md`](references/slide3-earnings-summary.md) — KPI tiles, broker table, management quotes, summary box rules for Step 6
-- [`references/python-implementation.md`](references/python-implementation.md) — reference python-pptx driver (imports helpers from the plugin's shared `pptx_helpers` module)
-- [`references/common-pitfalls.md`](references/common-pitfalls.md) — quick-reference table of failure modes and fixes
+1. **wireframe** — `build_earnings_update_slide_plan` → typed `SlidePlan` (5 fixed slides).
+2. **content** — draft a typed `EarningsUpdateContent` bundle (rules below).
+3. **captable** — companion capitalization-table workbook via `captable-infor`.
+4. **ltm-revenue** — companion LTM revenue workbook via `ltm-revenue-infor`.
+5. **assemble** — `assemble_earnings_update_deck` clones the five library entries, fills them, and
+   inserts the cap-table picture into the overview slide.
+6. **QA** — render slides to PNG and fix overflow with `enable_normal_autofit`.
 
-The shared formatting helpers — `set_text`, `write_bulleted_shape`, `set_cell_text`, `find_shape`, brand constants — live at [`infor-beta/scripts/pptx_helpers.py`](../../scripts/pptx_helpers.py) and are imported in [`references/python-implementation.md`](references/python-implementation.md).
+Today's date is available from the system context (`currentDate`) — do not shell out to `date`.
 
-## Conductor-mode handoff (read first when running under the conductor)
+Shared helpers live at [`infor-beta/scripts/`](../../scripts/) and import via `CLAUDE_PLUGIN_ROOT`:
 
-When invoked as a stage of a conductor plan, the environment carries `$STAGE_INPUTS`, `$STAGE_OUTPUTS`, and `$DEAL_DIR`:
+```python
+import sys, os
+sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
 
-- Read company/ticker/reporting-quarter/comparison-quarter/EEO-snip-path from `$STAGE_INPUTS` instead of asking the analyst at Step 1. Skip the Step 1 prompt entirely.
-- Write the deck to `$DEAL_DIR/artefacts/Earnings Update - <SANITIZED>.pptx` (NOT cwd). Bootstrap `$DEAL_DIR/artefacts/` if it doesn't exist.
-- **Skip Step 8 (Generate Companion Cap Table) entirely.** The earnings-update conductor plan dispatches `captable-infor` as a sibling stage; the conductor handles composition, not this skill. If you invoke captable from within this skill while running under the conductor, you'll produce a duplicate.
-- At the end of Step 9 (Save and Verify), write the structured handoff:
-  ```bash
-  python -c "import json,os; json.dump({'deck_path': os.environ['OUTPUT']}, open(os.environ['STAGE_OUTPUTS'], 'w'))"
-  ```
-  The conductor will not proceed past this stage until `$STAGE_OUTPUTS` exists and parses as JSON.
+from schemas import Company, EarningsUpdateContent
+from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
+from earnings_update_assembler import assemble_earnings_update_deck
+from ltm_revenue import build_ltm_revenue_workbook, RevenueSegment
+from slide_render import render_deck_to_png
+from pptx_helpers import enable_normal_autofit
+```
 
-When `$STAGE_OUTPUTS` is **unset** (direct `/earningsupdate-infor` invocation), follow the workflow below as-is — including Step 8 — and output lands in cwd.
+Output lands in cwd for direct invocation. (Under the conductor, the decomposed stage skills —
+`earningsupdate-wireframe-infor`, `earningsupdate-content-infor`, `captable-infor`,
+`ltm-revenue-infor`, `deck-assembler` — handle the same steps and write to the deal directory.)
 
 ---
 
@@ -61,7 +72,7 @@ If any required input is missing, ask in a single message:
 
 > "To build the earnings update, I need:
 > - **Company name + CapIQ ticker** (e.g., NasdaqGS:VFF)
-> - **Reporting quarter** (e.g., Q4 2025)
+> - **Reporting quarter** (e.g., Q4 2025) and **prior-year comparison quarter**
 > - **10-Q / 10-K / MD&A** attached
 > - **Bloomberg EEO snip** attached (image)
 >
@@ -71,156 +82,153 @@ Wait for all required inputs before proceeding.
 
 ---
 
-### Step 2 — Locate and Copy the Template
+### Step 2 — Determine Reporting Currency
 
-Resolve the earnings template via the plugin's shared helper:
-```bash
-bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/find_template.sh" "INFOR Earnings Update Template.pptx"
-```
-
-Sanitize the company name via the shared helper, then copy:
-```bash
-SANITIZED_COMPANY=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/sanitize_name.sh" "$COMPANY_NAME")
-TEMPLATE=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/find_template.sh" "INFOR Earnings Update Template.pptx")
-OUTPUT="./Earnings Update - $SANITIZED_COMPANY.pptx"
-cp "$TEMPLATE" "$OUTPUT" && echo "COPY_OK" || echo "COPY_FAILED"
-ls -lh "$OUTPUT"
-```
-
-If the copy fails or the file is 0 bytes, STOP and tell the user:
-> "I could not copy the INFOR Earnings Update Template. Please confirm the file `INFOR Earnings Update Template.pptx` exists in the `templates/` folder of the infor-beta plugin."
-
----
-
-### Step 3 — Determine Reporting Currency
-
-Read the 10-Q/10-K to identify the reporting currency. Village Farms reports in US$ despite being Canadian-listed — do NOT infer currency from exchange. Read the cover page or the "Basis of Presentation" footnote in the financial statements.
+Read the 10-Q/10-K to identify the reporting currency. Village Farms reports in US$ despite being
+Canadian-listed — do NOT infer currency from exchange. Read the cover page or the "Basis of
+Presentation" footnote in the financial statements.
 
 Output the currency code as one of `US$MM`, `C$MM`, `€MM`, `£MM`, `A$MM`, etc.
 
-**Currency only lives in the footnote.** Use the currency code (`US$MM`, `C$MM`, etc.) **only** in:
-- Slide 2 and Slide 3 footnote text (`Note: All figures in C$MM, except where indicated otherwise`)
+**Currency only lives in the footnote / table header.** Use the full code only in:
+- The overview and earnings-summary footnote text (`Note: All figures in C$MM, except where indicated otherwise`)
 - The Broker Estimates table header cell (`Figures in C$MM`)
 
-**Everywhere else on the slide, values use a plain `$` prefix** — never `C$`, `US$`, `€`, etc. The footnote scopes the currency; repeating it on every value is redundant and visually noisy. Applies to KPI tile values/deltas, gold summary box, Business Updates bullets, Slide 2 description bullets, and Broker table cells.
-
-For non-dollar currencies (€ / £ / ¥), use the symbol once in the footnote (`Figures in €MM`) and plain `$` prefix on values, or omit the prefix entirely.
-
----
-
-### Step 4 — Populate Slide 1 (Cover)
-
-Open the deck with python-pptx and update ONLY the date placeholder in the bottom-right. Leave the title, subtitle, logo, and all other cover elements alone.
-
-Target shape: on slide 1 (index 0), the `Subtitle 2` PLACEHOLDER at L≈5.55in, T≈6.9in contains `[Current Month] 2026`.
-
-Replace with `[Month YYYY]` using **today's month and year** — always the current month, never the earnings-release month. E.g., if today is 2026-04-23, use `April 2026`.
+**Everywhere else on the slide, values use a plain `$` prefix** — never `C$`, `US$`, `€`. The
+footnote scopes the currency; repeating it on every value is redundant and visually noisy. Applies
+to KPI metric boxes, performance summary, Business Updates bullets, overview bullets, and broker
+cells. For non-dollar currencies, use the symbol once in the footnote and plain `$` (or no prefix)
+on values.
 
 ---
 
-### Step 5 — Populate Slide 2 (Company Overview)
+### Step 3 — Build the SlidePlan
 
-Slide 2 is indexed 1. Update three shapes:
-- `Title 1` placeholder → `<Company Name> Overview`
-- `TextBox 16` → 7–12 bullet company description (durable profile, not quarterly performance)
-- `Text Placeholder 1` footnote line 2 → replace `[x]` with reporting currency code
+Build the fixed five-slide earnings-update `SlidePlan` and write it to cwd:
 
-**Do NOT touch `Rectangle 4`** — the Macabacus placeholder for the analyst-pasted cap table.
-
-**Density caps (enforce programmatically):** 7–12 bullets, ≤250 chars/bullet, 1,200–1,500 chars total, no trailing periods. Vary 2–4 line bullets — uniform 2-line bullets read as mechanical.
-
-Use `write_bulleted_shape(textbox16, description_items)` from [`pptx_helpers`](../../scripts/pptx_helpers.py). It harvests the template's seed pPr (level 0 main square bullet 10.5 pt, level 1 sub dash bullet 10 pt) BEFORE wiping, so bullet glyphs survive. Each item is `(bold_prefix, rest, level)` — `bold_prefix=""` for plain bullets, populated for bold `SegmentName:` sub-bullets.
-
-See [`references/slide2-company-overview.md`](references/slide2-company-overview.md) for the full shape map, target structure of 12 bullets, segment-bolding examples, line-math, sourcing guidance, and the bullet-formatting bug this helper prevents.
-
----
-
-### Step 6 — Populate Slide 3 (Earnings Summary)
-
-Slide 3 is indexed 2 — the densest slide. Six sub-regions, each with its own shape map:
-
-- **Title + section headers** (`Title 1`, `Rectangle 7`, footnote currency)
-- **KPI tiles** (4 rows × 6 shapes — prior box, current box, delta box, two triangles per row)
-- **Business Updates bullets** (`TextBox 1067`, 4–6 narrative bullets ≤900 chars total)
-- **Broker Estimates table** (PPTX table — exactly 5 metric rows, every cell Palatino 9 pt, Variance column colored by sign)
-- **Management Quotes** (`Group 1070` + `Group 1086`, each with quote + attribution TextBoxes — must address the key item of the quarter)
-- **Performance Summary box** (`Rectangle 1111`, ≤25 words/150 chars, one sentence beat/miss + qualifier)
-
-Key invariants (failure modes from prior runs):
-- **NEVER rotate triangles** — direction lives in the `+`/`-` sign, not the arrow
-- **Delta box font: fixed 10 pt** — shorten the number (`+$0.9B` not `+$911MM`) before stepping down
-- **Delta color: positive=green `#00B050`, negative=red `#C00000`** by arithmetic direction (not "good/bad")
-- **Rate deltas in `%` not bps** — `+14.6%`, never `+1,460 bps`
-- **Broker table: always 5 rows** — swap labels for metrics the EEO snip covers; never `N/A`, never delete rows
-- **Quotes ≤200 chars / ≤30 words** — overflowed groupboxes on goeasy v1.9.13
-- **All on-slide values use plain `$`** — `C$` only in the footnote and table header
-
-See [`references/slide3-earnings-summary.md`](references/slide3-earnings-summary.md) for the full shape maps (sub-sections 6a–6f), KPI metric substitutes by sector, broker table number formatting, quote selection rules, and the gold summary box budget.
-
----
-
-### Step 7 — Leave Slides 4 and 5 Untouched
-
-Slide 4 (Disclaimer) and Slide 5 (Contact — Neil Selfe + three placeholder tables) must remain exactly as shipped in the template. Do not touch them.
-
----
-
-### Step 8 — Generate Companion Cap Table (skip when running under the conductor)
-
-**If `$STAGE_OUTPUTS` is set, skip this step entirely.** The earnings-update conductor plan runs `captable-infor` as a sibling stage immediately after this one; the conductor composes the two skills. Running Step 8 here produces a duplicate cap table at a different path.
-
-When invoked directly (no conductor — `$STAGE_OUTPUTS` unset), continue as below.
-
-Once the deck is populated, invoke the **captable-infor** skill's workflow (Steps 2–8 of that skill) using the same 10-Q/10-K/MD&A attachments and the CapIQ ticker provided in Step 1. The cap table will be saved alongside the deck as:
-
-```
-./<SANITIZED_TICKER> - Capitalization Table.xlsx
+```python
+company = Company(legal_name="<Company Name>", ticker="<CapIQ ticker>")
+plan = build_earnings_update_slide_plan(
+    company=company,
+    reporting_quarter="<e.g. Q4 2025>",
+    comparison_quarter="<e.g. Q4 2024>",
+)
+slide_plan_path = write_slide_plan(plan, "./earnings_slide_plan.json")
 ```
 
-The analyst will open this file, refresh CapIQ, and use Macabacus to link the cap table range into `Rectangle 4` (the Macabacus placeholder) on slide 2 of the deck. Do NOT try to embed the xlsx into the deck programmatically — manual insertion is intentional because the analyst refreshes CapIQ market data before linking.
+The plan is canonical for slide order and titles (`earnings-update-cover`,
+`earnings-update-company-overview`, `earnings-update-earnings-summary`, `earnings-update-disclaimer`,
+`earnings-update-contact`). Do not draft copy here.
 
 ---
 
-### Step 8b — Visual Overflow Check (optional)
+### Step 4 — Draft the Content Bundle
 
-Claude **cannot directly render PowerPoint** to see whether text overflows a shape visually. The character / word caps in Steps 5 and 6 are the primary defense — enforce them with asserts before writing.
+Draft a typed `EarningsUpdateContent` from the filings, MD&A / press release, transcript (if
+provided), and the Bloomberg EEO snip, and write it to `./earnings_content.json`. The schema is at
+`scripts/schemas/json/earnings_update_content.schema.json` (imported from
+`schemas.EarningsUpdateContent`).
 
-If the user explicitly requests a visual check, or if you've tightened wording to the caps and are unsure, convert the deck to PDF and read page 3 as an image:
-```bash
-soffice --headless --convert-to pdf "./Earnings Update - $SANITIZED_COMPANY.pptx" --outdir .
+Content rules (enforce with asserts before writing — they are the primary overflow defense):
+
+- **Company overview bullets:** 6–10 bullets, each ≤250 chars, 650–1,050 chars total, no terminal
+  periods or semicolons. The overview slide reserves its lower-left quadrant for the LTM revenue pie
+  placeholder, so keep bullets concise or text overflows behind the pie. Use sentence-long (max two
+  sentences) bullets describing what the company does and who they are. Do **not** use bold
+  `Header:` prefixes for general bullets — only set `bold_prefix` for true product/service segment
+  names when a bullet is specifically walking through business segments.
+- **Business updates:** 4–6 bullets, each ≤250 chars, ≤900 chars total, no terminal periods/semicolons.
+- **KPI rows:** exactly 4. Currency/value metrics are whole numbers in MM with **no decimals**; each
+  metric box shows the rounded value plus the metric name. The reporting/comparison period prints in
+  the mid-blue bar below the "Financial Highlights" title, **not** in the boxes. Rate deltas in `%`,
+  never bps. `delta_sign` is `1`/`0`/`-1` and drives green (`#00B050`) / red (`#C00000`) downstream.
+- **Broker rows:** exactly 5; no `N/A`/`NA`/`-` cells; `variance_sign` is `1`/`0`/`-1`. The assembler
+  prefixes `$` onto Reported, Bloomberg Estimate, and Variance, so supply plain numerics
+  (`1,234`, `(56)`) with no leading currency symbol. Do not repeat the table's MM scope in row labels
+  (`Revenue`, `Adj. EBITDA`, `Operating income`, `Free cashflow`); only per-share metrics carry an
+  inline unit such as `EPS (US$)`.
+- **Management quotes:** exactly 2; each ≤200 chars and ≤30 words; address the key item of the
+  quarter. Use abbreviated roles (`CEO`, `CFO`, `Interim CEO`, `Executive VP and CFO`) — never spell
+  out "Chief Executive Officer".
+- **Performance summary:** one sentence, ≤25 words and ≤150 chars (beat/miss + qualifier).
+
+If a required data point is not recoverable from the provided sources, ask the analyst rather than
+inventing it.
+
+---
+
+### Step 5 — Generate the Companion Cap Table
+
+Invoke the **captable-infor** skill's workflow using the same 10-Q/10-K/MD&A attachments and the
+CapIQ ticker from Step 1, saving the workbook to cwd as
+`./<SANITIZED_TICKER> - Capitalization Table.xlsx`. The assembler inserts a picture of its
+`Cap with Links!B15:F31` range into the overview slide's `Rectangle 3` Capitalization Summary
+placeholder, so the workbook must populate that range.
+
+> Per the standing constraint, ignore `#NAME?` errors in the workbook — they resolve when the
+> analyst refreshes the Capital IQ connector.
+
+---
+
+### Step 6 — Generate the LTM Revenue Workbook
+
+Invoke **ltm-revenue-infor** (or call `build_ltm_revenue_workbook` directly) to produce the
+companion LTM revenue breakdown workbook in cwd. Segment by service/product line when disclosed,
+else by geography. The overview slide keeps its `[Pie Chart Placeholder]` — the analyst (or a later
+stage) builds the pie from this workbook; the assembler does **not** chart it.
+
+---
+
+### Step 7 — Assemble the Deck
+
+Clone the five library entries and fill them, inserting the cap-table picture:
+
+```python
+template = os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/templates/INFOR Slide Library.pptx"
+output_path = assemble_earnings_update_deck(
+    slide_plan_path="./earnings_slide_plan.json",
+    content_path="./earnings_content.json",
+    template_path=template,
+    output_dir=".",
+    captable_workbook_path="./<SANITIZED_TICKER> - Capitalization Table.xlsx",
+)
 ```
-Then `Read` the resulting `.pdf` to check slides 2 and 3 for overflow. If `soffice` / LibreOffice is not installed, skip this step and trust the character caps.
+
+The assembler clones library slides 1, 7, 8, 14, 15 into the final five-slide order (cover,
+overview, earnings summary, disclaimer, contact), fills the cover date, overview, and earnings
+summary, and leaves the disclaimer and contact entries exactly as shipped. It saves
+`Earnings Update - <Company>.pptx` to `output_dir`. Cap-table insertion uses Excel COM on Windows
+and a LibreOffice fallback on Cowork/Linux; if no workbook is available the placeholder is preserved.
 
 ---
 
-### Step 9 — Save and Verify
+### Step 8 — Overflow QA
 
-Save the deck. Reopen it with python-pptx in read mode and verify:
-- Slide 1: date placeholder no longer contains `[Current Month]`
-- Slide 2: title no longer contains `[Client Name]`, description TextBox has no `[x]` placeholders, footnote has no `[x]` in currency string
-- Slide 3: title has real quarter, top-right section header has real quarters, all four KPI rows populated, broker table has no blank cells, both management quote groups updated, summary box updated
-- Placeholder `Rectangle 4` on slide 2 still reads `[Macabacus Placeholder]` (yes, on purpose — analyst pastes a screenshot of the cap table here using the Macabacus add-in)
+Claude cannot see PowerPoint overflow directly. The character/word caps in Step 4 are the primary
+defense; this step is the visual backstop. Render the populated overview and earnings-summary slides
+to PNG and inspect them:
 
-If any placeholder `[x]` or `[Client Name]` or `Qx 202x` token remains anywhere on slides 1–3, fix it and re-save.
+```python
+pngs = render_deck_to_png(output_path, "./_qa", slide_indices=[1, 2])
+```
+
+`Read` the PNGs. If any shape overflows, call `enable_normal_autofit` on the offending shape (or
+tighten the content within the Step 4 caps) and re-render until clean. Rendering uses PowerPoint COM
+on Windows and LibreOffice headless on Cowork/Linux; if neither is available, skip and trust the caps.
 
 ---
 
-### Step 10 — Report to User
+### Step 9 — Report to User
 
 Output a brief summary:
 
 1. **Deck file:** absolute path to saved `.pptx`
 2. **Cap table file:** absolute path to saved `.xlsx`
-3. **Reporting currency used:** e.g., `US$MM`
-4. **KPIs selected for slide 3:** list the four metrics and why (one phrase each)
-5. **Sources used for bullets / quotes:** which file or URL each major section came from
-6. **Manual steps remaining:**
-   - Refresh CapIQ in the cap table file and paste a screenshot over `Rectangle 4` on slide 2
-   - Optionally swap the cap table paste for a Bloomberg tearsheet screenshot if the analyst prefers that layout
+3. **LTM revenue file:** absolute path to saved `.xlsx`
+4. **Reporting currency used:** e.g., `US$MM`
+5. **KPIs selected:** the four metrics and why (one phrase each)
+6. **Sources used for bullets / quotes:** which file or URL each major section came from
+7. **Manual steps remaining:**
+   - Refresh the Capital IQ connector in the cap table and LTM revenue workbooks
+   - Build the LTM revenue pie from the LTM workbook and drop it over `[Pie Chart Placeholder]` on the overview slide
    - Review the Performance Summary box wording before sending
-
----
-
-## Reference
-
-The full Python driver, shape maps, content rules, and pitfall reference live in `references/` next to this file — load them on demand when working on the corresponding step. See [`references/common-pitfalls.md`](references/common-pitfalls.md) for the consolidated failure-mode table.

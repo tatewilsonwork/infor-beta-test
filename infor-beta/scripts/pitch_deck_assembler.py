@@ -8,8 +8,13 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-from pptx_helpers import find_shape, set_cell_text, set_text, write_bulleted_shape
+from pptx_helpers import delete_slide, find_shape, set_cell_text, set_text, write_bulleted_shape
 from schemas import PitchDeckContent, SlidePlan
+
+# Zero-based index of the earnings-summary entry inserted into the shared
+# 15-slide library. The pitch deck does not use it, so it is dropped on open,
+# restoring the original 14-slide ordering this assembler's indices assume.
+_EARNINGS_LIBRARY_SLIDE_INDEX = 7
 
 
 def _safe_name(value: str) -> str:
@@ -161,6 +166,10 @@ def assemble_pitch_deck(
     output_path = out_dir / f"Pitch Deck - {_safe_name(content.client_name)}.pptx"
 
     prs = Presentation(template)
+
+    # The shared library carries the earnings-update slide at index 7. Drop it
+    # so the remaining slides keep the original 14-slide pitch ordering.
+    delete_slide(prs, _EARNINGS_LIBRARY_SLIDE_INDEX)
 
     # Slide 1 — cover: client name/date only.
     slide1 = prs.slides[0]

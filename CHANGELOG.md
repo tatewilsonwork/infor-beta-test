@@ -4,6 +4,22 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-28
+
+### Changed
+- **Earnings-update deck now clones the shared INFOR Slide Library** instead of the standalone `INFOR Earnings Update Template.pptx`. `earnings_update_assembler` keeps library slides 1, 7, 8, 14, 15 (cover, overview, earnings summary, disclaimer, contact), deletes the rest tail-first, and fills them. `plans/earnings-update.yaml` and `deck-assembler` now resolve `template_name` to `INFOR Slide Library.pptx` for both deliverables.
+- **Overview slide (library slide 7)**: title is now "Introduction to {company}"; the cap-table placeholder is renamed "Capitalization Summary" and inserted into `Rectangle 3` over range `B15:F31` (was `Rectangle 4` / `B13:F31`); the lower-left quadrant reserves an LTM revenue pie placeholder. Company-overview bullet budget tightened to 650–1,050 chars (was 1,200–1,500) and 6–10 bullets (was 7–12) so copy no longer overflows behind the pie.
+- **Earnings-summary slide (library slide 8)**: metric boxes now carry the rounded value (whole MM, no decimals) plus the metric name; the reporting/comparison period prints only in the mid-blue bar below the "Financial Highlights" title, not inside the boxes. Broker Reported / Bloomberg Estimate / Variance values are now prefixed with `$`.
+- Bumped marketplace, plugin manifest, pyproject, and all shipped skill frontmatter versions to `0.5.0`.
+
+### Added
+- **`ltm-revenue-infor` skill** + `ltm_revenue.py` helper: emits a standalone LTM revenue breakdown `.xlsx` (segmented by service/product line, falling back to geography) as the companion to the overview slide's pie placeholder. Added as a sibling `ltm-revenue` stage in `plans/earnings-update.yaml`. The stage builds no chart and does not touch PowerPoint.
+- **Slide → PNG overflow QA**: new `slide_render.py` (`render_deck_to_png`) renders overflow-prone slides via PowerPoint COM on Windows / LibreOffice headless elsewhere. `deck-assembler/SKILL.md` gained an Overflow QA section directing the agent to render slides, inspect for text overflow, and shrink via `enable_normal_autofit` until clean.
+
+### Fixed
+- `pptx_helpers.delete_slide` now drops the presentation-part relationship (`prs.part.drop_rel(rId)`) in addition to removing the `sldId`, eliminating orphaned slide parts and duplicate zip part-name warnings.
+- `pitch_deck_assembler` deletes the earnings slide inserted at library index 7 on open, so the 14-slide pitch indices stay valid after the library grew to 15 slides.
+
 ## [0.4.5] — 2026-05-28
 
 ### Added

@@ -90,16 +90,25 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
     plan_path = Path(__file__).resolve().parents[2] / "plans" / "earnings-update.yaml"
     plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))
 
-    assert [stage.id for stage in plan.stages] == ["wireframe", "content", "captable", "deck"]
+    assert [stage.id for stage in plan.stages] == [
+        "wireframe",
+        "content",
+        "captable",
+        "ltm-revenue",
+        "deck",
+    ]
     assert [stage.skill for stage in plan.stages] == [
         "earningsupdate-wireframe-infor",
         "earningsupdate-content-infor",
         "captable-infor",
+        "ltm-revenue-infor",
         "deck-assembler",
     ]
+    deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert plan.stages[1].inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
-    assert plan.stages[3].inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
-    assert plan.stages[3].inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+    assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
+    assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+    assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
 
 
 def test_invalid_deliverable_type_rejected():

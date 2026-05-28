@@ -10,7 +10,7 @@ description: >
   plan-specific inputs, dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.4.5
+version: 0.5.0
 allowed-tools: [Read, Write, Bash, Glob, Task]
 ---
 
@@ -107,7 +107,7 @@ Compose an analyst-readable end-of-run summary and write it with `write_summary(
 - Deliverable, codename, run id, total runtime if available.
 - One line per stage: status (ok/failed), notable outputs (paths).
 - All artefact paths the analyst can open right now.
-- Any manual next steps surfaced by individual sub-skills (e.g. "refresh CapIQ in the cap table and Macabacus-link into slide 2").
+- Any manual next steps surfaced by individual sub-skills (e.g. "refresh the Capital IQ connector in the cap table workbook").
 - Pointer to the run directory for full per-stage detail.
 
 Then post the summary back to the analyst.

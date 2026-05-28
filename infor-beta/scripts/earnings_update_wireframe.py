@@ -36,12 +36,13 @@ def build_earnings_update_slide_plan(
         ),
         SlideEntry(
             library_entry_id="earnings-update-company-overview",
-            title=f"{name} Overview",
+            title=f"Introduction to {name}",
             section="Company Overview",
             order=1,
             content_block={
                 "requires": ["company_overview_bullets", "currency"],
-                "cap_table_placeholder": "Leave Rectangle 4 untouched for analyst-pasted cap table.",
+                "cap_table_placeholder": "Leave Rectangle 3 untouched for analyst-pasted cap table (Capitalization Summary).",
+                "ltm_revenue_pie_placeholder": "Leave the lower-left pie placeholder untouched; the companion LTM revenue workbook is built by the ltm-revenue stage.",
             },
         ),
         SlideEntry(
@@ -80,7 +81,7 @@ def build_earnings_update_slide_plan(
         deliverable_type="earnings-update",
         deck_title=f"{name} Earnings Update",
         slides=slides,
-        notes="Phase 3 POC fixed structure for INFOR Earnings Update Template.pptx.",
+        notes="Phase 3 POC fixed structure cloned from INFOR Slide Library.pptx (library slides 1, 7, 8, 14, 15).",
     )
 
 
