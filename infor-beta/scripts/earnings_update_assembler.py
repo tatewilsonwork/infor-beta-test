@@ -1,4 +1,10 @@
-"""Template-specific earnings-update deck assembler for the Phase 3 POC."""
+"""Earnings-update deck assembler built on the shared INFOR slide library.
+
+The earnings update no longer ships its own template. It clones the relevant
+entries out of `INFOR Slide Library.pptx` — cover (1), public-company overview
+(7), earnings summary (8), disclaimer (14), contact (15) — into a fresh
+five-slide deck and fills them from a typed `EarningsUpdateContent` bundle.
+"""
 
 from __future__ import annotations
 
@@ -6,11 +12,13 @@ import re
 from pathlib import Path
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from excel_to_powerpoint import insert_cap_table_into_placeholder
 from pptx_helpers import (
     COLOR_DOWN,
     COLOR_UP,
+    delete_slide,
     enable_normal_autofit,
     find_shape,
     find_shape_in_group,
@@ -20,21 +28,19 @@ from pptx_helpers import (
 )
 from schemas import EarningsUpdateContent, SlidePlan
 
+# Zero-based library indices the earnings deck keeps, in final deck order:
+# cover, public-company overview, earnings summary, disclaimer, contact.
+_KEEP_LIBRARY_INDICES = (0, 6, 7, 13, 14)
+
+# Earnings-summary slide cap-table placeholder (library slide 7 / deck index 1).
+_CAP_TABLE_PLACEHOLDER = "Rectangle 3"
+_CAP_TABLE_RANGE = "B15:F31"
+
 
 def _safe_name(value: str) -> str:
     safe = re.sub(r"[/\\:*?\"<>|]+", "-", value).strip()
     safe = re.sub(r"\s+", " ", safe)
     return safe or "Company"
-
-
-def _quarter_parts(quarter: str) -> tuple[str, str]:
-    match = re.search(r"Q\s*([1-4])\s*(?:FY|CY)?\s*(20\d{2}|\d{2})", quarter, re.IGNORECASE)
-    if not match:
-        return quarter, ""
-    q, year = match.groups()
-    if len(year) == 2:
-        year = "20" + year
-    return f"Q{q}", year
 
 
 def _bullet_tuple(bullet) -> tuple[str, int]:
@@ -51,15 +57,132 @@ def _strip_currency_unit(label: str) -> str:
     return re.sub(r"\s*\([A-Z]{0,3}\$?MM\)\s*$", "", label).strip()
 
 
-def _kpi_label(quarter: str, name: str) -> str:
-    return f"{quarter} {_strip_currency_unit(name)}"
+def _money(value: str) -> str:
+    """Prefix a broker-table figure with `$`, respecting sign/paren convention.
+
+    Leaves percent values and already-prefixed values untouched.
+    """
+    s = value.strip()
+    if not s or s[0] == "$" or "%" in s:
+        return s
+    if s.startswith("(") and s.endswith(")"):
+        return f"(${s[1:-1].lstrip('-').strip()})"
+    if s[0] in "+-":
+        return f"{s[0]}${s[1:].strip()}"
+    return f"${s}"
+
+
+def _write_flexible_bullets(shape, bullets, items=None) -> None:
+    """Write bullets, falling back to plain paragraphs if the shape lacks a glyph template."""
+    tuples = items if items is not None else [_bullet_tuple(b) for b in bullets]
+    try:
+        write_bulleted_shape(shape, tuples)
+    except RuntimeError:
+        set_text(shape, [t[0] for t in tuples])
+    enable_normal_autofit(shape)
 
 
 def _table_shape(slide):
     for shape in slide.shapes:
-        if shape.shape_type == 19:  # TABLE
+        if getattr(shape, "has_table", False):
             return shape
-    raise KeyError("Broker table not found on earnings summary slide")
+    raise KeyError("broker table not found on earnings summary slide")
+
+
+def _set_cover(slide, content: EarningsUpdateContent) -> None:
+    title = find_shape(slide, "Title 1")
+    set_text(title, [content.company_name, f"{content.reporting_quarter} Earnings Update"])
+    for shape in slide.shapes:
+        if (
+            shape.name.startswith("Subtitle")
+            and getattr(shape, "has_text_frame", False)
+            and "[Date]" in shape.text_frame.text
+        ):
+            set_text(shape, [content.cover_date])
+
+
+def _set_overview(slide, content: EarningsUpdateContent) -> None:
+    set_text(find_shape(slide, "Title 6"), [f"Introduction to {content.company_name}"])
+    _write_flexible_bullets(
+        find_shape(slide, "TextBox 9"),
+        content.company_overview_bullets,
+    )
+    set_text(
+        find_shape(slide, "Text Placeholder 1"),
+        [
+            "Source: Company filings, S&P Capital IQ ",
+            f"Note: All figures in {content.currency}, except where indicated otherwise",
+        ],
+    )
+
+
+# (group_name, prior_box, current_box, variance_box) for the four metric rows.
+_METRIC_GROUPS = (
+    ("Group 12", "Rectangle 1032", "Rectangle 1034", "Rectangle 1041"),
+    ("Group 9", "Rectangle 1043", "Rectangle 1037", "Rectangle 1042"),
+    ("Group 8", "Rectangle 1035", "Rectangle 1036", "Rectangle 1061"),
+    ("Group 2", "Rectangle 1057", "Rectangle 1058", "Rectangle 1064"),
+)
+
+
+def _set_earnings_summary(slide, content: EarningsUpdateContent) -> None:
+    set_text(
+        find_shape(slide, "Title 1"),
+        [f"{content.company_name} {content.reporting_quarter} Earnings Summary"],
+    )
+    set_text(
+        find_shape(slide, "Text Placeholder 1"),
+        [
+            "Source: Company filings, S&P CapIQ, equity research ",
+            f"Note: All figures in {content.currency}, except where indicated otherwise",
+        ],
+    )
+
+    # Period header bar (mid-blue) below the Financial Highlights title bar:
+    # comparison quarter | Variance | reporting quarter.
+    set_text(find_shape(slide, "Rectangle 16"), [content.comparison_quarter])
+    set_text(find_shape(slide, "Rectangle 21"), [content.reporting_quarter])
+
+    # Business updates (left column) and performance summary.
+    _write_flexible_bullets(
+        find_shape(slide, "TextBox 6"),
+        None,
+        items=[(b, 0) for b in content.business_updates],
+    )
+    set_text(find_shape(slide, "Rectangle 1111"), [content.performance_summary])
+
+    # Four metric rows — metric name + value only; the period lives in the bar.
+    for (group_name, prior_box, current_box, var_box), kpi in zip(
+        _METRIC_GROUPS, content.kpi_rows, strict=True
+    ):
+        group = find_shape(slide, group_name)
+        name = _strip_currency_unit(kpi.name)
+        set_text(find_shape_in_group(group, prior_box), [kpi.prior_value, name])
+        set_text(find_shape_in_group(group, current_box), [kpi.current_value, name])
+        color = COLOR_UP if kpi.delta_sign > 0 else (COLOR_DOWN if kpi.delta_sign < 0 else None)
+        set_text(find_shape_in_group(group, var_box), [kpi.delta_str], size_pt=10, color_hex=color)
+
+    # Broker estimates vs actuals — $ on reported / estimate / variance.
+    tbl = _table_shape(slide).table
+    set_cell_text(tbl.cell(0, 0), f"Figures in {content.currency_short}", size_pt=9)
+    set_cell_text(tbl.cell(0, 1), "Reported", size_pt=9)
+    set_cell_text(tbl.cell(0, 2), "Bloomberg Estimate", size_pt=9)
+    set_cell_text(tbl.cell(0, 3), "Variance", size_pt=9)
+    for i, row in enumerate(content.broker_rows, start=1):
+        set_cell_text(tbl.cell(i, 0), _strip_currency_unit(row.label), size_pt=9)
+        set_cell_text(tbl.cell(i, 1), _money(row.reported), size_pt=9)
+        set_cell_text(tbl.cell(i, 2), _money(row.estimate), size_pt=9)
+        color = COLOR_UP if row.variance_sign > 0 else (COLOR_DOWN if row.variance_sign < 0 else None)
+        set_cell_text(tbl.cell(i, 3), _money(row.variance), size_pt=9, color_hex=color)
+
+    # Management quotes.
+    q1, q2 = content.management_quotes
+    g1 = find_shape(slide, "Group 1070")
+    set_text(find_shape_in_group(g1, "TextBox 1072"), [f"“{q1.quote}”"])
+    set_text(find_shape_in_group(g1, "TextBox 1073"), [f"{q1.speaker} – {q1.role}"])
+    g2 = find_shape(slide, "Group 1086")
+    set_text(find_shape_in_group(g2, "TextBox 1088"), [f"“{q2.quote}”"])
+    set_text(find_shape_in_group(g2, "TextBox 1089"), [f"{q2.speaker} – {q2.role}"])
 
 
 def assemble_earnings_update_deck(
@@ -70,19 +193,18 @@ def assemble_earnings_update_deck(
     output_dir: Path | str,
     captable_workbook_path: Path | str | None = None,
 ) -> Path:
-    """Fill the existing INFOR Earnings Update Template from typed inputs.
+    """Build the earnings-update deck by cloning library entries and filling them.
 
-    This is intentionally template-specific. It is not the generalized Phase 3+
-    slide-library assembler.
+    `template_path` must point at the shared `INFOR Slide Library.pptx`.
     """
     slide_plan = SlidePlan.model_validate_json(Path(slide_plan_path).read_text(encoding="utf-8"))
     content = EarningsUpdateContent.model_validate_json(Path(content_path).read_text(encoding="utf-8"))
     if slide_plan.deliverable_type != "earnings-update":
-        raise ValueError("deck assembler POC only supports earnings-update SlidePlan objects")
+        raise ValueError("earnings assembler only supports earnings-update SlidePlan objects")
 
     template = Path(template_path)
     if not template.exists():
-        raise FileNotFoundError(f"earnings update template not found: {template}")
+        raise FileNotFoundError(f"slide-library template not found: {template}")
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -90,109 +212,71 @@ def assemble_earnings_update_deck(
 
     prs = Presentation(template)
 
-    # Slide 1 — cover date.
-    slide1 = prs.slides[0]
-    for shape in slide1.shapes:
-        if shape.name == "Subtitle 2" and getattr(shape, "has_text_frame", False) and "[Current Month]" in shape.text_frame.text:
-            set_text(shape, [content.cover_date])
+    # Reduce the 15-slide library to the five earnings entries (delete from the
+    # tail so earlier indices stay valid).
+    keep = set(_KEEP_LIBRARY_INDICES)
+    for idx in range(len(prs.slides) - 1, -1, -1):
+        if idx not in keep:
+            delete_slide(prs, idx)
 
-    # Slide 2 — company overview. Leave Rectangle 4 untouched.
-    slide2 = prs.slides[1]
-    set_text(find_shape(slide2, "Title 1"), [f"{content.company_name} Overview"])
-    overview_shape = find_shape(slide2, "TextBox 16")
-    write_bulleted_shape(overview_shape, [_bullet_tuple(b) for b in content.company_overview_bullets])
-    enable_normal_autofit(overview_shape)
-    set_text(
-        find_shape(slide2, "Text Placeholder 1"),
-        [
-            "Source: Company filings, S&P CapIQ, equity research ",
-            f"Note: All figures in {content.currency}, except where indicated otherwise",
-        ],
-    )
-
-    # Slide 3 — earnings summary.
-    rq, ryear = _quarter_parts(content.reporting_quarter)
-    cq, cyear = _quarter_parts(content.comparison_quarter)
-    slide3 = prs.slides[2]
-    set_text(find_shape(slide3, "Title 1"), [f"{content.company_name} {content.reporting_quarter} Earnings Summary"])
-    set_text(find_shape(slide3, "Rectangle 7"), [f"{content.comparison_quarter} vs. {content.reporting_quarter} Financial Highlights"])
-    set_text(
-        find_shape(slide3, "Text Placeholder 1"),
-        [
-            "Source: Company filings, S&P CapIQ, equity research ",
-            f"Note: All figures in {content.currency}, except where indicated otherwise",
-        ],
-    )
-    business_updates_shape = find_shape(slide3, "TextBox 1067")
-    write_bulleted_shape(business_updates_shape, [(b, 0) for b in content.business_updates])
-    enable_normal_autofit(business_updates_shape)
-
-    rows = [
-        ("Rectangle 1032", "Rectangle 1034", "Rectangle 1041", content.kpi_rows[0]),
-        ("Rectangle 1043", "Rectangle 1037", "Rectangle 1042", content.kpi_rows[1]),
-        ("Rectangle 1035", "Rectangle 1036", "Rectangle 1061", content.kpi_rows[2]),
-        ("Rectangle 1057", "Rectangle 1058", "Rectangle 1064", content.kpi_rows[3]),
-    ]
-    for prior_shape, current_shape, delta_shape, kpi in rows:
-        prior_label = _kpi_label(content.comparison_quarter, kpi.name)
-        current_label = _kpi_label(content.reporting_quarter, kpi.name)
-        # Preserve template's two-line value + metric label pattern.
-        set_text(find_shape(slide3, prior_shape), [kpi.prior_value, prior_label])
-        set_text(find_shape(slide3, current_shape), [kpi.current_value, current_label])
-        color = COLOR_UP if kpi.delta_sign > 0 else (COLOR_DOWN if kpi.delta_sign < 0 else None)
-        set_text(find_shape(slide3, delta_shape), [kpi.delta_str], size_pt=10, color_hex=color)
-
-    tbl = _table_shape(slide3).table
-    set_cell_text(tbl.cell(0, 0), f"Figures in {content.currency_short}", size_pt=9)
-    set_cell_text(tbl.cell(0, 1), "Reported", size_pt=9)
-    set_cell_text(tbl.cell(0, 2), "Bloomberg Estimate", size_pt=9)
-    set_cell_text(tbl.cell(0, 3), "Variance", size_pt=9)
-    for i, row in enumerate(content.broker_rows, start=1):
-        set_cell_text(tbl.cell(i, 0), _strip_currency_unit(row.label), size_pt=9)
-        set_cell_text(tbl.cell(i, 1), row.reported, size_pt=9)
-        set_cell_text(tbl.cell(i, 2), row.estimate, size_pt=9)
-        color = COLOR_UP if row.variance_sign > 0 else (COLOR_DOWN if row.variance_sign < 0 else None)
-        set_cell_text(tbl.cell(i, 3), row.variance, size_pt=9, color_hex=color)
-
-    q1, q2 = content.management_quotes
-    g1070 = find_shape(slide3, "Group 1070")
-    set_text(find_shape_in_group(g1070, "TextBox 1072"), [f"“{q1.quote}”"])
-    set_text(find_shape_in_group(g1070, "TextBox 1073"), [f"{q1.speaker} – {q1.role}"])
-    g1086 = find_shape(slide3, "Group 1086")
-    set_text(find_shape_in_group(g1086, "TextBox 1088"), [f"“{q2.quote}”"])
-    set_text(find_shape_in_group(g1086, "TextBox 1089"), [f"{q2.speaker} – {q2.role}"])
-    set_text(find_shape(slide3, "Rectangle 1111"), [content.performance_summary])
+    # Final order: cover, overview, earnings summary, disclaimer, contact.
+    _set_cover(prs.slides[0], content)
+    _set_overview(prs.slides[1], content)
+    _set_earnings_summary(prs.slides[2], content)
+    # Slides 4-5 (disclaimer, contact) are static library entries — untouched.
 
     prs.save(output_path)
+
     if captable_workbook_path is not None:
         insert_cap_table_into_placeholder(
             deck_path=output_path,
             workbook_path=captable_workbook_path,
             output_path=output_path,
             slide_index=1,
-            placeholder_name="Rectangle 4",
+            placeholder_name=_CAP_TABLE_PLACEHOLDER,
+            source_range=_CAP_TABLE_RANGE,
         )
     _verify_output(output_path, cap_table_inserted=captable_workbook_path is not None)
     return output_path
 
 
+def _slide_text(slide) -> str:
+    parts: list[str] = []
+    for shape in _iter_all_shapes(slide.shapes):
+        if getattr(shape, "has_text_frame", False):
+            parts.append(shape.text)
+        if getattr(shape, "has_table", False):
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    parts.append(cell.text)
+    return "\n".join(parts)
+
+
+def _iter_all_shapes(shapes):
+    for shape in shapes:
+        yield shape
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            yield from _iter_all_shapes(shape.shapes)
+
+
 def _verify_output(path: Path, *, cap_table_inserted: bool = False) -> None:
     prs = Presentation(path)
-    all_text = "\n".join(
-        shape.text
-        for slide in list(prs.slides)[:3]
-        for shape in slide.shapes
-        if getattr(shape, "has_text_frame", False)
-    )
-    forbidden = ["[Current Month]", "[Client Name]", "Q[x]", "Qx 202x"]
-    leftovers = [token for token in forbidden if token in all_text]
+    if len(prs.slides) != 5:
+        raise ValueError(f"earnings deck must have 5 slides, got {len(prs.slides)}")
+    overview_text = _slide_text(prs.slides[1])
+    summary_text = _slide_text(prs.slides[2])
+
+    forbidden = ["[x]", "[Client Name]", "[Company]", "[Quarter]", "[Name]", "[Role]", "[Date]"]
+    leftovers = sorted({t for t in forbidden if t in (overview_text + "\n" + summary_text)})
     if leftovers:
-        raise ValueError(f"assembled earnings update deck still contains placeholders: {leftovers}")
-    slide2_text = "\n".join(
-        shape.text for shape in prs.slides[1].shapes if getattr(shape, "has_text_frame", False)
-    )
-    has_placeholder = "[Macabacus Placeholder]" in slide2_text
-    if cap_table_inserted and has_placeholder:
-        raise ValueError("slide 2 cap-table placeholder was not replaced by the Excel insertion stage")
-    if not cap_table_inserted and not has_placeholder:
-        raise ValueError("slide 2 Macabacus placeholder was modified; it must remain when no cap table workbook is supplied")
+        raise ValueError(f"assembled earnings deck still contains placeholders: {leftovers}")
+
+    # The LTM revenue pie remains a deferred placeholder.
+    if "[Pie Chart Placeholder]" not in overview_text:
+        raise ValueError("LTM revenue pie placeholder was unexpectedly removed from the overview slide")
+
+    has_cap_placeholder = "[Cap Table Placeholder]" in overview_text
+    if cap_table_inserted and has_cap_placeholder:
+        raise ValueError("cap-table placeholder was not replaced by the Excel insertion stage")
+    if not cap_table_inserted and not has_cap_placeholder:
+        raise ValueError("cap-table placeholder was modified; it must remain when no workbook is supplied")

@@ -107,7 +107,7 @@ class EarningsUpdateContent(BaseModel):
     currency: str = Field(..., min_length=1, description="Footnote currency, e.g. C$MM or US$MM.")
     currency_short: str = Field(..., min_length=1, description="Broker-table currency header.")
     cover_date: str = Field(..., min_length=1, description="Current month/year shown on cover.")
-    company_overview_bullets: list[CompanyOverviewBullet] = Field(..., min_length=7, max_length=12)
+    company_overview_bullets: list[CompanyOverviewBullet] = Field(..., min_length=6, max_length=10)
     business_updates: list[str] = Field(..., min_length=4, max_length=6)
     kpi_rows: list[KpiRow] = Field(..., min_length=4, max_length=4)
     broker_rows: list[BrokerRow] = Field(..., min_length=5, max_length=5)
@@ -137,7 +137,10 @@ class EarningsUpdateContent(BaseModel):
 
     @model_validator(mode="after")
     def _company_overview_caps(self) -> "EarningsUpdateContent":
+        # Tighter budget than the legacy full-height block: library slide 7 now
+        # reserves the lower-left quadrant for the LTM revenue pie, so the
+        # overview text occupies a shorter region and must stay concise.
         total_chars = sum(len(((b.bold_prefix or "") + b.text)) for b in self.company_overview_bullets)
-        if not 1200 <= total_chars <= 1500:
-            raise ValueError("company overview bullets must total 1,200-1,500 characters")
+        if not 650 <= total_chars <= 1050:
+            raise ValueError("company overview bullets must total 650-1,050 characters")
         return self

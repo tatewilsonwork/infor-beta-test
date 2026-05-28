@@ -1,0 +1,131 @@
+"""Render deck slides to PNG so the assembler stage can visually QA overflow.
+
+Text overflow (bullets spilling past a divider, a metric label wrapping onto a
+third line) is invisible to python-pptx — the XML is valid, the text just
+doesn't fit. The deck-assembler workflow renders the overflow-prone slides to
+PNG, the agent inspects them, and shrinks/autofits text until clean.
+
+Two backends mirror `excel_to_powerpoint`:
+
+  - **PowerPoint COM** (Windows + PowerPoint) — `Slide.Export(path, "PNG")`.
+  - **LibreOffice headless** (Cowork / Linux / macOS) — convert the deck to PDF
+    with `soffice --headless --convert-to pdf`, render the requested pages via
+    `pypdfium2`.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+def render_deck_to_png(
+    deck_path: Path | str,
+    output_dir: Path | str,
+    *,
+    slide_indices: list[int] | None = None,
+    dpi: int = 150,
+) -> list[Path]:
+    """Render slides to PNG and return the image paths in slide order.
+
+    `slide_indices` is zero-based; None renders every slide.
+    """
+    deck = Path(deck_path).resolve()
+    if not deck.exists():
+        raise FileNotFoundError(f"deck not found: {deck}")
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if sys.platform == "win32":
+        try:
+            return _powerpoint_com_render(deck, out_dir, slide_indices)
+        except RuntimeError:
+            pass
+    return _libreoffice_render(deck, out_dir, slide_indices, dpi)
+
+
+def _powerpoint_com_render(deck: Path, out_dir: Path, slide_indices: list[int] | None) -> list[Path]:
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:
+        raise RuntimeError("pywin32 is required for PowerPoint COM slide rendering") from exc
+
+    pythoncom.CoInitialize()
+    powerpoint = None
+    paths: list[Path] = []
+    try:
+        powerpoint = win32com.client.DispatchEx("PowerPoint.Application")
+        # PowerPoint refuses to open with the window fully hidden on some builds;
+        # keep it minimized rather than Visible=False.
+        presentation = powerpoint.Presentations.Open(
+            str(deck), ReadOnly=True, WithWindow=False
+        )
+        try:
+            count = presentation.Slides.Count
+            indices = slide_indices if slide_indices is not None else list(range(count))
+            for idx in indices:
+                if idx < 0 or idx >= count:
+                    continue
+                png = out_dir / f"slide_{idx + 1}.png"
+                presentation.Slides(idx + 1).Export(str(png), "PNG")
+                paths.append(png)
+        finally:
+            presentation.Close()
+    except Exception as exc:  # COM errors surface as generic pywintypes errors
+        raise RuntimeError(f"PowerPoint COM render failed: {exc}") from exc
+    finally:
+        if powerpoint is not None:
+            powerpoint.Quit()
+        pythoncom.CoUninitialize()
+    return paths
+
+
+def _libreoffice_render(
+    deck: Path, out_dir: Path, slide_indices: list[int] | None, dpi: int
+) -> list[Path]:
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        raise RuntimeError(
+            "LibreOffice (soffice/libreoffice) not found on PATH; required for "
+            "the non-Windows slide renderer. Install LibreOffice or run on a "
+            "Windows machine with PowerPoint."
+        )
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as exc:
+        raise RuntimeError("pypdfium2 is required for the non-Windows slide renderer") from exc
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        try:
+            subprocess.run(
+                [soffice, "--headless", "--nologo", "--nodefault", "--nofirststartwizard",
+                 "--convert-to", "pdf", "--outdir", str(tmp_dir), str(deck)],
+                check=True, capture_output=True, timeout=300,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"LibreOffice PDF conversion failed: {exc.stderr.decode(errors='replace')}"
+            ) from exc
+
+        pdf_path = next(Path(tmp_dir).glob("*.pdf"), None)
+        if pdf_path is None:
+            raise RuntimeError("LibreOffice produced no PDF output for the deck")
+
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        paths: list[Path] = []
+        try:
+            count = len(pdf)
+            indices = slide_indices if slide_indices is not None else list(range(count))
+            for idx in indices:
+                if idx < 0 or idx >= count:
+                    continue
+                png = out_dir / f"slide_{idx + 1}.png"
+                pdf[idx].render(scale=dpi / 72).to_pil().convert("RGB").save(png, format="PNG")
+                paths.append(png)
+        finally:
+            pdf.close()
+    return paths

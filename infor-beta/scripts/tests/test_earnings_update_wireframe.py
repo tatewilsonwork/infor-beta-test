@@ -26,6 +26,7 @@ def test_build_earnings_update_slide_plan_has_fixed_five_slide_structure():
         "earnings-update-contact",
     ]
     assert [s.order for s in plan.slides] == [0, 1, 2, 3, 4]
+    assert plan.slides[1].title == "Introduction to SampleCo"
     assert plan.slides[2].content_block["requires"] == [
         "kpi_rows",
         "business_updates",

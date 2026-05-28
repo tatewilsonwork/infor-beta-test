@@ -409,9 +409,18 @@ def clone_slide(prs, source_slide):
 def delete_slide(prs, index):
     """Remove a slide from a presentation by zero-based index.
 
+    Drops both the `<p:sldId>` entry AND the presentation-part relationship that
+    points at the slide. Removing only the sldId leaves the slide part orphaned
+    in the package, which python-pptx still serialises — producing duplicate
+    part-name warnings and stray slides on re-open. Dropping the relationship
+    makes the part unreachable so it is not written out.
+
     Used together with `clone_slide`: clone the sample slides you want, then
     delete the originals so only the analyst-edited clones remain.
     """
     xml_slides = prs.slides._sldIdLst
-    slides = list(xml_slides)
-    xml_slides.remove(slides[index])
+    sldId = list(xml_slides)[index]
+    rId = sldId.get(qn("r:id"))
+    xml_slides.remove(sldId)
+    if rId is not None:
+        prs.part.drop_rel(rId)

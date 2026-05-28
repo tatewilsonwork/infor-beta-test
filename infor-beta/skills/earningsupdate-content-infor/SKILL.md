@@ -4,7 +4,7 @@ description: >
   Use this skill as the Phase 3 POC content stage for a quarterly earnings update. It consumes a
   typed SlidePlan plus source inputs and emits a strict EarningsUpdateContent JSON bundle for the
   deck-assembler stage. Activates inside the conductor plan stage `content`.
-version: 0.4.5
+version: 0.5.0
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -34,12 +34,13 @@ The schema is exported at `scripts/schemas/json/earnings_update_content.schema.j
 
 ## Content rules carried forward from the monolith
 
-- Company overview bullets: 7–12 bullets, each ≤250 chars, 1,200–1,500 chars total, no terminal periods or semicolons.
+- Company overview bullets: 6–10 bullets, each ≤250 chars, 650–1,050 chars total, no terminal periods or semicolons. The overview slide now reserves its lower-left quadrant for an LTM revenue pie placeholder, so the bullet budget is tighter than the legacy monolith — keep it concise or the text overflows behind the pie.
   - Use sentence-long or max two-sentence-long bullets that concisely explain what the company does and who they are.
   - Do **not** use bold `Header:` / `Topic:` prefix formatting for general overview bullets. Only use `bold_prefix` for true product / service segment names when the bullet is specifically walking through business segments.
 - Business updates: 4–6 bullets, each ≤250 chars, ≤900 chars total, no terminal periods or semicolons.
-- KPI rows: exactly 4 rows; rate deltas in `%`, never bps; `delta_sign` is `1`, `0`, or `-1` and controls green/red formatting downstream.
-- Broker rows: exactly 5 rows; no `N/A`, `NA`, or `-` cells; `variance_sign` is `1`, `0`, or `-1`.
+- KPI rows: exactly 4 rows. Currency/value metrics are reported as whole numbers in MM with **no decimal places** (the metric box shows the rounded value plus the metric name; the period is **not** in the box — see below). Rate deltas in `%`, never bps; `delta_sign` is `1`, `0`, or `-1` and controls green/red formatting downstream.
+- Period label: the reporting and comparison quarters print in the mid-blue bar below the "Financial Highlights" title, **not** inside the metric boxes. Each metric box carries only the rounded value and the metric name.
+- Broker rows: exactly 5 rows; no `N/A`, `NA`, or `-` cells; `variance_sign` is `1`, `0`, or `-1`. The assembler prefixes `$` onto the Reported, Bloomberg Estimate, and Variance values, so supply plain numerics (e.g. `1,234`, `(56)`) without a leading currency symbol.
   - Do **not** repeat the table's MM-currency scope in row labels. The table header already prints "Figures in {currency_short}", so write plain labels like `Revenue`, `Adj. EBITDA`, `Operating income`, `Free cashflow`. Only per-share metrics carry an inline unit such as `EPS (US$)` or `EPS (C$)` (the assembler defensively strips `(US$MM)` / `(C$MM)` / `(MM)` suffixes but does not strip non-MM markers).
 - Management quotes: exactly 2 quotes; each ≤200 chars and ≤30 words.
   - Use abbreviated role titles on the `role` field: `CEO`, `CFO`, `Interim CEO`, `Executive VP and CFO`, `COO`, etc. Do not spell out "Chief Executive Officer" or "Chief Financial Officer" — abbreviations keep the quote attribution on one line at the template font size.

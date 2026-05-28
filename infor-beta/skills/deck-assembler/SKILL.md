@@ -2,8 +2,9 @@
 name: deck-assembler
 description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
-  and writes either the decomposed earnings-update POC deck or the 14-slide INFOR slide-library POC deck.
-version: 0.4.5
+  and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
+  slide library.
+version: 0.5.0
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -16,8 +17,9 @@ This stage assembles typed slide/content handoffs into PowerPoint decks.
 1. **Earnings update POC**
    - `SlidePlan.deliverable_type = "earnings-update"`
    - content bundle schema: `EarningsUpdateContent`
-   - template: `INFOR Earnings Update Template.pptx`
+   - template: `INFOR Slide Library.pptx` (shared library)
    - helper: `scripts/earnings_update_assembler.py`
+   - clones library slides 1, 7, 8, 14, 15 (cover, overview, earnings summary, plus the two static closers) and deletes the rest; cap table replaces `Rectangle 3` on the overview slide (range `B15:F31`).
 
 2. **Slide-library pitch POC**
    - `SlidePlan.deliverable_type = "pitch"`
@@ -36,12 +38,13 @@ When invoked by the conductor, read:
 ## Workflow
 
 1. Read `$STAGE_INPUTS`.
-2. Resolve `template_name` under `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/templates/`.
+2. Resolve `template_name` under `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/templates/`. Both deliverables now resolve to `INFOR Slide Library.pptx`.
 3. Inspect the `SlidePlan.deliverable_type`.
 4. If `earnings-update`, call `assemble_earnings_update_deck(...)` and pass `captable_workbook_path` when supplied so slide 2's cap-table placeholder is replaced.
 5. If `pitch`, call `assemble_pitch_deck(...)`.
 6. Write the deck under `$DEAL_DIR/artefacts/` when `$DEAL_DIR` is set; otherwise use the supplied `output_dir`.
-7. Write `$STAGE_OUTPUTS` as:
+7. **Overflow QA** (see below) — render the overflow-prone slides to PNG, inspect, and autofit until text is clean.
+8. Write `$STAGE_OUTPUTS` as:
 
 ```json
 {
@@ -60,6 +63,37 @@ When invoked by the conductor, read:
 - Slide 9: concise risks/mitigants + tagline.
 - Slide 10: comps takeaway; chart placeholder stays unless insertion replaces it later.
 - Slides 11–12: static, do not touch.
+
+## Overflow QA
+
+Text overflow (bullets spilling past a divider, a metric label wrapping onto a
+third line) is invisible to python-pptx — the XML is valid, the text just
+doesn't fit. After assembling the deck, render the overflow-prone slides to PNG
+and visually inspect them:
+
+- **Earnings update**: render slides 2 and 3 (overview bullets + business-update
+  bullets are the recurring offenders).
+- **Pitch**: render slides 2, 7, and 9 (executive summary, company overview,
+  risks/mitigants).
+
+```python
+import sys, os
+sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
+from slide_render import render_deck_to_png
+from pptx_helpers import enable_normal_autofit
+from pptx import Presentation
+
+pngs = render_deck_to_png(deck_path, output_dir, slide_indices=[1, 2])  # zero-based
+```
+
+Read each PNG with the `Read` tool and check for text touching or crossing a
+shape boundary. If a shape overflows, reopen the deck, shrink the offending
+shape with `enable_normal_autofit(shape, font_scale=...)` (start ~0.9 and step
+down), save, re-render, and re-inspect. Repeat until every slide is clean.
+
+The renderer uses PowerPoint COM on Windows and LibreOffice headless elsewhere,
+so it works in Cowork. If neither backend is available it raises `RuntimeError` —
+note that overflow QA could not run rather than claiming the deck is clean.
 
 ## Reference command
 
