@@ -4,6 +4,15 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-05-28
+
+### Added
+- **`workbook-aggregator` skill** + `workbook_aggregator.py` helper: the final consolidation stage of a deliverable run. Merges every companion `.xlsx` produced during the deliverable into a single combined workbook named `<deliverable>-<deal name>.xlsx` (`earningsupdate-Project Atlas.xlsx`, `pitch-Project Atlas.xlsx`), with each producing skill contributing its sheets under a tab named after that skill (single-sheet sources → one tab named after the skill, multi-sheet → `<skill>-<sheet>`). Preserves formulas, CapIQ links, charts, and formatting via Excel COM on Windows; falls back to a best-effort openpyxl merge off-Windows. The individual source workbooks are deleted once the merge succeeds.
+- Wired a final `workbook-aggregation` stage into `plans/earnings-update.yaml` (combines `captable` + `ltm-revenue`) and `plans/pitch-library-poc.yaml` (combines `captable` + an optional `comps` workbook). It runs after the `deck` stage so the deck-assembler can still read the standalone cap-table workbook before it is folded in and removed.
+
+### Bumped
+- marketplace, plugin manifest, pyproject, and all shipped skill frontmatter versions to `0.5.2`.
+
 ## [0.5.1] — 2026-05-28
 
 POC test-round #3 feedback on the earnings update (Open Text Corporation).

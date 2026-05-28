@@ -82,7 +82,7 @@ These are the load-bearing decisions made before any code is written. The full r
 `comps`, `precedents`, `buyerslist`, `captable`, `lbo-model`, `infor-deck-writing`, `infor-wireframe` (typed), `deckcheck` (QA), `brand-guidelines` (→ library). Earnings update is delivered via `plans/earnings-update.yaml` rather than a standalone skill.
 
 **New skills:**
-`deck-assembler` (Phase 3 foundational), `valuation` (football field over comps + precedents + LBO), `company-profile-public`, `company-profile-private`, `industry-research` (low priority, late Phase 4).
+`deck-assembler` (Phase 3 foundational), `workbook-aggregator` (final-stage workbook consolidation), `valuation` (football field over comps + precedents + LBO), `company-profile-public`, `company-profile-private`, `industry-research` (low priority, late Phase 4).
 
 **Conductor plans:**
 `earnings-update.yaml` (decomposed Phase 3 POC), `cim.yaml` (slim 30–35 slides), `pitch.yaml`, `teaser.yaml`, `fairness-opinion.yaml`, `valuation.yaml`.
@@ -92,7 +92,7 @@ These are the load-bearing decisions made before any code is written. The full r
 ## Conventions
 
 ### Skill naming
-Skill directory names carry no trailing `-infor` suffix. A skill that is specific to one deliverable is prefixed by that deliverable: `pitch-*` for pitch-deck skills (`pitch-wireframe`, `pitch-content`), `earningsupdate-*` for earnings-update skills (`earningsupdate-wireframe`, `earningsupdate-content`). General-purpose skills reused across deliverables take a plain name (`captable`, `ltm-revenue`, `excel-to-powerpoint`, `deck-assembler`, `conductor`). The `name:` frontmatter must equal the directory name.
+Skill directory names carry no trailing `-infor` suffix. A skill that is specific to one deliverable is prefixed by that deliverable: `pitch-*` for pitch-deck skills (`pitch-wireframe`, `pitch-content`), `earningsupdate-*` for earnings-update skills (`earningsupdate-wireframe`, `earningsupdate-content`). General-purpose skills reused across deliverables take a plain name (`captable`, `ltm-revenue`, `excel-to-powerpoint`, `deck-assembler`, `workbook-aggregator`, `conductor`). The `name:` frontmatter must equal the directory name.
 
 ### Versioning — single plugin version, all skills tied to it
 One version for the entire plugin. Any skill change bumps the plugin version, and every skill's `version:` frontmatter equals the plugin version. No per-skill drift. Revisit at 20+ skills.
@@ -116,6 +116,7 @@ from earnings_update_wireframe import build_earnings_update_slide_plan, write_sl
 from earnings_update_assembler import assemble_earnings_update_deck
 from pitch_deck_wireframe import build_pitch_deck_slide_plan
 from pitch_deck_assembler import assemble_pitch_deck
+from workbook_aggregator import combine_workbooks
 from slide_library_registry import load_slide_library_registry
 from codename import resolve, find_existing, disambiguate
 from deal_init import render_init_prompt, load_or_locate_deal, save_deal_context, load_deal_context
@@ -146,6 +147,7 @@ Skills write to the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), 
 - Phase 3 — Earnings-update proof-of-concept decomposition + POC `deck-assembler`. Adds `EarningsUpdateContent`, `earningsupdate-wireframe`, `earningsupdate-content`, template-specific `deck-assembler`, and a four-stage `earnings-update.yaml`. ✅ POC shipped 2026-05-15.
 - Phase 3 slide-library POC — 14-slide `INFOR Slide Library.pptx` proof-of-concept with `PitchDeckContent`, `pitch-wireframe`, `pitch-content`, `excel-to-powerpoint`, `pitch-library-poc.yaml`, and generalized deck-assembler support. ✅ POC shipped 2026-05-16; expanded to 14 slides (Key Investment Highlights + Potential Market Entry Targets) 2026-05-28.
 - Phase 3 earnings-update onto the shared library (v0.5.0) — earnings-update deck now clones `INFOR Slide Library.pptx` (slides 1, 7, 8, 14, 15) instead of the retired standalone template. Overview slide gains an LTM revenue pie placeholder + "Introduction to {company}" title + "Capitalization Summary" cap table (`Rectangle 3`, `B15:F31`); earnings-summary metric boxes show value+name with the period in the mid-blue bar; broker values carry `$`. Adds `ltm-revenue` (standalone LTM revenue workbook) and `slide_render.py` (PNG overflow QA). ✅ shipped 2026-05-28.
+- Workbook aggregation (v0.5.2) — adds the `workbook-aggregator` skill + `workbook_aggregator.py`. A final `workbook-aggregation` stage in both the earnings-update and pitch-library-poc plans merges every companion `.xlsx` into one combined workbook named `<deliverable>-<deal name>.xlsx` (one tab per producing skill), preserving formulas/CapIQ links via Excel COM and replacing the individual source files. Runs after `deck` so the deck-assembler can still read the standalone cap table. ✅ shipped 2026-05-28.
 - Phase 4 — New skills (valuation, profiles, industry research).
 - Phase 5 — Quality + telemetry + per-skill URL allow-lists.
 - Phase 6 — MCP / portability — deferred indefinitely.

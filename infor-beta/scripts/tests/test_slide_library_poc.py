@@ -211,21 +211,31 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
         "captable",
         "ltm-revenue",
         "deck",
+        "workbook-aggregation",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
     assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
+    # Aggregation runs last so the deck stage can still read the standalone cap table.
+    assert plan.stages[-1].id == "workbook-aggregation"
 
 
 def test_pitch_library_poc_plan_stage_order():
     plan_path = PLUGIN_ROOT / "plans" / "pitch-library-poc.yaml"
     plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))
 
-    assert [stage.id for stage in plan.stages] == ["wireframe", "content", "captable", "deck"]
+    assert [stage.id for stage in plan.stages] == [
+        "wireframe",
+        "content",
+        "captable",
+        "deck",
+        "workbook-aggregation",
+    ]
     assert plan.stages[0].skill == "pitch-wireframe"
     assert plan.stages[1].skill == "pitch-content"
     assert plan.stages[2].skill == "captable"
     assert plan.stages[3].skill == "deck-assembler"
+    assert plan.stages[4].skill == "workbook-aggregator"
     assert plan.stages[3].inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert plan.stages[3].inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
     assert plan.stages[3].inputs["captable_workbook_path"] == "$stages.captable.workbook_path"

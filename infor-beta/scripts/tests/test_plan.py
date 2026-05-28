@@ -96,6 +96,7 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "captable",
         "ltm-revenue",
         "deck",
+        "workbook-aggregation",
     ]
     assert [stage.skill for stage in plan.stages] == [
         "earningsupdate-wireframe",
@@ -103,6 +104,7 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "captable",
         "ltm-revenue",
         "deck-assembler",
+        "workbook-aggregator",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert plan.stages[1].inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
