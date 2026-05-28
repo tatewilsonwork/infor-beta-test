@@ -5,7 +5,7 @@ description: >
   MD&A, or the 10-K and emit a standalone Excel workbook. Activates as the earnings-update plan
   stage `ltm-revenue`, supplying the companion breakdown behind the overview slide's LTM revenue
   pie placeholder. Segment by service / product line when disclosed, else by geography.
-version: 0.5.1
+version: 0.5.2
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 

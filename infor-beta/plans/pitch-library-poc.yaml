@@ -101,3 +101,23 @@ stages:
         type: Path
         description: Absolute path to the generated 14-slide POC .pptx deck.
     checkpoint: informational
+
+  # Final consolidation: merge every companion workbook into one file named
+  # pitch-<codename>.xlsx (one tab per producing skill) and delete the
+  # individual sources. Runs last so the deck stage can still read the
+  # standalone cap-table workbook before it is folded in. The optional comps
+  # workbook is included when supplied; the aggregator skips it when absent.
+  - id: workbook-aggregation
+    skill: workbook-aggregator
+    inputs:
+      workbooks:
+        captable: $stages.captable.workbook_path
+        comps: $plan_inputs.comps_workbook_path
+      deliverable_type: $deal.deliverable_type
+      deal_name: $deal.codename
+      output_dir: $deal.deal_dir
+    outputs:
+      - name: combined_workbook_path
+        type: Path
+        description: Absolute path to the combined workbook (one tab per producing skill); replaces the individual workbooks.
+    checkpoint: informational

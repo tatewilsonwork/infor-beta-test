@@ -1,7 +1,7 @@
 ---
 name: excel-to-powerpoint
 description: Reusable POC skill for moving Excel chart/table outputs into PowerPoint placeholders, initially cap table and comps artefacts for the slide-library POC.
-version: 0.5.1
+version: 0.5.2
 allowed-tools:
   - Read
   - Write
