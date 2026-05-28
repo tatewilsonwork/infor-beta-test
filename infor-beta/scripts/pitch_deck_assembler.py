@@ -147,7 +147,7 @@ def assemble_pitch_deck(
     """Fill the canonical 14-slide blank INFOR slide-library deck.
 
     Complex Excel-to-PowerPoint chart/table insertion is intentionally delegated
-    to `excel-to-powerpoint-infor`; this assembler preserves placeholders when
+    to `excel-to-powerpoint`; this assembler preserves placeholders when
     no inserted artefact is available.
     """
     slide_plan = SlidePlan.model_validate_json(Path(slide_plan_path).read_text(encoding="utf-8"))

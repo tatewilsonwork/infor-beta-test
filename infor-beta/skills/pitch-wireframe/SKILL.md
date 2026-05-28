@@ -1,7 +1,7 @@
 ---
-name: pitch-wireframe-infor
+name: pitch-wireframe
 description: Builds the typed SlidePlan for the 14-slide INFOR slide-library POC deck, using the blank INFOR Slide Library order as canonical.
-version: 0.5.0
+version: 0.5.1
 allowed-tools:
   - Read
   - Write
@@ -24,7 +24,7 @@ side_effects:
     description: Writes a typed SlidePlan JSON artefact to the stage output directory.
 ---
 
-# pitch-wireframe-infor
+# pitch-wireframe
 
 Builds the fixed 14-slide `SlidePlan` for the Phase 3 slide-library POC.
 

@@ -1,6 +1,6 @@
 # Earnings-update plan — Phase 3 POC
 #
-# Decomposes the former monolithic earningsupdate-infor conductor stage into
+# Decomposes the former monolithic earnings-update conductor stage into
 # typed handoffs: SlidePlan -> EarningsUpdateContent -> .pptx, all cloned from
 # the shared INFOR Slide Library. The companion cap table and the LTM revenue
 # breakdown are sibling stages that emit standalone workbooks.
@@ -24,7 +24,7 @@ plan_inputs:
 
 stages:
   - id: wireframe
-    skill: earningsupdate-wireframe-infor
+    skill: earningsupdate-wireframe
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker
@@ -37,7 +37,7 @@ stages:
     checkpoint: informational
 
   - id: content
-    skill: earningsupdate-content-infor
+    skill: earningsupdate-content
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker
@@ -52,7 +52,7 @@ stages:
     checkpoint: informational
 
   - id: captable
-    skill: captable-infor
+    skill: captable
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker
@@ -63,7 +63,7 @@ stages:
     checkpoint: informational
 
   - id: ltm-revenue
-    skill: ltm-revenue-infor
+    skill: ltm-revenue
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker

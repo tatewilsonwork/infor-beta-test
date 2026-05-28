@@ -154,6 +154,42 @@ def test_period_label_lives_in_bar_not_metric_boxes(tmp_path: Path):
     assert "Q4 2024" not in box_text
 
 
+def test_metric_tiles_format_dollars_mm_and_billions(tmp_path: Path):
+    content = _sample_content()
+    content.kpi_rows[0].prior_value = "1254"
+    content.kpi_rows[0].current_value = "1283"  # >= 1000 MM -> billions, 1 decimal
+    content.kpi_rows[1].prior_value = "395"
+    content.kpi_rows[1].current_value = "493"  # < 1000 MM -> whole millions
+
+    deck_path = _assemble_sample_deck(tmp_path, content)
+    summary = Presentation(deck_path).slides[2]
+
+    g0 = find_shape(summary, "Group 12")
+    assert "$1.3B" in find_shape_in_group(g0, "Rectangle 1034").text_frame.text
+    assert "$1.3B" in find_shape_in_group(g0, "Rectangle 1032").text_frame.text
+
+    g1 = find_shape(summary, "Group 9")
+    assert "$493MM" in find_shape_in_group(g1, "Rectangle 1037").text_frame.text
+
+    # A percent KPI tile is left untouched (no $ / MM forced onto it).
+    g3 = find_shape(summary, "Group 2")
+    assert "62.0%" in find_shape_in_group(g3, "Rectangle 1058").text_frame.text
+
+
+def test_footnote_substitutes_currency_letter_and_keeps_library_source(tmp_path: Path):
+    deck_path = _assemble_sample_deck(tmp_path)  # sample content is C$MM
+    prs = Presentation(deck_path)
+
+    overview_note = find_shape(prs.slides[1], "Text Placeholder 1").text_frame.text
+    summary_note = find_shape(prs.slides[2], "Text Placeholder 1").text_frame.text
+
+    # '[x]$MM' currency-letter token is replaced; no placeholder leftover.
+    assert "C$MM" in overview_note and "[x]" not in overview_note
+    assert "C$MM" in summary_note and "[x]" not in summary_note
+    # The standardized library source line is preserved, not re-hardcoded.
+    assert "S&P Capital IQ" in summary_note
+
+
 def test_metric_box_name_strips_currency_unit(tmp_path: Path):
     content = _sample_content()
     content.kpi_rows[0].name = "Cloud Revenue (C$MM)"

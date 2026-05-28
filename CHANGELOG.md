@@ -4,6 +4,24 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-05-28
+
+POC test-round #3 feedback on the earnings update (Open Text Corporation).
+
+### Changed
+- **Skill names standardized.** Dropped the trailing `-infor` suffix from every skill directory and `name:` frontmatter; deliverable-specific skills are now prefixed by deliverable. Renames: `captable-infor`→`captable`, `earningsupdate-wireframe-infor`→`earningsupdate-wireframe`, `earningsupdate-content-infor`→`earningsupdate-content`, `excel-to-powerpoint-infor`→`excel-to-powerpoint`, `ltm-revenue-infor`→`ltm-revenue`, `pitch-content-infor`→`pitch-content`, `pitch-wireframe-infor`→`pitch-wireframe`. Updated all references in `plans/`, tests, `pitch_deck_assembler.py`, the conductor plan-schema reference, and CLAUDE.md (which gains a "Skill naming" convention note).
+- **Removed the standalone `earningsupdate-infor` skill.** It was a thin orchestrator duplicating the `earnings-update.yaml` plan; earnings updates now run solely through the conductor plan's decomposed stages.
+- **Financial-highlights tiles now carry formatted dollars.** `earnings_update_assembler._fmt_mm` renders KPI tile values as `$XMM` (whole millions, no decimals) and auto-converts a billion or more to `$X.XB` (one decimal): `1283 → $1.3B`, `493 → $493MM`. Percent tiles are left untouched. Content supplies a plain integer in MM; the assembler adds the `$` and suffix.
+- **Revised shared slide library swapped in** (`INFOR Slide Library.pptx`): standardized source lines and a currency-letter footnote token `All figures in [x]$MM`. The assembler now preserves the library's footnote and substitutes the `C` / `US` letter (`_fill_footnote` / `_currency_letter`) instead of re-hardcoding the source string on the overview and earnings-summary slides.
+- **Content house-style for figures.** `earningsupdate-content-infor` gains a "Number & currency formatting" section: never write a currency code inline (plain `$`, currency is footnoted), `$XMM` / `$X.XB` in prose, plain-integer MM for KPI tiles, and a ~30-char abbreviation rule for KPI tile labels (`Cloud Services & Subscriptions Rev.`).
+- **Overflow QA is now mandatory** in `deck-assembler` with explicit checks: slide-2 overview must not overlap the "LTM Revenue Breakdown" title, slide-3 highlight tiles must not clip/wrap to a third line, and no figure may read as `US,…` / `C,…`.
+
+### Fixed
+- Root-caused the `US$1,057.8 → US,057.8` corruption to a regex `$1` backreference substitution (PowerShell `-replace` / JS `.replace`) eating `$<digit>` during content-JSON generation — the assembler preserves `$` correctly. Added an explicit warning in `earningsupdate-content-infor` to write values as literals and never build the JSON via regex substitution.
+
+### Bumped
+- marketplace, plugin manifest, pyproject, and all shipped skill frontmatter versions to `0.5.1`.
+
 ## [0.5.0] — 2026-05-28
 
 ### Changed

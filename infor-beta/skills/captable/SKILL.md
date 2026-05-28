@@ -1,11 +1,11 @@
 ---
-name: captable-infor
+name: captable
 description: >
   Use this skill when extracting financial data from MD&A, 10-K, 10-Q, annual reports, or financial
-  statements to populate a capitalization table. Activates on /captable-infor and on tasks involving
+  statements to populate a capitalization table. Activates on /captable and on tasks involving
   shares outstanding, debt schedules, lease obligations, options/RSU/warrant tables, convertible
   debentures, cash balances, preferred shares, or non-controlling interest sourced from company filings.
-version: 0.5.0
+version: 0.5.1
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -27,7 +27,7 @@ When invoked as a stage of a conductor plan, the environment carries `$STAGE_INP
   ```
   The conductor will not proceed past this stage until `$STAGE_OUTPUTS` exists and parses as JSON.
 
-When `$STAGE_OUTPUTS` is **unset** (direct `/captable-infor` invocation), follow the workflow below as-is — output lands in cwd, no JSON handoff needed.
+When `$STAGE_OUTPUTS` is **unset** (direct `/captable` invocation), follow the workflow below as-is — output lands in cwd, no JSON handoff needed.
 
 ---
 

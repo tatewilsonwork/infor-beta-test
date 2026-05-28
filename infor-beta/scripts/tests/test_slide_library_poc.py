@@ -222,9 +222,9 @@ def test_pitch_library_poc_plan_stage_order():
     plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))
 
     assert [stage.id for stage in plan.stages] == ["wireframe", "content", "captable", "deck"]
-    assert plan.stages[0].skill == "pitch-wireframe-infor"
-    assert plan.stages[1].skill == "pitch-content-infor"
-    assert plan.stages[2].skill == "captable-infor"
+    assert plan.stages[0].skill == "pitch-wireframe"
+    assert plan.stages[1].skill == "pitch-content"
+    assert plan.stages[2].skill == "captable"
     assert plan.stages[3].skill == "deck-assembler"
     assert plan.stages[3].inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert plan.stages[3].inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
