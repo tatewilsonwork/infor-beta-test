@@ -9,7 +9,7 @@ description: >
   EEO snip, business-update bullets, management quotes, and a short performance summary. Activates on
   "earnings update", "earnings deck", "quarterly earnings", "earnings summary deck", or any request
   to build a branded update deck off a recent 10-Q/10-K and Bloomberg EEO snip.
-version: 0.5.0
+version: 0.5.1
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 

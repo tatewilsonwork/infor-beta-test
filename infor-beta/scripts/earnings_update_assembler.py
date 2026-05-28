@@ -72,6 +72,46 @@ def _money(value: str) -> str:
     return f"${s}"
 
 
+def _fmt_mm(value: str) -> str:
+    """Format a plain figure (in MM) for a financial-highlights tile.
+
+    Convention: whole millions as ``$XMM`` (no decimals); ``>= 1,000`` MM as
+    ``$X.XB`` (one decimal). Percent values are returned untouched so a non-
+    dollar KPI tile is not mangled. Unparseable input is returned as-is.
+    """
+    s = value.strip()
+    if not s or "%" in s:
+        return s
+    neg = s.startswith("(") and s.endswith(")")
+    raw = s[1:-1] if neg else s
+    raw = raw.lstrip("+-").replace("$", "").replace(",", "").strip()
+    try:
+        num = abs(float(raw))
+    except ValueError:
+        return value
+    sign = "-" if (neg or s.lstrip().startswith("-")) else ""
+    body = f"${num / 1000:.1f}B" if num >= 1000 else f"${num:,.0f}MM"
+    return f"{sign}{body}"
+
+
+def _currency_letter(currency: str) -> str:
+    """Extract the currency letter ('US' / 'C') from a footnote scope like 'US$MM'."""
+    return currency.split("$", 1)[0].strip() or currency.strip()
+
+
+def _fill_footnote(shape, currency: str) -> None:
+    """Substitute the '[x]$MM' currency-letter token in the library footnote.
+
+    The shared library footnote ships a standardized source line plus a
+    'Note: All figures in [x]$MM, ...' line, where '[x]' is the currency
+    letter. We preserve the library copy verbatim and only swap '[x]' for
+    the deal's currency letter, rather than re-hardcoding the source string.
+    """
+    letter = _currency_letter(currency)
+    lines = [p.text.replace("[x]", letter) for p in shape.text_frame.paragraphs]
+    set_text(shape, lines)
+
+
 def _write_flexible_bullets(shape, bullets, items=None) -> None:
     """Write bullets, falling back to plain paragraphs if the shape lacks a glyph template."""
     tuples = items if items is not None else [_bullet_tuple(b) for b in bullets]
@@ -107,13 +147,7 @@ def _set_overview(slide, content: EarningsUpdateContent) -> None:
         find_shape(slide, "TextBox 9"),
         content.company_overview_bullets,
     )
-    set_text(
-        find_shape(slide, "Text Placeholder 1"),
-        [
-            "Source: Company filings, S&P Capital IQ ",
-            f"Note: All figures in {content.currency}, except where indicated otherwise",
-        ],
-    )
+    _fill_footnote(find_shape(slide, "Text Placeholder 1"), content.currency)
 
 
 # (group_name, prior_box, current_box, variance_box) for the four metric rows.
@@ -130,13 +164,7 @@ def _set_earnings_summary(slide, content: EarningsUpdateContent) -> None:
         find_shape(slide, "Title 1"),
         [f"{content.company_name} {content.reporting_quarter} Earnings Summary"],
     )
-    set_text(
-        find_shape(slide, "Text Placeholder 1"),
-        [
-            "Source: Company filings, S&P CapIQ, equity research ",
-            f"Note: All figures in {content.currency}, except where indicated otherwise",
-        ],
-    )
+    _fill_footnote(find_shape(slide, "Text Placeholder 1"), content.currency)
 
     # Period header bar (mid-blue) below the Financial Highlights title bar:
     # comparison quarter | Variance | reporting quarter.
@@ -157,8 +185,8 @@ def _set_earnings_summary(slide, content: EarningsUpdateContent) -> None:
     ):
         group = find_shape(slide, group_name)
         name = _strip_currency_unit(kpi.name)
-        set_text(find_shape_in_group(group, prior_box), [kpi.prior_value, name])
-        set_text(find_shape_in_group(group, current_box), [kpi.current_value, name])
+        set_text(find_shape_in_group(group, prior_box), [_fmt_mm(kpi.prior_value), name])
+        set_text(find_shape_in_group(group, current_box), [_fmt_mm(kpi.current_value), name])
         color = COLOR_UP if kpi.delta_sign > 0 else (COLOR_DOWN if kpi.delta_sign < 0 else None)
         set_text(find_shape_in_group(group, var_box), [kpi.delta_str], size_pt=10, color_hex=color)
 

@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.0
+version: 0.5.1
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -43,7 +43,7 @@ When invoked by the conductor, read:
 4. If `earnings-update`, call `assemble_earnings_update_deck(...)` and pass `captable_workbook_path` when supplied so slide 2's cap-table placeholder is replaced.
 5. If `pitch`, call `assemble_pitch_deck(...)`.
 6. Write the deck under `$DEAL_DIR/artefacts/` when `$DEAL_DIR` is set; otherwise use the supplied `output_dir`.
-7. **Overflow QA** (see below) — render the overflow-prone slides to PNG, inspect, and autofit until text is clean.
+7. **Overflow QA — mandatory, do not skip** (see below). Render the overflow-prone slides to PNG, read each PNG, and autofit until text is clean. This stage is not complete until the QA has run; if the renderer is unavailable, say so explicitly rather than skipping silently.
 8. Write `$STAGE_OUTPUTS` as:
 
 ```json
@@ -64,15 +64,26 @@ When invoked by the conductor, read:
 - Slide 10: comps takeaway; chart placeholder stays unless insertion replaces it later.
 - Slides 11–12: static, do not touch.
 
-## Overflow QA
+## Overflow QA (mandatory)
 
 Text overflow (bullets spilling past a divider, a metric label wrapping onto a
 third line) is invisible to python-pptx — the XML is valid, the text just
-doesn't fit. After assembling the deck, render the overflow-prone slides to PNG
-and visually inspect them:
+doesn't fit. After assembling the deck you **must** render the overflow-prone
+slides to PNG and visually inspect them — this step is not optional and the
+stage is incomplete without it:
 
-- **Earnings update**: render slides 2 and 3 (overview bullets + business-update
-  bullets are the recurring offenders).
+- **Earnings update**: render slides 2 and 3, and check specifically for:
+  - Slide 2 — the company-overview bullet block must not run under or overlap
+    the **"LTM Revenue Breakdown"** title or the pie/cap-table region.
+  - Slide 3 — every **Financial Highlights** metric tile must show its value and
+    label on at most two lines with no text touching the tile edge. A label like
+    `Cloud Services & Subscriptions Revenue` that wraps to a third line or clips
+    is a failure: shrink it via `enable_normal_autofit`, and if it still
+    overflows, the label is too long — the content stage must abbreviate it
+    (e.g. `Cloud Services & Subscriptions Rev.`).
+  - Both slides — confirm no figure reads as `US,…` / `C,…` (a dropped `$` and
+    digit from a regex-substitution bug upstream); every dollar figure must
+    start with a plain `$`.
 - **Pitch**: render slides 2, 7, and 9 (executive summary, company overview,
   risks/mitigants).
 
