@@ -1,5 +1,5 @@
 ---
-name: excel-to-powerpoint-infor
+name: excel-to-powerpoint
 description: Reusable POC skill for moving Excel chart/table outputs into PowerPoint placeholders, initially cap table and comps artefacts for the slide-library POC.
 version: 0.5.1
 allowed-tools:
@@ -24,15 +24,15 @@ side_effects:
     description: Writes or updates a PowerPoint deck with Excel content placed into a placeholder.
 ---
 
-# excel-to-powerpoint-infor
+# excel-to-powerpoint
 
 Reusable Excel-to-PowerPoint insertion stage for INFOR decks.
 
 Current implemented use:
-- earnings-update cap table workbook from `captable-infor` → overview slide `Rectangle 3` Capitalization Summary placeholder via `scripts/excel_to_powerpoint.py::insert_cap_table_into_placeholder`
+- earnings-update cap table workbook from `captable` → overview slide `Rectangle 3` Capitalization Summary placeholder via `scripts/excel_to_powerpoint.py::insert_cap_table_into_placeholder`
 
 POC/future uses:
-- pitch slide-library cap table workbook from `captable-infor` → Slide 7 cap table placeholder
+- pitch slide-library cap table workbook from `captable` → Slide 7 cap table placeholder
 - comps workbook/chart → Slide 10 comps placeholder
 
 Current boundary:

@@ -1,5 +1,5 @@
 ---
-name: pitch-content-infor
+name: pitch-content
 description: Drafts the broad typed content bundle for the 14-slide INFOR slide-library POC deck from analyst notes and optional supporting sources.
 version: 0.5.1
 allowed-tools:
@@ -28,7 +28,7 @@ side_effects:
     description: Writes a typed PitchDeckContent JSON artefact to the stage output directory.
 ---
 
-# pitch-content-infor
+# pitch-content
 
 Drafts the single broad `PitchDeckContent` handoff for the Phase 3 slide-library POC.
 

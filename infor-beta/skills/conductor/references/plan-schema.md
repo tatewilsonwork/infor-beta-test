@@ -27,8 +27,8 @@ stages:
 ## Stage fields
 
 ```yaml
-- id: earnings_update
-  skill: earningsupdate-infor
+- id: content
+  skill: earningsupdate-content
   inputs:
     company: $deal.subject_company
     ticker: $deal.subject_company.ticker

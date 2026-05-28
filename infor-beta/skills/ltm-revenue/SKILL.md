@@ -1,5 +1,5 @@
 ---
-name: ltm-revenue-infor
+name: ltm-revenue
 description: >
   Use this skill to extract a company's last-twelve-months (LTM) revenue breakdown from filings,
   MD&A, or the 10-K and emit a standalone Excel workbook. Activates as the earnings-update plan

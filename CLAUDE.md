@@ -59,7 +59,7 @@ These are the load-bearing decisions made before any code is written. The full r
 - Skills emit **typed output** in addition to (or instead of) free-form files. Composing skills consume typed input.
 - `infor-wireframe` emits a typed `SlidePlan` (markdown view kept for analyst readability).
 - `brand-guidelines-infor` is demoted to a **library** consumed by `deck-assembler` and `deckcheck-infor` — not a stage in any plan.
-- `earningsupdate-infor` is decomposed into `plans/earnings-update.yaml` (Phase 2 pilot).
+- Earnings updates are delivered solely via `plans/earnings-update.yaml`; the standalone monolith skill was removed (its work is the decomposed `earningsupdate-wireframe` / `earningsupdate-content` / `captable` / `ltm-revenue` / `deck-assembler` stages).
 
 **Slide library**
 - Multiple library entries per slide concept × layout combination (e.g. `company-overview-two-col`, `company-overview-full-bleed`). No parameterised `variants:` field. One `.pptx` per entry.
@@ -79,10 +79,10 @@ These are the load-bearing decisions made before any code is written. The full r
 ## v1 skill portfolio
 
 **Refactored from old repo:**
-`comps-infor`, `precedents-infor`, `buyerslist-infor`, `captable-infor`, `lbo-model`, `infor-deck-writing`, `infor-wireframe` (typed), `deckcheck-infor` (QA), `brand-guidelines-infor` (→ library), `earningsupdate-infor` (→ plan).
+`comps`, `precedents`, `buyerslist`, `captable`, `lbo-model`, `infor-deck-writing`, `infor-wireframe` (typed), `deckcheck` (QA), `brand-guidelines` (→ library). Earnings update is delivered via `plans/earnings-update.yaml` rather than a standalone skill.
 
 **New skills:**
-`deck-assembler` (Phase 3 foundational), `valuation-infor` (football field over comps + precedents + LBO), `company-profile-public-infor`, `company-profile-private-infor`, `industry-research-infor` (low priority, late Phase 4).
+`deck-assembler` (Phase 3 foundational), `valuation` (football field over comps + precedents + LBO), `company-profile-public`, `company-profile-private`, `industry-research` (low priority, late Phase 4).
 
 **Conductor plans:**
 `earnings-update.yaml` (decomposed Phase 3 POC), `cim.yaml` (slim 30–35 slides), `pitch.yaml`, `teaser.yaml`, `fairness-opinion.yaml`, `valuation.yaml`.
@@ -90,6 +90,9 @@ These are the load-bearing decisions made before any code is written. The full r
 **Removed from scope:** management presentations, diligence support, research pipelines.
 
 ## Conventions
+
+### Skill naming
+Skill directory names carry no trailing `-infor` suffix. A skill that is specific to one deliverable is prefixed by that deliverable: `pitch-*` for pitch-deck skills (`pitch-wireframe`, `pitch-content`), `earningsupdate-*` for earnings-update skills (`earningsupdate-wireframe`, `earningsupdate-content`). General-purpose skills reused across deliverables take a plain name (`captable`, `ltm-revenue`, `excel-to-powerpoint`, `deck-assembler`, `conductor`). The `name:` frontmatter must equal the directory name.
 
 ### Versioning — single plugin version, all skills tied to it
 One version for the entire plugin. Any skill change bumps the plugin version, and every skill's `version:` frontmatter equals the plugin version. No per-skill drift. Revisit at 20+ skills.
@@ -139,10 +142,10 @@ Skills write to the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), 
 
 - Phase 0 — Stabilise & document. ✅ shipped 2026-05-14.
 - Phase 1 — Deal model + typed I/O contract (`Company`, `Filing`, `SlidePlan`, `DealContext`, `SkillManifest`). ✅ shipped 2026-05-14.
-- Phase 2 — Conductor v1 meta-skill + earnings-update plan pilot. Adds `Plan` / `Stage` schemas, `plan_refs` resolver, `deal_init` and `run_log` helpers, ports `earningsupdate-infor` + `captable-infor`. ✅ shipped 2026-05-15.
-- Phase 3 — Earnings-update proof-of-concept decomposition + POC `deck-assembler`. Adds `EarningsUpdateContent`, `earningsupdate-wireframe-infor`, `earningsupdate-content-infor`, template-specific `deck-assembler`, and a four-stage `earnings-update.yaml`. ✅ POC shipped 2026-05-15.
-- Phase 3 slide-library POC — 14-slide `INFOR Slide Library.pptx` proof-of-concept with `PitchDeckContent`, `pitch-wireframe-infor`, `pitch-content-infor`, `excel-to-powerpoint-infor`, `pitch-library-poc.yaml`, and generalized deck-assembler support. ✅ POC shipped 2026-05-16; expanded to 14 slides (Key Investment Highlights + Potential Market Entry Targets) 2026-05-28.
-- Phase 3 earnings-update onto the shared library (v0.5.0) — earnings-update deck now clones `INFOR Slide Library.pptx` (slides 1, 7, 8, 14, 15) instead of the retired standalone template. Overview slide gains an LTM revenue pie placeholder + "Introduction to {company}" title + "Capitalization Summary" cap table (`Rectangle 3`, `B15:F31`); earnings-summary metric boxes show value+name with the period in the mid-blue bar; broker values carry `$`. Adds `ltm-revenue-infor` (standalone LTM revenue workbook) and `slide_render.py` (PNG overflow QA). ✅ shipped 2026-05-28.
+- Phase 2 — Conductor v1 meta-skill + earnings-update plan pilot. Adds `Plan` / `Stage` schemas, `plan_refs` resolver, `deal_init` and `run_log` helpers, ports the earnings-update monolith (later removed in v0.5.1) + `captable`. ✅ shipped 2026-05-15.
+- Phase 3 — Earnings-update proof-of-concept decomposition + POC `deck-assembler`. Adds `EarningsUpdateContent`, `earningsupdate-wireframe`, `earningsupdate-content`, template-specific `deck-assembler`, and a four-stage `earnings-update.yaml`. ✅ POC shipped 2026-05-15.
+- Phase 3 slide-library POC — 14-slide `INFOR Slide Library.pptx` proof-of-concept with `PitchDeckContent`, `pitch-wireframe`, `pitch-content`, `excel-to-powerpoint`, `pitch-library-poc.yaml`, and generalized deck-assembler support. ✅ POC shipped 2026-05-16; expanded to 14 slides (Key Investment Highlights + Potential Market Entry Targets) 2026-05-28.
+- Phase 3 earnings-update onto the shared library (v0.5.0) — earnings-update deck now clones `INFOR Slide Library.pptx` (slides 1, 7, 8, 14, 15) instead of the retired standalone template. Overview slide gains an LTM revenue pie placeholder + "Introduction to {company}" title + "Capitalization Summary" cap table (`Rectangle 3`, `B15:F31`); earnings-summary metric boxes show value+name with the period in the mid-blue bar; broker values carry `$`. Adds `ltm-revenue` (standalone LTM revenue workbook) and `slide_render.py` (PNG overflow QA). ✅ shipped 2026-05-28.
 - Phase 4 — New skills (valuation, profiles, industry research).
 - Phase 5 — Quality + telemetry + per-skill URL allow-lists.
 - Phase 6 — MCP / portability — deferred indefinitely.

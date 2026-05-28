@@ -1,5 +1,5 @@
 ---
-name: earningsupdate-content-infor
+name: earningsupdate-content
 description: >
   Use this skill as the Phase 3 POC content stage for a quarterly earnings update. It consumes a
   typed SlidePlan plus source inputs and emits a strict EarningsUpdateContent JSON bundle for the

@@ -1,5 +1,5 @@
 ---
-name: earningsupdate-wireframe-infor
+name: earningsupdate-wireframe
 description: >
   Use this skill as the Phase 3 POC wireframe stage for a quarterly earnings update. It consumes
   conductor stage inputs and emits a typed SlidePlan JSON artefact for the fixed 5-slide

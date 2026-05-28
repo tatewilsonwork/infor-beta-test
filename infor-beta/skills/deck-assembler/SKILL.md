@@ -58,7 +58,7 @@ When invoked by the conductor, read:
 - Slide 2: executive summary bullets.
 - Slides 3–5: static, do not touch.
 - Slide 6: section divider labels.
-- Slide 7: company overview bullets; cap table placeholder stays unless `excel-to-powerpoint-infor` replaces it later.
+- Slide 7: company overview bullets; cap table placeholder stays unless `excel-to-powerpoint` replaces it later.
 - Slide 8: metric labels only; charts stay placeholders.
 - Slide 9: concise risks/mitigants + tagline.
 - Slide 10: comps takeaway; chart placeholder stays unless insertion replaces it later.

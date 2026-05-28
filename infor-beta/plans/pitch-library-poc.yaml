@@ -47,7 +47,7 @@ plan_inputs:
 
 stages:
   - id: wireframe
-    skill: pitch-wireframe-infor
+    skill: pitch-wireframe
     inputs:
       company: $deal.subject_company
       client_name: $plan_inputs.client_name
@@ -60,7 +60,7 @@ stages:
     checkpoint: informational
 
   - id: content
-    skill: pitch-content-infor
+    skill: pitch-content
     inputs:
       company: $deal.subject_company
       client_name: $plan_inputs.client_name
@@ -77,7 +77,7 @@ stages:
     checkpoint: informational
 
   - id: captable
-    skill: captable-infor
+    skill: captable
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker

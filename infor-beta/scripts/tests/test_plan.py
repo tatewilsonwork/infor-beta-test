@@ -11,7 +11,7 @@ from schemas import InputSpec, OutputSpec, Plan, Stage
 def _base_stage(**overrides):
     kwargs = dict(
         id="earnings_update",
-        skill="earningsupdate-infor",
+        skill="earningsupdate-wireframe",
         inputs={"company": "$deal.subject_company"},
         outputs=[OutputSpec(name="deck_path", type="Path")],
     )
@@ -74,7 +74,7 @@ def test_two_stage_plan_round_trip():
             _base_stage(id="earnings_update"),
             _base_stage(
                 id="captable",
-                skill="captable-infor",
+                skill="captable",
                 inputs={"ticker": "$deal.subject_company.ticker"},
                 outputs=[OutputSpec(name="workbook_path", type="Path")],
             ),
@@ -98,10 +98,10 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "deck",
     ]
     assert [stage.skill for stage in plan.stages] == [
-        "earningsupdate-wireframe-infor",
-        "earningsupdate-content-infor",
-        "captable-infor",
-        "ltm-revenue-infor",
+        "earningsupdate-wireframe",
+        "earningsupdate-content",
+        "captable",
+        "ltm-revenue",
         "deck-assembler",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
