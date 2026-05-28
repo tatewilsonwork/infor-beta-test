@@ -1,11 +1,13 @@
 """Unit tests for the POC earnings-update deck assembler."""
 
+import shutil
 from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.oxml.ns import qn
 from earnings_update_assembler import assemble_earnings_update_deck
 from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
 from schemas import Company, EarningsUpdateContent
@@ -157,6 +159,45 @@ def test_assemble_earnings_update_deck_does_not_bold_overview_headers(tmp_path: 
     assert all(run.font.bold is not True for run in header_runs)
 
 
+def test_assemble_earnings_update_deck_strips_currency_units_from_broker_labels(tmp_path: Path):
+    content = _sample_content()
+    content.broker_rows[0].label = "Revenue (US$MM)"
+    content.broker_rows[1].label = "Adj. EBITDA (US$MM)"
+    content.broker_rows[2].label = "EPS (US$)"  # per-share — should NOT be stripped
+    content.broker_rows[3].label = "Operating income (C$MM)"
+    content.broker_rows[4].label = "Free cashflow (MM)"
+
+    deck_path = _assemble_sample_deck(tmp_path, content)
+
+    slide3 = Presentation(deck_path).slides[2]
+    table = next(s for s in slide3.shapes if s.shape_type == 19).table
+    labels = [table.cell(i, 0).text_frame.text for i in range(1, 6)]
+    assert labels == [
+        "Revenue",
+        "Adj. EBITDA",
+        "EPS (US$)",
+        "Operating income",
+        "Free cashflow",
+    ]
+
+
+def test_assemble_earnings_update_deck_enables_autofit_on_overflow_shapes(tmp_path: Path):
+    """Slides 2 and 3 host variable-length copy; both need shrink-on-overflow."""
+    deck_path = _assemble_sample_deck(tmp_path)
+
+    prs = Presentation(deck_path)
+    overview = next(s for s in prs.slides[1].shapes if s.name == "TextBox 16")
+    business = next(s for s in prs.slides[2].shapes if s.name == "TextBox 1067")
+
+    for shape in (overview, business):
+        bodyPr = shape.text_frame._txBody.find(qn("a:bodyPr"))
+        assert bodyPr is not None, f"{shape.name} must have a bodyPr"
+        autofit = bodyPr.find(qn("a:normAutofit"))
+        assert autofit is not None, (
+            f"{shape.name} must have <a:normAutofit/> to shrink on overflow"
+        )
+
+
 def test_assemble_earnings_update_deck_inserts_cap_table_from_workbook(tmp_path: Path):
     pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
 
@@ -177,3 +218,28 @@ def test_assemble_earnings_update_deck_inserts_cap_table_from_workbook(tmp_path:
     pic = pictures[-1]
     assert pic.width == 4140000, f"picture width should match placeholder (4140000 EMU), got {pic.width}"
     assert pic.height == 4947508, f"picture height should match placeholder (4947508 EMU), got {pic.height}"
+
+
+def test_assemble_earnings_update_deck_inserts_cap_table_via_libreoffice(tmp_path: Path):
+    """LibreOffice fallback path for Cowork / Linux runs.
+
+    Skips when neither soffice nor libreoffice is on PATH. The fallback is
+    also skipped on Windows because the COM path takes precedence there.
+    """
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("Windows uses the Excel COM path; LibreOffice fallback exercised on other OSes")
+    if shutil.which("soffice") is None and shutil.which("libreoffice") is None:
+        pytest.skip("LibreOffice not installed; cannot exercise the fallback renderer")
+    pytest.importorskip("pypdfium2", reason="pypdfium2 required for the LibreOffice fallback")
+
+    workbook_path = _write_sample_cap_table(tmp_path / "cap-table.xlsx")
+
+    deck_path = _assemble_sample_deck(tmp_path, captable_workbook_path=workbook_path)
+
+    prs = Presentation(deck_path)
+    slide2 = prs.slides[1]
+    assert next((s for s in slide2.shapes if s.name == "Rectangle 4"), None) is None
+    pictures = [s for s in slide2.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    assert pictures, "expected a picture shape on slide 2 after LibreOffice insertion"
