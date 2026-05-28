@@ -1,5 +1,52 @@
 {
   "$defs": {
+    "InvestmentHighlight": {
+      "additionalProperties": false,
+      "description": "One numbered quadrant on the Key Investment Highlights slide.",
+      "properties": {
+        "bullets": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "minItems": 1,
+          "title": "Bullets",
+          "type": "array"
+        },
+        "header": {
+          "maxLength": 90,
+          "minLength": 1,
+          "title": "Header",
+          "type": "string"
+        }
+      },
+      "required": [
+        "header",
+        "bullets"
+      ],
+      "title": "InvestmentHighlight",
+      "type": "object"
+    },
+    "MarketEntryTarget": {
+      "additionalProperties": false,
+      "description": "One target column on the Potential Market Entry Targets slide.\n\n`cells` are positional values aligned 1:1 with `market_entry_row_labels`.",
+      "properties": {
+        "cells": {
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 12,
+          "minItems": 1,
+          "title": "Cells",
+          "type": "array"
+        }
+      },
+      "required": [
+        "cells"
+      ],
+      "title": "MarketEntryTarget",
+      "type": "object"
+    },
     "PitchBullet": {
       "additionalProperties": false,
       "description": "Flexible bullet item used by the deck-content POC.",
@@ -124,11 +171,61 @@
       "title": "Financial Metric Labels",
       "type": "array"
     },
+    "investment_highlights": {
+      "items": {
+        "$ref": "#/$defs/InvestmentHighlight"
+      },
+      "maxItems": 4,
+      "title": "Investment Highlights",
+      "type": "array"
+    },
+    "investment_highlights_tagline": {
+      "anyOf": [
+        {
+          "maxLength": 240,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Investment Highlights Tagline"
+    },
     "manual_steps": {
       "items": {
         "type": "string"
       },
       "title": "Manual Steps",
+      "type": "array"
+    },
+    "market_entry_market": {
+      "anyOf": [
+        {
+          "maxLength": 60,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Market Entry Market"
+    },
+    "market_entry_row_labels": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 12,
+      "title": "Market Entry Row Labels",
+      "type": "array"
+    },
+    "market_entry_targets": {
+      "items": {
+        "$ref": "#/$defs/MarketEntryTarget"
+      },
+      "maxItems": 2,
+      "title": "Market Entry Targets",
       "type": "array"
     },
     "presentation_date": {

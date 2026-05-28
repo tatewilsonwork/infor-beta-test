@@ -141,7 +141,7 @@ Skills write to the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), 
 - Phase 1 — Deal model + typed I/O contract (`Company`, `Filing`, `SlidePlan`, `DealContext`, `SkillManifest`). ✅ shipped 2026-05-14.
 - Phase 2 — Conductor v1 meta-skill + earnings-update plan pilot. Adds `Plan` / `Stage` schemas, `plan_refs` resolver, `deal_init` and `run_log` helpers, ports `earningsupdate-infor` + `captable-infor`. ✅ shipped 2026-05-15.
 - Phase 3 — Earnings-update proof-of-concept decomposition + POC `deck-assembler`. Adds `EarningsUpdateContent`, `earningsupdate-wireframe-infor`, `earningsupdate-content-infor`, template-specific `deck-assembler`, and a four-stage `earnings-update.yaml`. ✅ POC shipped 2026-05-15.
-- Phase 3 slide-library POC — 12-slide `INFOR Slide Library.pptx` proof-of-concept with `PitchDeckContent`, `pitch-wireframe-infor`, `pitch-content-infor`, `excel-to-powerpoint-infor`, `pitch-library-poc.yaml`, and generalized deck-assembler support. ✅ POC shipped 2026-05-16.
+- Phase 3 slide-library POC — 14-slide `INFOR Slide Library.pptx` proof-of-concept with `PitchDeckContent`, `pitch-wireframe-infor`, `pitch-content-infor`, `excel-to-powerpoint-infor`, `pitch-library-poc.yaml`, and generalized deck-assembler support. ✅ POC shipped 2026-05-16; expanded to 14 slides (Key Investment Highlights + Potential Market Entry Targets) 2026-05-28.
 - Phase 4 — New skills (valuation, profiles, industry research).
 - Phase 5 — Quality + telemetry + per-skill URL allow-lists.
 - Phase 6 — MCP / portability — deferred indefinitely.

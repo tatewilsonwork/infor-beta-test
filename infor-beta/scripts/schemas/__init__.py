@@ -17,7 +17,14 @@ from .earnings_update_content import (
     ManagementQuote,
     SourceNote,
 )
-from .pitch_deck_content import PitchDeckContent, PitchBullet, RiskMitigantRow, PitchSourceNote
+from .pitch_deck_content import (
+    PitchDeckContent,
+    PitchBullet,
+    RiskMitigantRow,
+    InvestmentHighlight,
+    MarketEntryTarget,
+    PitchSourceNote,
+)
 from .deal_context import DealContext, DeliverableType
 from .plan import Plan, Stage, CheckpointMode
 from .skill_manifest import (
@@ -42,6 +49,8 @@ __all__ = [
     "PitchDeckContent",
     "PitchBullet",
     "RiskMitigantRow",
+    "InvestmentHighlight",
+    "MarketEntryTarget",
     "PitchSourceNote",
     "DealContext",
     "DeliverableType",

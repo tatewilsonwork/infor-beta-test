@@ -1,4 +1,4 @@
-"""Assembler for the 12-slide INFOR slide-library POC deck."""
+"""Assembler for the 14-slide INFOR slide-library POC deck."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from pptx_helpers import find_shape, set_cell_text, set_text, write_bulleted_shape
 from schemas import PitchDeckContent, SlidePlan
@@ -65,6 +66,70 @@ def _write_flexible_bullets(shape, bullets) -> None:
         set_text(shape, [bullet.text for bullet in bullets])
 
 
+def _iter_all_shapes(shapes):
+    for shape in shapes:
+        yield shape
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            yield from _iter_all_shapes(shape.shapes)
+
+
+def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
+    """Fill the four numbered highlight quadrants; leave placeholders if no content."""
+    if not content.investment_highlights:
+        return
+    quadrants: list[tuple[int, object, object]] = []
+    for group in slide.shapes:
+        if group.shape_type != MSO_SHAPE_TYPE.GROUP or not group.name.startswith("Group"):
+            continue
+        number = header_shape = body_shape = None
+        for sub in _iter_all_shapes(group.shapes):
+            if sub.name.startswith("Oval") and getattr(sub, "has_text_frame", False) and sub.text.strip().isdigit():
+                number = int(sub.text.strip())
+            elif sub.name.startswith("Arrow: Pentagon"):
+                header_shape = sub
+            elif sub.name.startswith("Rectangle") and getattr(sub, "has_text_frame", False) and "[x]" in sub.text:
+                body_shape = sub
+        if number is not None and header_shape is not None and body_shape is not None:
+            quadrants.append((number, header_shape, body_shape))
+    quadrants.sort(key=lambda q: q[0])
+    for idx, (_, header_shape, body_shape) in enumerate(quadrants):
+        if idx < len(content.investment_highlights):
+            highlight = content.investment_highlights[idx]
+            set_text(header_shape, [highlight.header])
+            set_text(body_shape, list(highlight.bullets))
+        else:
+            set_text(header_shape, [""])
+            set_text(body_shape, [""])
+    if content.investment_highlights_tagline:
+        for shape in slide.shapes:
+            if shape.name == "Text Placeholder 2" and getattr(shape, "has_text_frame", False):
+                set_text(shape, [content.investment_highlights_tagline])
+
+
+def _fill_market_entry_targets(slide, content: PitchDeckContent) -> None:
+    """Fill the market-entry comparison table; logos stay deferred image placeholders."""
+    if content.market_entry_market:
+        set_text(
+            find_shape(slide, "Title 1"),
+            [f"Potential {content.market_entry_market} Market Entry Targets"],
+        )
+    if not content.market_entry_targets:
+        return
+    table = _table_shape(slide).table
+    labels = content.market_entry_row_labels
+    # Table row 0 is the blank logo/header row; data labels start at row 1.
+    for i, label in enumerate(labels):
+        row = i + 1
+        if row >= len(table.rows):
+            break
+        set_cell_text(table.cell(row, 0), label, size_pt=8)
+        for col, target in enumerate(content.market_entry_targets, start=1):
+            set_cell_text(table.cell(row, col), target.cells[i], size_pt=8)
+    for row in range(len(labels) + 1, len(table.rows)):
+        for col in range(len(table.columns)):
+            set_cell_text(table.cell(row, col), "", size_pt=8)
+
+
 def assemble_pitch_deck(
     *,
     slide_plan_path: Path | str,
@@ -74,7 +139,7 @@ def assemble_pitch_deck(
     captable_workbook_path: Path | str | None = None,
     comps_workbook_path: Path | str | None = None,
 ) -> Path:
-    """Fill the canonical 12-slide blank INFOR slide-library deck.
+    """Fill the canonical 14-slide blank INFOR slide-library deck.
 
     Complex Excel-to-PowerPoint chart/table insertion is intentionally delegated
     to `excel-to-powerpoint-infor`; this assembler preserves placeholders when
@@ -84,8 +149,8 @@ def assemble_pitch_deck(
     content = PitchDeckContent.model_validate_json(Path(content_path).read_text(encoding="utf-8"))
     if slide_plan.deliverable_type != "pitch":
         raise ValueError("pitch deck assembler only supports pitch SlidePlan objects")
-    if len(slide_plan.slides) != 12:
-        raise ValueError("pitch deck POC expects the 12-slide INFOR Slide Library template")
+    if len(slide_plan.slides) != 14:
+        raise ValueError("pitch deck POC expects the 14-slide INFOR Slide Library template")
 
     template = Path(template_path)
     if not template.exists():
@@ -156,7 +221,13 @@ def assemble_pitch_deck(
     slide10 = prs.slides[9]
     set_text(find_shape(slide10, "Text Placeholder 5"), [content.comps_takeaway])
 
-    # Slides 11–12 are static. Do not touch.
+    # Slide 11 — key investment highlights; placeholders remain unless content supplies them.
+    _fill_investment_highlights(prs.slides[10], content)
+
+    # Slide 12 — potential market-entry targets; logos remain deferred image placeholders.
+    _fill_market_entry_targets(prs.slides[11], content)
+
+    # Slides 13–14 (disclaimer, contact) are static. Do not touch.
 
     prs.save(output_path)
     _verify_pitch_output(output_path)

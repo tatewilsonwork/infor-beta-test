@@ -1,4 +1,4 @@
-"""Build the 12-slide SlidePlan for the INFOR slide-library POC."""
+"""Build the 14-slide SlidePlan for the INFOR slide-library POC."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def build_pitch_deck_slide_plan(
     section_labels: list[str] | None = None,
     current_section: str | None = None,
 ) -> SlidePlan:
-    """Return the canonical 12-slide plan for the slide-library POC."""
+    """Return the canonical 14-slide plan for the slide-library POC."""
     name = _company_name(company)
     labels = section_labels or ["Overview", "Financial Summary", "Valuation", "Process"]
     current = current_section or labels[0]
@@ -48,6 +48,13 @@ def build_pitch_deck_slide_plan(
         elif entry.library_entry_id == "comparable-companies":
             content_block["requires"] = ["comps_takeaway"]
             content_block["optional"] = ["comps_chart_or_table"]
+        elif entry.library_entry_id == "key-investment-highlights":
+            content_block["requires"] = ["investment_highlights"]
+            content_block["optional"] = ["investment_highlights_tagline"]
+        elif entry.library_entry_id == "market-entry-targets":
+            content_block["requires"] = ["market_entry_row_labels", "market_entry_targets"]
+            content_block["optional"] = ["market_entry_market"]
+            content_block["deferred"] = ["target_logos"]
         slides.append(
             SlideEntry(
                 library_entry_id=entry.library_entry_id,
@@ -74,6 +81,8 @@ def _section_for(entry_id: str) -> str:
         return "Overview"
     if entry_id in {"acquirer-considerations-mitigants", "comparable-companies"}:
         return "Valuation"
+    if entry_id in {"key-investment-highlights", "market-entry-targets"}:
+        return "Appendix"
     return "Appendix"
 
 
