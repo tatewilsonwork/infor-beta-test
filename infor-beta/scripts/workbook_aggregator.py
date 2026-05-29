@@ -1,6 +1,6 @@
 """Aggregate every Excel workbook produced during a deliverable into one file.
 
-The conductor runs the workbook-producing stages (captable, ltm-revenue,
+The conductor runs the workbook-producing stages (captable, ltm-metrics,
 comps, ...) as siblings, each emitting a standalone `.xlsx` under the deal's
 `artefacts/`. This helper is the final consolidation stage: it merges those
 workbooks into a single combined workbook named `<deliverable>-<deal name>.xlsx`
@@ -22,7 +22,7 @@ Two merge backends, mirroring `excel_to_powerpoint.py`:
     charts do NOT survive this path; use it only when COM is unavailable.
 
 Tab naming: a single-sheet source becomes one tab named after the skill
-(`captable`, `ltm-revenue`); a multi-sheet source contributes one tab per
+(`captable`, `ltm-metrics`); a multi-sheet source contributes one tab per
 sheet named `<skill>-<sheet>`. Excel's 31-char / forbidden-character / unique
 constraints are enforced in both backends.
 """

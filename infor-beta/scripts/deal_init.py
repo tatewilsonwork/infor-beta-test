@@ -40,6 +40,12 @@ What deal is this for?
 4. Public or private?:        (public → ask for ticker + exchange; private → skip)
 5. Sector / industry:         (one line, free-form)
 6. Filings / attachments:     (drop now or "none for now")
+                              For LTM deliverables (earnings update, valuation)
+                              I also need the prior full fiscal year's
+                              statements/MD&A — LTM = FY + current YTD − prior
+                              YTD, so a single interim filing isn't enough. The
+                              cap table is still built off the most recent
+                              statement; the older FY is only for the LTM math.
 7. Anything else?:            (optional analyst notes)
 """
 

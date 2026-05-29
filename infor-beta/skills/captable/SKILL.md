@@ -5,7 +5,7 @@ description: >
   statements to populate a capitalization table. Activates on /captable and on tasks involving
   shares outstanding, debt schedules, lease obligations, options/RSU/warrant tables, convertible
   debentures, cash balances, preferred shares, or non-controlling interest sourced from company filings.
-version: 0.5.3
+version: 0.5.4
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -45,6 +45,8 @@ If either is missing, ask in a single message:
 > - **Documents to attach:** Most recent 10-K or annual report — I need the balance sheet, long-term debt note, lease footnote, equity compensation footnote, and shares outstanding disclosure to fill in the template."
 
 Wait for both the ticker and at least one attached document before proceeding.
+
+> **Build the cap table off the *most recent* reported statement only.** If the analyst has attached more than one period (e.g. a prior full fiscal year alongside the latest 10-Q), the older statement is there for the `ltm-metrics` LTM bridge, **not** for the cap table. Always source shares outstanding, debt, leases, cash, etc. from the latest reported balance sheet — never from the older FY statement.
 
 ---
 

@@ -42,7 +42,7 @@ def build_earnings_update_slide_plan(
             content_block={
                 "requires": ["company_overview_bullets", "currency"],
                 "cap_table_placeholder": "Leave Rectangle 3 untouched for analyst-pasted cap table (Capitalization Summary).",
-                "ltm_revenue_pie_placeholder": "Leave the lower-left pie placeholder untouched; the companion LTM revenue workbook is built by the ltm-revenue stage.",
+                "ltm_revenue_pie_placeholder": "Leave the lower-left pie placeholder untouched; the companion LTM metrics workbook is built by the ltm-metrics stage.",
             },
         ),
         SlideEntry(

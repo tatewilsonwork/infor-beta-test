@@ -2,8 +2,8 @@
 #
 # Decomposes the former monolithic earnings-update conductor stage into
 # typed handoffs: SlidePlan -> EarningsUpdateContent -> .pptx, all cloned from
-# the shared INFOR Slide Library. The companion cap table and the LTM revenue
-# breakdown are sibling stages that emit standalone workbooks.
+# the shared INFOR Slide Library. The companion cap table and the LTM metrics
+# workbook are sibling stages that emit standalone workbooks.
 
 deliverable_type: earnings-update
 description: Quarterly earnings update deck + companion cap table via decomposed typed stages.
@@ -62,16 +62,17 @@ stages:
         description: Absolute path to the generated companion cap table .xlsx.
     checkpoint: informational
 
-  - id: ltm-revenue
-    skill: ltm-revenue
+  - id: ltm-metrics
+    skill: ltm-metrics
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker
       reporting_quarter: $plan_inputs.reporting_quarter
+      comparison_quarter: $plan_inputs.comparison_quarter
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the standalone LTM revenue breakdown .xlsx (companion to the overview slide pie placeholder).
+        description: Absolute path to the standalone LTM metrics .xlsx (revenue overview + revenue/EBITDA bridges; companion to the overview slide pie placeholder).
     checkpoint: informational
 
   - id: deck
@@ -97,7 +98,7 @@ stages:
     inputs:
       workbooks:
         captable: $stages.captable.workbook_path
-        ltm-revenue: $stages.ltm-revenue.workbook_path
+        ltm-metrics: $stages.ltm-metrics.workbook_path
       deliverable_type: $deal.deliverable_type
       deal_name: $deal.codename
       output_dir: $deal.deal_dir

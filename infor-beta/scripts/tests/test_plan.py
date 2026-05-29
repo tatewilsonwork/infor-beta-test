@@ -94,7 +94,7 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "wireframe",
         "content",
         "captable",
-        "ltm-revenue",
+        "ltm-metrics",
         "deck",
         "workbook-aggregation",
     ]
@@ -102,7 +102,7 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "earningsupdate-wireframe",
         "earningsupdate-content",
         "captable",
-        "ltm-revenue",
+        "ltm-metrics",
         "deck-assembler",
         "workbook-aggregator",
     ]
