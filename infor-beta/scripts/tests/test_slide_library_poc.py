@@ -209,7 +209,7 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
         "wireframe",
         "content",
         "captable",
-        "ltm-revenue",
+        "ltm-metrics",
         "deck",
         "workbook-aggregation",
     ]

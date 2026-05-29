@@ -67,11 +67,11 @@ def test_unique_sheet_name_disambiguates_collisions():
 
 
 def test_single_sheet_source_tab_named_after_skill(tmp_path: Path):
-    a = _make_workbook(tmp_path / "a.xlsx", {"LTM Revenue": [["x", 1]]})
+    a = _make_workbook(tmp_path / "a.xlsx", {"LTM Metrics": [["x", 1]]})
     out = tmp_path / "out.xlsx"
-    _combine_via_openpyxl([("ltm-revenue", a)], out)
+    _combine_via_openpyxl([("ltm-metrics", a)], out)
     wb = load_workbook(out)
-    assert wb.sheetnames == ["ltm-revenue"]
+    assert wb.sheetnames == ["ltm-metrics"]
 
 
 def test_multi_sheet_source_tabs_prefixed_with_skill(tmp_path: Path):
@@ -115,7 +115,7 @@ def test_combine_writes_named_file_and_deletes_sources(tmp_path: Path, monkeypat
     b = _make_workbook(tmp_path / "ltm.xlsx", {"LTM": [[2]]})
 
     out = combine_workbooks(
-        sources={"captable": a, "ltm-revenue": b},
+        sources={"captable": a, "ltm-metrics": b},
         output_dir=tmp_path,
         deliverable_type="earnings-update",
         deal_name="Project Atlas",
@@ -123,7 +123,7 @@ def test_combine_writes_named_file_and_deletes_sources(tmp_path: Path, monkeypat
 
     assert out.name == "earningsupdate-Project Atlas.xlsx"
     assert out.exists()
-    assert load_workbook(out).sheetnames == ["captable", "ltm-revenue"]
+    assert load_workbook(out).sheetnames == ["captable", "ltm-metrics"]
     # Sources replaced by the combined workbook.
     assert not a.exists()
     assert not b.exists()

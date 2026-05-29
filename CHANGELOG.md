@@ -4,6 +4,19 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-05-28
+
+### Changed
+- **`ltm-revenue` skill renamed to `ltm-metrics`.** Directory `skills/ltm-revenue`→`skills/ltm-metrics`, helper `scripts/ltm_revenue.py`→`scripts/ltm_metrics.py` (`build_ltm_revenue_workbook`→`build_ltm_metrics_workbook`, `RevenueSegment` kept, new `BridgeComponent`), the earnings-update plan stage id/skill `ltm-revenue`→`ltm-metrics`, and the workbook-aggregator tab key `ltm-revenue`→`ltm-metrics`. Output file is now `<Company> - LTM Metrics.xlsx` on a `LTM Metrics` tab. Updated all references in `plans/`, tests, `workbook_aggregator.py`, `earnings_update_wireframe.py`, CLAUDE.md/AGENTS.md.
+- **LTM metrics tab now stacks three blocks** on one sheet: (1) the existing LTM revenue segment overview, then a spacer row, (2) a new **LTM revenue bridge** that derives the LTM total as `FY + current-year YTD − prior-year YTD` (flexible additive/subtractive component list, total via a cell formula), then a spacer, (3) an **LTM Adj. EBITDA bridge** (falls back to `LTM EBITDA` when no Adjusted figure is disclosed) — bridge only, no segment overview.
+- **Earnings-update plan passes `comparison_quarter` to the `ltm-metrics` stage** so the bridge has the prior-year period.
+
+### Added
+- **Up-front ask for the statements needed to compute LTM.** The deal-init G7 filings prompt now tells the analyst that LTM deliverables (earnings update, valuation) also need the prior full fiscal year's statements/MD&A — `LTM = FY + current YTD − prior YTD` — and clarifies the cap table is still built off the most recent statement. The `ltm-metrics` SKILL.md gains an "Inputs you must have" section that asks for the specific missing period before computing. The `captable` Step 1 gains a note: build the cap table off the *most recent* reported statement only, never the older FY attached for the LTM bridge.
+
+### Bumped
+- marketplace, plugin manifest, pyproject, and all shipped skill frontmatter versions to `0.5.4`.
+
 ## [0.5.3] — 2026-05-28
 
 ### Changed
