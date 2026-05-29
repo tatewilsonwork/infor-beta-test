@@ -221,7 +221,7 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
 
 
 def test_pitch_library_poc_plan_stage_order():
-    plan_path = PLUGIN_ROOT / "plans" / "pitch-library-poc.yaml"
+    plan_path = PLUGIN_ROOT / "plans" / "pitch.yaml"
     plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))
 
     assert [stage.id for stage in plan.stages] == [

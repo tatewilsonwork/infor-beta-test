@@ -1,11 +1,11 @@
-# Pitch library POC plan — Phase 3 slide-library POC
+# Pitch plan — 14-slide INFOR slide-library deck
 #
 # Fills the canonical 14-slide INFOR Slide Library template end-to-end while
 # preserving static credential/disclaimer/contact slides and deferring complex
 # chart generation.
 
 deliverable_type: pitch
-description: 14-slide INFOR slide-library POC deck.
+description: 14-slide INFOR slide-library pitch deck.
 
 plan_inputs:
   - name: client_name

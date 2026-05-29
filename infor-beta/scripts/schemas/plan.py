@@ -22,9 +22,33 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .deal_context import DeliverableType
-from .skill_manifest import InputSpec, OutputSpec
 
 CheckpointMode = Literal["required", "informational", "silent"]
+
+
+class InputSpec(BaseModel):
+    """One typed input a skill or plan consumes."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1, description="Parameter name as referenced inside the skill.")
+    type: str = Field(
+        ...,
+        min_length=1,
+        description="Type label. Free-form — e.g. 'Company', 'list[Filing]', 'str', 'Path'.",
+    )
+    required: bool = Field(default=True, description="Whether the conductor must supply this input.")
+    description: str | None = Field(default=None, description="Human-readable explanation.")
+
+
+class OutputSpec(BaseModel):
+    """One typed output a skill or stage produces."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1, description="Output name as exported by the skill.")
+    type: str = Field(..., min_length=1, description="Type label. Free-form.")
+    description: str | None = Field(default=None, description="Human-readable explanation.")
 
 
 class Stage(BaseModel):

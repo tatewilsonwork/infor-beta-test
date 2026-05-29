@@ -49,8 +49,8 @@ missing outputs.json.
 
 # Constraints
 
-- Voice, brand, and source-trust rules live in the skill's own SKILL.md / references and
-  related INFOR skills (`infor-deck-writing`, `brand-guidelines-infor`). Follow those.
+- Voice, brand, and source-trust rules live in the skill's own SKILL.md / references.
+  Follow those.
 - Do not invoke other INFOR skills via Task yourself — the conductor handles cross-skill
   composition. If your SKILL.md says "then invoke skill X", check whether X is also a
   stage in this plan and skip the invocation if `$STAGE_OUTPUTS` is set.

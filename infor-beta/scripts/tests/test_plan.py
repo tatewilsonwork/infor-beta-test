@@ -117,6 +117,13 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
 
 
+def test_overview_stub_plan_is_valid():
+    plan_path = Path(__file__).resolve().parents[2] / "plans" / "overview.yaml"
+    plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))
+    assert plan.deliverable_type == "overview"
+    assert len(plan.stages) >= 1
+
+
 def test_invalid_deliverable_type_rejected():
     with pytest.raises(ValidationError):
         _base_plan(deliverable_type="management-presentation")  # removed B2

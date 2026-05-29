@@ -1,0 +1,18 @@
+# Overview deck plan — STUB (not yet implemented)
+#
+# Placeholder so `overview` is a registered deliverable type. The real plan
+# (e.g. wireframe -> content -> deck, cloned from the INFOR Slide Library) is
+# built out later. Until then this plan intentionally references a skill that
+# does not exist yet, so a premature run fails fast at dispatch with a clear
+# "skill not found" rather than silently producing nothing.
+
+deliverable_type: overview
+description: "STUB — overview deck plan, not yet implemented."
+
+plan_inputs: []
+
+stages:
+  - id: placeholder
+    skill: overview-wireframe   # not built yet — replace when the overview plan is designed
+    inputs: {}
+    checkpoint: required

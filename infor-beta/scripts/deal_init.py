@@ -34,13 +34,12 @@ _INIT_PROMPT = """\
 What deal is this for?
 
 1. Codename:                  (e.g. "Project Atlas")
-2. Deliverable type:          (CIM / pitch / teaser / earnings update /
-                               fairness opinion / valuation / one-off skill)
+2. Deliverable type:          (pitch / earnings update / overview / one-off skill)
 3. Subject company name:      (e.g. "ACME Corp")
 4. Public or private?:        (public → ask for ticker + exchange; private → skip)
 5. Sector / industry:         (one line, free-form)
 6. Filings / attachments:     (drop now or "none for now")
-                              For LTM deliverables (earnings update, valuation)
+                              For LTM deliverables (earnings update)
                               I also need the prior full fiscal year's
                               statements/MD&A — LTM = FY + current YTD − prior
                               YTD, so a single interim filing isn't enough. The

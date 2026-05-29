@@ -3,7 +3,7 @@
   "name": "infor-beta",
   "owner": { "name": "INFOR Financial Group" },
   "version": "0.5.5",
-  "description": "INFOR Financial Group analyst workflow platform — conductor-orchestrated investment-banking deliverables (CIM, pitch, teaser, earnings update, fairness opinion, valuation). Supersedes infor-workflows when ready.",
+  "description": "INFOR Financial Group analyst workflow platform — conductor-orchestrated investment-banking deliverables (pitch, earnings update, overview). Supersedes infor-workflows when ready.",
   "plugins": [
     {
       "name": "infor-beta",
