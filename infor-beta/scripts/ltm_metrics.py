@@ -87,6 +87,23 @@ def _coerce_components(
     return out
 
 
+def bridge_total(
+    components: list[BridgeComponent] | list[tuple] | None,
+) -> float | None:
+    """Sum a bridge's components (additive minus subtractive) for the handoff.
+
+    Returns None when no components are supplied. The workbook derives the same
+    total via a cell formula; this mirrors it so the typed stage handoff can pass
+    the LTM revenue / EBITDA figure to a downstream stage (e.g. the cap table).
+    The figure is in the same currency as the bridge components — i.e. the
+    filing's reporting currency.
+    """
+    comps = _coerce_components(components)
+    if not comps:
+        return None
+    return sum(-c.value if c.subtract else c.value for c in comps)
+
+
 def _section(ws: Worksheet, row: int, text: str) -> None:
     for col in (1, 2, 3):
         cell = ws.cell(row=row, column=col)

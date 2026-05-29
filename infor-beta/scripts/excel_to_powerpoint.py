@@ -45,7 +45,7 @@ def insert_cap_table_into_placeholder(
     slide_index: int = 1,
     placeholder_name: str = "Rectangle 3",
     sheet_name: str = "Cap with Links",
-    source_range: str = "B15:F36",
+    source_range: str = "B15:F40",
 ) -> Path:
     """Replace a deck placeholder with a picture of an Excel range."""
     deck = Path(deck_path).resolve()
