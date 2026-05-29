@@ -2,7 +2,7 @@
 name: conductor
 description: >
   Use this skill when the user wants to build a complete INFOR deliverable end-to-end —
-  CIM, pitch, teaser, earnings update, fairness opinion, or valuation — instead of
+  pitch, earnings update, or overview deck — instead of
   invoking individual skills. Activates on "build a <deliverable>", "kick off
   <deliverable>", "conductor", "/conductor", "orchestrate", or any request that names a
   deliverable type rather than a single workflow step. The conductor handles deal-init
@@ -48,7 +48,7 @@ from run_log import (
 ### Step 1 — Identify deliverable + codename
 
 Read the analyst's request. Extract:
-- **Deliverable type**: `cim` / `pitch` / `teaser` / `earnings-update` / `fairness-opinion` / `valuation` / `one-off-skill`. If ambiguous, ask before continuing.
+- **Deliverable type**: `pitch` / `earnings-update` / `overview` / `one-off-skill`. If ambiguous, ask before continuing. (`overview` is a stub plan — not yet implemented; say so if selected.)
 - **Codename**: the analyst's `Project <target>` string. If absent, ask for it.
 
 If the analyst is invoking a **one-off skill** (no deliverable plan needed), say so and stop — the conductor only orchestrates plans. Direct skill invocation is for one-offs.
@@ -130,6 +130,6 @@ Never silently skip a stage. Never proceed past a missing output. Never overwrit
 ## What the conductor does not do
 
 - Produce slides, models, or copy. That is each sub-skill's job.
-- Make banking decisions. Voice rules live in `infor-deck-writing`; brand rules live in `brand-guidelines-infor`; source-trust rules live in each skill's allow-list.
+- Make banking decisions. Voice, brand, and source-trust rules live in each stage skill's own SKILL.md / references and its allow-list — not in the conductor.
 - Parallelise stages. v1 is sequential. Parallel + DAG dependencies arrive when Phase 3's deck-assembler + slide library justify the complexity.
 - Emit telemetry beyond per-stage transcripts. `meta.json` (model, tokens, latency) is Phase 5.

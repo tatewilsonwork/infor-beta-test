@@ -16,14 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from .company import Company
 from .filing import Filing
 
-# Deliverable choices as listed in the locked deal-init prompt (G7).
+# Deliverable choices as listed in the deal-init prompt (G7). Scoped to the
+# deliverables with a plan today (earnings-update, pitch) plus overview (stub,
+# built out later); one-off-skill is the direct-invocation escape hatch.
 DeliverableType = Literal[
-    "cim",
     "pitch",
-    "teaser",
     "earnings-update",
-    "fairness-opinion",
-    "valuation",
+    "overview",
     "one-off-skill",
 ]
 

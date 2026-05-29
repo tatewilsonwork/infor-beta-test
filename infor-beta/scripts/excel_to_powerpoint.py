@@ -240,34 +240,3 @@ def _trim_white_margins(image, threshold: int = 250):
     diff = diff.point(lambda p: 0 if p < (255 - threshold) else 255)
     bbox = diff.getbbox()
     return image.crop(bbox) if bbox else image
-
-
-def record_insertion_intent(
-    *,
-    workbook_path: Path | str,
-    deck_path: Path | str,
-    placeholder_id: str,
-    output_dir: Path | str,
-) -> Path:
-    """Write a small marker file documenting a deferred Excel→PPT insertion.
-
-    Used by deferred POC adapters that don't yet ship a real insertion path;
-    gives the conductor a typed side-effect artefact for the run log.
-    """
-    workbook = Path(workbook_path)
-    deck = Path(deck_path)
-    if not workbook.exists():
-        raise FileNotFoundError(f"workbook not found: {workbook}")
-    if not deck.exists():
-        raise FileNotFoundError(f"deck not found: {deck}")
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    marker = out / f"excel-to-powerpoint-{placeholder_id}.txt"
-    marker.write_text(
-        f"workbook_path={workbook}\n"
-        f"deck_path={deck}\n"
-        f"placeholder_id={placeholder_id}\n"
-        "status=deferred_poc_placeholder\n",
-        encoding="utf-8",
-    )
-    return marker

@@ -300,12 +300,9 @@
     "deliverable_type": {
       "description": "Deliverable the analyst is producing for this deal. See G7 prompt.",
       "enum": [
-        "cim",
         "pitch",
-        "teaser",
         "earnings-update",
-        "fairness-opinion",
-        "valuation",
+        "overview",
         "one-off-skill"
       ],
       "title": "Deliverable Type",

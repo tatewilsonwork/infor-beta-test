@@ -2,7 +2,7 @@
   "$defs": {
     "InputSpec": {
       "additionalProperties": false,
-      "description": "One typed input a skill consumes.",
+      "description": "One typed input a skill or plan consumes.",
       "properties": {
         "description": {
           "anyOf": [
@@ -30,7 +30,7 @@
           "type": "boolean"
         },
         "type": {
-          "description": "Type label. Free-form in Phase 1 \u2014 e.g. 'Company', 'list[Filing]', 'str', 'Path'.",
+          "description": "Type label. Free-form \u2014 e.g. 'Company', 'list[Filing]', 'str', 'Path'.",
           "minLength": 1,
           "title": "Type",
           "type": "string"
@@ -45,7 +45,7 @@
     },
     "OutputSpec": {
       "additionalProperties": false,
-      "description": "One typed output a skill produces.",
+      "description": "One typed output a skill or stage produces.",
       "properties": {
         "description": {
           "anyOf": [
@@ -67,7 +67,7 @@
           "type": "string"
         },
         "type": {
-          "description": "Type label. Free-form in Phase 1.",
+          "description": "Type label. Free-form.",
           "minLength": 1,
           "title": "Type",
           "type": "string"
@@ -136,12 +136,9 @@
     "deliverable_type": {
       "description": "Which deliverable this plan produces. Must match a value in DeliverableType.",
       "enum": [
-        "cim",
         "pitch",
-        "teaser",
         "earnings-update",
-        "fairness-opinion",
-        "valuation",
+        "overview",
         "one-off-skill"
       ],
       "title": "Deliverable Type",

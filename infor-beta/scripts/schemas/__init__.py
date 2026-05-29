@@ -26,13 +26,7 @@ from .pitch_deck_content import (
     PitchSourceNote,
 )
 from .deal_context import DealContext, DeliverableType
-from .plan import Plan, Stage, CheckpointMode
-from .skill_manifest import (
-    SkillManifest,
-    InputSpec,
-    OutputSpec,
-    SideEffectSpec,
-)
+from .plan import Plan, Stage, CheckpointMode, InputSpec, OutputSpec
 
 __all__ = [
     "Company",
@@ -57,8 +51,6 @@ __all__ = [
     "Plan",
     "Stage",
     "CheckpointMode",
-    "SkillManifest",
     "InputSpec",
     "OutputSpec",
-    "SideEffectSpec",
 ]

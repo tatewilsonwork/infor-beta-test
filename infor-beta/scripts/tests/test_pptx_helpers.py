@@ -1,8 +1,8 @@
 """Tests for pptx_helpers.
 
 Builds tiny in-memory decks with python-pptx — no INFOR template fixtures
-required. Run with `python -m unittest infor-workflows/scripts/test_pptx_helpers.py`
-or `python infor-workflows/scripts/test_pptx_helpers.py`.
+required. Run with `python -m unittest infor-beta/scripts/tests/test_pptx_helpers.py`
+or `python infor-beta/scripts/tests/test_pptx_helpers.py`.
 """
 
 import os
@@ -10,22 +10,20 @@ import sys
 import unittest
 from copy import deepcopy
 
-# Make pptx_helpers importable when run from the repo root or any cwd
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Make pptx_helpers importable when run directly: the helper modules live in
+# scripts/, one level up from this tests/ directory.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pptx import Presentation
-from pptx.oxml.ns import qn
 from pptx.util import Inches, Pt
 
 from pptx_helpers import (
     COLOR_DOWN,
     COLOR_UP,
     PALATINO,
-    clone_slide,
     delete_slide,
     find_shape,
     find_shape_in_group,
-    fmt_broker_value,
     set_cell_text,
     set_text,
     write_bulleted_shape,
@@ -56,7 +54,6 @@ def _make_bulleted_shape(slide, name, seed_paragraphs):
     seed_paragraphs: list of (text, marL_emu, font_size_pt, bullet_char)
     e.g. [("seed main", 180975, 10.5, "■"), ("seed sub", 360000, 10.0, "-")]
     """
-    from pptx.oxml.ns import qn
     from lxml import etree
 
     tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(4))
@@ -262,35 +259,6 @@ class TestWriteBulletedShape(unittest.TestCase):
             write_bulleted_shape(shape, [("a", "b", "c", "d")])  # wrong arity
 
 
-# ─── fmt_broker_value tests ──────────────────────────────────────────────────
-
-class TestFmtBrokerValue(unittest.TestCase):
-    def test_dollar_positive(self):
-        self.assertEqual(fmt_broker_value("dollar", 406.3), "$406.3")
-
-    def test_dollar_negative_uses_parens(self):
-        self.assertEqual(fmt_broker_value("dollar", -121.1), "($121.1)")
-
-    def test_dollar_thousands_separator(self):
-        self.assertEqual(fmt_broker_value("dollar", 1234.5), "$1,234.5")
-
-    def test_per_share_two_decimals(self):
-        self.assertEqual(fmt_broker_value("per_share", 1.24), "$1.24")
-        self.assertEqual(fmt_broker_value("per_share", -8.93), "($8.93)")
-
-    def test_percent_with_suffix(self):
-        self.assertEqual(fmt_broker_value("percent", 38.7), "38.7%")
-        self.assertEqual(fmt_broker_value("percent", -2.3), "(2.3%)")
-
-    def test_already_formatted_string_passes_through(self):
-        self.assertEqual(fmt_broker_value("dollar", "$406.3"), "$406.3")
-        self.assertEqual(fmt_broker_value("percent", "N/A"), "N/A")
-
-    def test_unknown_kind_raises(self):
-        with self.assertRaises(ValueError):
-            fmt_broker_value("oranges", 5.0)
-
-
 # ─── find_shape / find_shape_in_group tests ──────────────────────────────────
 
 class TestFindShape(unittest.TestCase):
@@ -312,68 +280,7 @@ class TestFindShape(unittest.TestCase):
             find_shape(slide, "Nonexistent")
 
 
-# ─── clone_slide / delete_slide tests ────────────────────────────────────────
-
-class TestCloneSlide(unittest.TestCase):
-    def _make_source_slide_with_shapes(self):
-        prs = Presentation()
-        slide = prs.slides.add_slide(prs.slide_layouts[6])  # Blank layout
-        # Add two distinguishable shapes
-        tb1 = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1))
-        tb1.name = "Source TextBox A"
-        tb1.text_frame.paragraphs[0].add_run().text = "alpha"
-        tb2 = slide.shapes.add_textbox(Inches(1), Inches(3), Inches(3), Inches(1))
-        tb2.name = "Source TextBox B"
-        tb2.text_frame.paragraphs[0].add_run().text = "beta"
-        return prs, slide, [tb1.name, tb2.name]
-
-    def test_clone_copies_shape_xml(self):
-        prs, source, names = self._make_source_slide_with_shapes()
-        new_slide = clone_slide(prs, source)
-        new_names = [s.name for s in new_slide.shapes]
-        for name in names:
-            self.assertIn(name, new_names)
-
-    def test_clone_preserves_text(self):
-        prs, source, _ = self._make_source_slide_with_shapes()
-        new_slide = clone_slide(prs, source)
-        texts = [s.text_frame.text for s in new_slide.shapes if s.has_text_frame]
-        self.assertIn("alpha", texts)
-        self.assertIn("beta", texts)
-
-    def test_clone_inherits_layout(self):
-        prs, source, _ = self._make_source_slide_with_shapes()
-        new_slide = clone_slide(prs, source)
-        self.assertEqual(new_slide.slide_layout.name, source.slide_layout.name)
-
-    def test_clone_picture_remaps_rid(self):
-        """A picture has an r:embed rId — the new slide must own a fresh rId
-        pointing at the same image so the picture renders instead of red-X."""
-        import io
-        # Tiny valid PNG (1x1 black pixel)
-        png_bytes = (
-            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8"
-            b"\xcf\xc0\x00\x00\x00\x03\x00\x01\\\xcd\xff\x69\x00\x00\x00\x00IEND\xaeB`\x82"
-        )
-        prs = Presentation()
-        source = prs.slides.add_slide(prs.slide_layouts[6])
-        source.shapes.add_picture(io.BytesIO(png_bytes), Inches(1), Inches(1), Inches(1), Inches(1))
-
-        new_slide = clone_slide(prs, source)
-
-        # Find the picture on the new slide and confirm its r:embed rId
-        # resolves to an existing relationship (would raise KeyError if not)
-        found_picture = False
-        for shp in new_slide.shapes:
-            for el in shp._element.iter():
-                embed = el.get(qn("r:embed"))
-                if embed:
-                    found_picture = True
-                    self.assertIn(embed, new_slide.part.rels,
-                                  "cloned picture's r:embed must point at a new-slide rel")
-        self.assertTrue(found_picture, "cloned slide must contain the picture")
-
+# ─── delete_slide tests ──────────────────────────────────────────────────────
 
 class TestDeleteSlide(unittest.TestCase):
     def test_delete_removes_slide(self):

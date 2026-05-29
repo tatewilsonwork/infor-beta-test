@@ -1,8 +1,8 @@
 # Plan schema — reference
 
-A plan is a YAML file at `infor-beta/plans/<deliverable>.yaml`. It declares the stages the conductor will run for a deliverable (CIM, earnings update, etc.) plus the plan-specific inputs the analyst must supply after deal-init.
+A plan is a YAML file at `infor-beta/plans/<deliverable>.yaml`. It declares the stages the conductor will run for a deliverable (earnings update, pitch, etc.) plus the plan-specific inputs the analyst must supply after deal-init.
 
-The canonical pydantic models live in `infor-beta/scripts/schemas/plan.py` (`Plan`, `Stage`) and `infor-beta/scripts/schemas/skill_manifest.py` (`InputSpec`, `OutputSpec`). JSON Schemas are under `scripts/schemas/json/plan.schema.json`.
+The canonical pydantic models live in `infor-beta/scripts/schemas/plan.py` (`Plan`, `Stage`, `InputSpec`, `OutputSpec`). JSON Schemas are under `scripts/schemas/json/plan.schema.json`.
 
 ## Top-level Plan fields
 
@@ -20,7 +20,7 @@ stages:
     ...
 ```
 
-- `deliverable_type` must be one of: `cim`, `pitch`, `teaser`, `earnings-update`, `fairness-opinion`, `valuation`, `one-off-skill`.
+- `deliverable_type` must be one of: `pitch`, `earnings-update`, `overview`, `one-off-skill`.
 - `plan_inputs` are collected by the conductor AFTER deal-init (which always asks the G7 7-field block — never repeat G7 questions here).
 - `stages` is a non-empty list; ids must be unique within the plan.
 

@@ -18,8 +18,8 @@ If the analyst replies `stop`, the conductor writes a summary noting the abort p
 
 Use `required` for stages where the analyst's review is a real-world checkpoint, e.g.:
 - buyer-list approval (D-series, note 12)
-- assembled deck before QA
-- fairness opinion conclusion (eventually, when Phase 4+ ships the skill)
+- the assembled deck before QA
+- the final deck before it's shared externally
 
 ## `informational` (default)
 
@@ -52,6 +52,6 @@ The final `summary.md` lists every stage regardless of checkpoint mode.
 Per A2, the path to v2 autonomous mode is **configuration, not code**. To flip a plan from medium-HITL to autonomous:
 
 1. Change every `required` checkpoint to `informational` (or `silent` for stages the analyst doesn't want to see).
-2. Keep `required` only on the genuine legal/business gates that should always halt (buyer-list approval, fairness opinion conclusion).
+2. Keep `required` only on the genuine legal/business gates that should always halt (buyer-list approval, final deck before external delivery).
 
 No conductor code changes. No skill changes. The checkpoint mechanism is designed to live in the plan YAML so the same conductor runs both modes.

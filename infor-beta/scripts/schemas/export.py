@@ -23,7 +23,6 @@ from . import (
     DealContext,
     Filing,
     Plan,
-    SkillManifest,
     SlidePlan,
     EarningsUpdateContent,
     PitchDeckContent,
@@ -38,7 +37,6 @@ _MODELS = [
     ("pitch_deck_content", PitchDeckContent),
     ("deal_context", DealContext),
     ("plan", Plan),
-    ("skill_manifest", SkillManifest),
 ]
 
 

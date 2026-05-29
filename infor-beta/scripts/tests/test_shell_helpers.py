@@ -4,12 +4,10 @@ Covers `find_template.sh` and `sanitize_name.sh`. Both are pure-shell
 infrastructure used by every file-producing skill.
 
 Run with:
-    python -m unittest infor-beta/scripts/test_shell_helpers.py
+    python -m unittest infor-beta/scripts/tests/test_shell_helpers.py
 
-Note (Phase 1): `infor-beta` ships no real templates yet, so the
-`find_template.sh` tests use a tmpdir fixture by setting CLAUDE_PLUGIN_ROOT.
-The corresponding `test_resolves_all_shipped_templates` regression test from
-`infor-workflows` is deferred until templates land (Phase 3+).
+The `find_template.sh` tests use a tmpdir fixture by setting CLAUDE_PLUGIN_ROOT
+rather than depending on the shipped template set.
 """
 
 import os
@@ -19,7 +17,7 @@ import unittest
 from pathlib import Path
 
 
-SCRIPTS_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 FIND_TEMPLATE = SCRIPTS_DIR / "find_template.sh"
 SANITIZE_NAME = SCRIPTS_DIR / "sanitize_name.sh"
 
@@ -35,14 +33,6 @@ def _run(script_path: Path, *args: str, env: dict | None = None) -> subprocess.C
         check=False,
         env=full_env,
     )
-
-
-def _normalize_bash_path(p: str) -> str:
-    """Convert a git-bash-style /c/Users/... path to native C:/Users/...
-    so os.path.isfile resolves it on Windows. No-op on Unix paths."""
-    if len(p) >= 3 and p[0] == "/" and p[1].isalpha() and p[2] == "/":
-        return f"{p[1].upper()}:{p[2:]}"
-    return p
 
 
 # ─── find_template.sh ────────────────────────────────────────────────────────
@@ -63,12 +53,19 @@ class TestFindTemplate(unittest.TestCase):
                 env={"CLAUDE_PLUGIN_ROOT": str(plugin_root)},
             )
             self.assertEqual(result.returncode, 0, msg=result.stderr)
-            path = _normalize_bash_path(result.stdout.strip())
+            returned = result.stdout.strip()
+            # find_template.sh only prints a path after its own `[ -f ]`
+            # existence check passes, so exit 0 + the right basename proves
+            # resolution. We deliberately do NOT re-check via os.path.isfile:
+            # the bash shell and a Windows-native Python can expose the temp
+            # dir under different path namespaces (/tmp vs C:\...\Temp), which
+            # makes a cross-process file check spuriously fail.
             self.assertTrue(
-                os.path.isfile(path),
-                f"find_template.sh returned a non-existent path: {path!r}",
+                returned.endswith("INFOR Comps Template.xlsx"),
+                f"unexpected path returned: {returned!r}",
             )
-            self.assertTrue(path.endswith("INFOR Comps Template.xlsx"))
+            is_absolute = returned.startswith("/") or (len(returned) > 1 and returned[1] == ":")
+            self.assertTrue(is_absolute, f"expected an absolute path, got {returned!r}")
 
     def test_missing_template_exits_nonzero(self):
         result = _run(FIND_TEMPLATE, "Nonexistent Template.xlsx")

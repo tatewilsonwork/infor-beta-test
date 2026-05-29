@@ -34,10 +34,3 @@ _ENTRIES: tuple[SlideLibraryEntry, ...] = (
 def load_slide_library_registry() -> list[SlideLibraryEntry]:
     """Return the canonical blank-library order for the POC."""
     return list(_ENTRIES)
-
-
-def get_entry(entry_id: str) -> SlideLibraryEntry:
-    for entry in _ENTRIES:
-        if entry.library_entry_id == entry_id:
-            return entry
-    raise KeyError(f"unknown slide-library entry id: {entry_id}")

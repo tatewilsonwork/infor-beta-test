@@ -4,6 +4,19 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+Repository cleanup — no behavioural change to the shipping earnings-update or pitch flows. Version intentionally not bumped yet (no functional skill change); bump to the next version when cutting a release.
+
+### Removed
+- **Dead code.** Deleted `clone_slide` and `fmt_broker_value` (`pptx_helpers.py`), `record_insertion_intent` (`excel_to_powerpoint.py`), and `get_entry` (`slide_library_registry.py`) — none had a production caller.
+- **Unadopted typed manifest.** Removed the `SkillManifest` / `SideEffectSpec` schema and `scripts/schemas/json/skill_manifest.schema.json` (no skill ever declared one). `InputSpec` / `OutputSpec` — still used by `Plan` — moved into `plan.py`; `skill_manifest.py` and `test_skill_manifest.py` deleted.
+- **Dropped deliverables.** `DeliverableType` trimmed to `pitch` / `earnings-update` / `overview` / `one-off-skill`; `cim`, `teaser`, `fairness-opinion`, and `valuation` removed from the deal-init G7 prompt, conductor, `plan-schema.md`, and the marketplace description.
+- **Empty placeholder.** Removed `templates/slide-library/` (the per-entry library is future work; today the library is the single `INFOR Slide Library.pptx`).
+
+### Changed
+- **Standardised plan naming.** Renamed `plans/pitch-library-poc.yaml` → `plans/pitch.yaml` so the conductor's `plans/<deliverable>.yaml` resolution works for `pitch`. Added a stub `plans/overview.yaml` that registers the overview deck (intentionally references a not-yet-built skill so a premature run fails fast).
+- **Test collection fixed.** Moved `test_pptx_helpers.py` and `test_shell_helpers.py` from `scripts/` into `scripts/tests/` so the configured `testpaths` actually collects them — these 42 tests were silently uncollected. Made two pre-existing assertions Windows-portable (`test_deal_context` absolute-path, `test_run_log` Path serialisation) and the `find_template.sh` test independent of the bash/Python temp-dir namespace split.
+- **Docs.** Rewrote `README.md` (was frozen at "Phase 0 — no skills implemented yet"); fixed stale `-infor` skill names and the empty-slide-library description in `CLAUDE.md`, the `./infor-workflows` import-path fallback in `pptx_helpers.py`, and the `ltm-revenue`→`ltm-metrics` tab/skill-key examples in `workbook-aggregator`.
+
 ## [0.5.5] — 2026-05-29
 
 ### Changed
@@ -18,7 +31,7 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 ## [0.5.4] — 2026-05-28
 
 ### Changed
-- **`ltm-revenue` skill renamed to `ltm-metrics`.** Directory `skills/ltm-revenue`→`skills/ltm-metrics`, helper `scripts/ltm_revenue.py`→`scripts/ltm_metrics.py` (`build_ltm_revenue_workbook`→`build_ltm_metrics_workbook`, `RevenueSegment` kept, new `BridgeComponent`), the earnings-update plan stage id/skill `ltm-revenue`→`ltm-metrics`, and the workbook-aggregator tab key `ltm-revenue`→`ltm-metrics`. Output file is now `<Company> - LTM Metrics.xlsx` on a `LTM Metrics` tab. Updated all references in `plans/`, tests, `workbook_aggregator.py`, `earnings_update_wireframe.py`, CLAUDE.md/AGENTS.md.
+- **`ltm-revenue` skill renamed to `ltm-metrics`.** Directory `skills/ltm-revenue`→`skills/ltm-metrics`, helper `scripts/ltm_revenue.py`→`scripts/ltm_metrics.py` (`build_ltm_revenue_workbook`→`build_ltm_metrics_workbook`, `RevenueSegment` kept, new `BridgeComponent`), the earnings-update plan stage id/skill `ltm-revenue`→`ltm-metrics`, and the workbook-aggregator tab key `ltm-revenue`→`ltm-metrics`. Output file is now `<Company> - LTM Metrics.xlsx` on a `LTM Metrics` tab. Updated all references in `plans/`, tests, `workbook_aggregator.py`, `earnings_update_wireframe.py`, CLAUDE.md.
 - **LTM metrics tab now stacks three blocks** on one sheet: (1) the existing LTM revenue segment overview, then a spacer row, (2) a new **LTM revenue bridge** that derives the LTM total as `FY + current-year YTD − prior-year YTD` (flexible additive/subtractive component list, total via a cell formula), then a spacer, (3) an **LTM Adj. EBITDA bridge** (falls back to `LTM EBITDA` when no Adjusted figure is disclosed) — bridge only, no segment overview.
 - **Earnings-update plan passes `comparison_quarter` to the `ltm-metrics` stage** so the bridge has the prior-year period.
 

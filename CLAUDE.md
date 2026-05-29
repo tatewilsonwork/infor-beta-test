@@ -12,7 +12,7 @@ The canonical architecture record lives in Obsidian at `Hermes-L1/INFOR Platform
 
 A single Claude Code plugin, `infor-beta`, containing:
 
-- A **conductor meta-skill** that consumes a deliverable spec (CIM, pitch, earnings update, …) and orchestrates sub-skills via the `Agent` tool.
+- A **conductor meta-skill** that consumes a deliverable spec (pitch, earnings update, overview, …) and orchestrates sub-skills via the `Agent` tool.
 - **Specialised skills** for data tables (comps, precedents, buyer lists, cap tables), modelling (LBO), writing (deck-writing), wireframing (typed `SlidePlan` output), QA (deckcheck), valuation aggregation (football field), and company / industry profiles.
 - A **slide library** of reusable `.pptx` entries (one entry per slide concept × layout combination) that the conductor and `deck-assembler` clone and fill.
 - A **typed I/O contract** so skills can compose cleanly without prompt glue.
@@ -26,10 +26,11 @@ infor-beta/
 │   └── <skill-name>/
 │       ├── SKILL.md               Workflow + frontmatter (name, description, version, allowed-tools)
 │       └── references/            Progressive-disclosure detail loaded on demand
-├── plans/                         Conductor plan YAMLs (earnings-update, cim, pitch, teaser, fairness-opinion, valuation)
+├── plans/                         Conductor plan YAMLs (earnings-update, pitch, overview)
 ├── scripts/                       Shared helpers + tests (pptx_helpers.py, find_template.sh, sanitize_name.sh, ...)
 ├── templates/                     Excel + PowerPoint templates shipped with the plugin
-│   └── slide-library/             One directory per concrete slide entry (concept × layout)
+│                                   (INFOR Slide Library.pptx, INFOR Cap Table Template.xlsx).
+│                                   A per-entry templates/slide-library/ is future work — not yet created.
 README.md
 CHANGELOG.md
 CLAUDE.md                          ← you are here
@@ -57,14 +58,14 @@ These are the load-bearing decisions made before any code is written. The full r
 
 **Skill contract**
 - Skills emit **typed output** in addition to (or instead of) free-form files. Composing skills consume typed input.
-- `infor-wireframe` emits a typed `SlidePlan` (markdown view kept for analyst readability).
-- `brand-guidelines-infor` is demoted to a **library** consumed by `deck-assembler` and `deckcheck-infor` — not a stage in any plan.
+- The wireframe skills (`earningsupdate-wireframe`, `pitch-wireframe`) emit a typed `SlidePlan` (markdown view kept for analyst readability).
+- `brand-guidelines` is demoted to a **library** consumed by `deck-assembler` and `deckcheck` (both future skills) — not a stage in any plan.
 - Earnings updates are delivered solely via `plans/earnings-update.yaml`; the standalone monolith skill was removed (its work is the decomposed `earningsupdate-wireframe` / `earningsupdate-content` / `captable` / `ltm-metrics` / `deck-assembler` stages).
 
 **Slide library**
 - Multiple library entries per slide concept × layout combination (e.g. `company-overview-two-col`, `company-overview-full-bleed`). No parameterised `variants:` field. One `.pptx` per entry.
 - Realistic library size: 40–80 entries at v1 maturity. Enumerable via a categorised README — no search UX required until well past ~100.
-- Lives in the same repo (`templates/slide-library/`).
+- Will live in `templates/slide-library/` once built; today the only library file is `templates/INFOR Slide Library.pptx`.
 
 **Data**
 - Company facts: analyst-provided at deal-init, verified by WebSearch, cached in `deal.facts/company.json`. CapIQ API connector is a future migration target.
@@ -79,13 +80,13 @@ These are the load-bearing decisions made before any code is written. The full r
 ## v1 skill portfolio
 
 **Refactored from old repo:**
-`comps`, `precedents`, `buyerslist`, `captable`, `lbo-model`, `infor-deck-writing`, `infor-wireframe` (typed), `deckcheck` (QA), `brand-guidelines` (→ library). Earnings update is delivered via `plans/earnings-update.yaml` rather than a standalone skill.
+`comps`, `precedents`, `buyerslist`, `captable`, `lbo-model`, `deck-writing`, wireframe (typed; realised as `earningsupdate-wireframe` + `pitch-wireframe`), `deckcheck` (QA), `brand-guidelines` (→ library). Earnings update is delivered via `plans/earnings-update.yaml` rather than a standalone skill.
 
 **New skills:**
 `deck-assembler` (Phase 3 foundational), `workbook-aggregator` (final-stage workbook consolidation), `valuation` (football field over comps + precedents + LBO), `company-profile-public`, `company-profile-private`, `industry-research` (low priority, late Phase 4).
 
 **Conductor plans:**
-`earnings-update.yaml` (decomposed Phase 3 POC), `cim.yaml` (slim 30–35 slides), `pitch.yaml`, `teaser.yaml`, `fairness-opinion.yaml`, `valuation.yaml`.
+`earnings-update.yaml` (decomposed Phase 3 POC), `pitch.yaml` (14-slide slide-library deck), `overview.yaml` (stub — not yet implemented).
 
 **Removed from scope:** management presentations, diligence support, research pipelines.
 
@@ -107,10 +108,10 @@ Templates, filename sanitization, python-pptx formatting helpers, brand constant
 import sys, os
 sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
 
-from pptx_helpers import set_text, write_bulleted_shape, set_cell_text, clone_slide, find_shape
+from pptx_helpers import set_text, write_bulleted_shape, set_cell_text, delete_slide, find_shape
 from schemas import (
     Company, Filing, FilingType, SlidePlan, EarningsUpdateContent, PitchDeckContent, DealContext,
-    Plan, Stage, CheckpointMode, SkillManifest,
+    Plan, Stage, CheckpointMode, InputSpec, OutputSpec,
 )
 from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
 from earnings_update_assembler import assemble_earnings_update_deck
@@ -128,7 +129,7 @@ For the bash helpers:
 
 ```bash
 SANITIZED=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/sanitize_name.sh" "$RAW_NAME")
-TEMPLATE=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/find_template.sh" "INFOR Comps Template.xlsx")
+TEMPLATE=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/find_template.sh" "INFOR Cap Table Template.xlsx")
 ```
 
 Brand constants are in `pptx_helpers` (`PALATINO`, `COLOR_UP`, `COLOR_DOWN`). JSON-Schema views of every typed contract are emitted to `infor-beta/scripts/schemas/json/` — regenerate with `python -m schemas.export` (idempotent).
@@ -151,6 +152,7 @@ Skills write to the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), 
 - Cap-table web inputs + aggregator cleanup (v0.5.3) — cap table template now leaves FX (F7) and share price (F16) empty with the CapIQ formula stored as a cell comment; the `captable` skill fills both from the web (Step 3b) and the analyst pastes the commented formula to refresh. Cap-table picture range widened to `B15:F36` (adds the Financial Metrics section). The workbook aggregator now skips CapIQ's very-hidden `__snloffice` helper sheet so the combined workbook no longer carries the garbled `captable-__snloffice` tab. ✅ shipped 2026-05-28.
 - LTM metrics expansion + rename (v0.5.4) — the `ltm-revenue` skill is renamed **`ltm-metrics`** (`ltm_revenue.py`→`ltm_metrics.py`, `build_ltm_metrics_workbook`, plan stage + aggregator tab key `ltm-revenue`→`ltm-metrics`). Its single "LTM Metrics" tab now stacks three blocks: the existing revenue segment overview, a new **LTM revenue bridge** (`FY + current-YTD − prior-YTD`, flexible component list), and an **LTM Adj. EBITDA (or EBITDA) bridge** (bridge only). The deal-init G7 filings prompt now asks for the prior full-fiscal-year statements needed for the LTM math, and `captable` Step 1 clarifies the cap table is built off the *most recent* statement only — never the older FY attached for the LTM bridge. ✅ shipped 2026-05-28.
 - LTM metrics feed the cap table (v0.5.5) — the earnings-update plan now runs `ltm-metrics` **before** `captable` (no longer parallel). `ltm-metrics` emits its LTM revenue and LTM Adj. EBITDA bridge totals as typed outputs (`ltm_revenue` / `ltm_adj_ebitda`, millions, filing reporting currency; new `bridge_total()` helper); `captable` Step 6b writes them to the cap table's LTM valuation column `D47`/`D48` as `=<value>*F7` (FX-converted to the F5 output currency), falling back to the CapIQ `IQ_REV`/`SP_EBITDA` formulas when no LTM values are supplied. The revised `INFOR Cap Table Template.xlsx` ships `D47`/`D48` empty (old CapIQ LTM formulas removed) and re-strips the `__snloffice` helper tab. Cap-table picture range widened `B15:F36`→`B15:F40` to include the Valuation Metrics rows. ✅ shipped 2026-05-29.
+- Cleanup pass (unreleased) — scoped the deliverable set to **3 plans** (`earnings-update`, `pitch`, `overview` stub); renamed `pitch-library-poc.yaml`→`pitch.yaml`; trimmed `DeliverableType` to `pitch`/`earnings-update`/`overview`/`one-off-skill` (dropped cim/teaser/fairness-opinion/valuation). Removed dead code (`clone_slide`, `fmt_broker_value`, `record_insertion_intent`, `get_entry`) and the unadopted `SkillManifest`/`SideEffectSpec` schema (`InputSpec`/`OutputSpec` kept, moved into `plan.py`). Relocated `test_pptx_helpers.py` + `test_shell_helpers.py` into `scripts/tests/` so `testpaths` collects them. Removed the empty `templates/slide-library/`.
 - Phase 4 — New skills (valuation, profiles, industry research).
 - Phase 5 — Quality + telemetry + per-skill URL allow-lists.
 - Phase 6 — MCP / portability — deferred indefinitely.

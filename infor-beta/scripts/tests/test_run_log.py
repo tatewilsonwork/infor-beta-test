@@ -62,7 +62,7 @@ def test_stage_inputs_round_trip(tmp_path: Path):
     assert target == run_dir / "stages" / "s1" / "inputs.json"
     parsed = json.loads(target.read_text(encoding="utf-8"))
     assert parsed["ticker"] == "OTEX"
-    assert parsed["path"] == "/tmp/x.pdf"  # Path serialised as str
+    assert parsed["path"] == str(Path("/tmp/x.pdf"))  # Path serialised as str (OS-native separators)
 
 
 def test_read_stage_outputs(tmp_path: Path):

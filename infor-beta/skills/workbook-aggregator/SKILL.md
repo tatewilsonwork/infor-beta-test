@@ -3,7 +3,7 @@ name: workbook-aggregator
 description: >
   Use this skill as the final consolidation stage of a conductor plan to merge every Excel (.xlsx)
   workbook produced during the deliverable into a single combined workbook. Each producing skill's
-  workbook becomes a tab named after that skill (captable, ltm-revenue, comps, ...). The combined
+  workbook becomes a tab named after that skill (captable, ltm-metrics, comps, ...). The combined
   file is named <deliverable>-<deal name>.xlsx — e.g. earningsupdate-Project Atlas.xlsx,
   pitch-Project Atlas.xlsx. Activates as the plan stage `workbook-aggregation`. Preserves formulas,
   CapIQ links, charts, and formatting via Excel COM on Windows; falls back to a best-effort openpyxl
@@ -14,7 +14,7 @@ allowed-tools: [Read, Write, Bash]
 
 # Workbook Aggregator — Workflow
 
-This is the last stage of a deliverable run. By the time it executes, every workbook-producing stage (cap table, LTM revenue, comps, …) has already emitted a standalone `.xlsx` under the deal's `artefacts/`, and the deck stage has already consumed whatever it needed from them. This stage merges those workbooks into one combined file and removes the individual sources, so the analyst is left with a single workbook per deal.
+This is the last stage of a deliverable run. By the time it executes, every workbook-producing stage (cap table, LTM metrics, comps, …) has already emitted a standalone `.xlsx` under the deal's `artefacts/`, and the deck stage has already consumed whatever it needed from them. This stage merges those workbooks into one combined file and removes the individual sources, so the analyst is left with a single workbook per deal.
 
 This skill does **not** read filings, compute figures, or touch PowerPoint. It only consolidates files that earlier stages produced.
 
@@ -30,7 +30,7 @@ If `$STAGE_INPUTS` is missing a field you need, write `{"error": "missing input:
 
 ## Tab naming
 
-- A **single-sheet** source workbook becomes one tab named exactly after the producing skill (`captable`, `ltm-revenue`).
+- A **single-sheet** source workbook becomes one tab named exactly after the producing skill (`captable`, `ltm-metrics`).
 - A **multi-sheet** source contributes one tab per sheet, each named `<skill>-<sheet>` (e.g. `captable-Cap with Links`, `captable-Inputs`).
 - Excel's constraints are enforced automatically: tab names are truncated to 31 chars, forbidden characters (`[]:*?/\`) are replaced, and collisions are disambiguated with a ` (2)`, ` (3)`, … suffix.
 
@@ -71,7 +71,7 @@ deal_dir = Path(os.environ.get("DEAL_DIR", "."))
 out_dir = deal_dir / "artefacts"
 
 combined_path = combine_workbooks(
-    sources=inputs["workbooks"],                 # {"captable": "...", "ltm-revenue": "..."}
+    sources=inputs["workbooks"],                 # {"captable": "...", "ltm-metrics": "..."}
     output_dir=out_dir,
     deliverable_type=inputs["deliverable_type"], # e.g. "earnings-update" or "pitch"
     deal_name=inputs["deal_name"],               # the deal codename
