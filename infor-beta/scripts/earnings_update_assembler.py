@@ -34,7 +34,7 @@ _KEEP_LIBRARY_INDICES = (0, 6, 7, 13, 14)
 
 # Earnings-summary slide cap-table placeholder (library slide 7 / deck index 1).
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
-_CAP_TABLE_RANGE = "B15:F31"
+_CAP_TABLE_RANGE = "B15:F36"
 
 
 def _safe_name(value: str) -> str:

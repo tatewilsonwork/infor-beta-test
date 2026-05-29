@@ -4,6 +4,19 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-05-28
+
+### Changed
+- **Revised `INFOR Slide Library.pptx`** swapped in (one small formatting refinement).
+- **Cap table now sources FX rate and share price from the web.** The `INFOR Cap Table Template.xlsx` leaves F7 (FX Rate) and F16 (Share Price) empty, each carrying a cell comment with the live CapIQ formula. The `captable` skill gains Step 3b: it fills F7 (Output-currency per Input/filing-currency) and F16 (share price in the Output currency F5) from the web as blue hardcoded values, leaving the commented CapIQ formula intact so the analyst can refresh live in Excel. FX-direction guidance throughout the skill is now definitive (multiply filing-currency figures/strikes by F7) instead of hedging on F7's orientation.
+- **Cap-table picture range widened `B15:F31` → `B15:F36`** so the overview-slide capitalization summary now also includes the Financial Metrics section. Updated `earnings_update_assembler._CAP_TABLE_RANGE`, `excel_to_powerpoint.insert_cap_table_into_placeholder` default `source_range`, and the `deck-assembler` / `excel-to-powerpoint` skill docs.
+
+### Fixed
+- **Workbook aggregator no longer emits the garbled `captable-__snloffice` tab.** CapIQ's Excel add-in stows formula metadata in a very-hidden `__snloffice` sheet; copied verbatim it surfaced as a CJK-looking tab in the combined workbook. Both the COM and openpyxl merge backends now skip CapIQ helper sheets (`__snl*`), and a single-content-sheet source (cap table) collapses to a tab named just `captable`.
+
+### Bumped
+- marketplace, plugin manifest, pyproject, and all shipped skill frontmatter versions to `0.5.3`.
+
 ## [0.5.2] — 2026-05-28
 
 ### Added

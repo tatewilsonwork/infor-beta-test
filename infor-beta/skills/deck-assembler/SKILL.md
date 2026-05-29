@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.2
+version: 0.5.3
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -19,7 +19,7 @@ This stage assembles typed slide/content handoffs into PowerPoint decks.
    - content bundle schema: `EarningsUpdateContent`
    - template: `INFOR Slide Library.pptx` (shared library)
    - helper: `scripts/earnings_update_assembler.py`
-   - clones library slides 1, 7, 8, 14, 15 (cover, overview, earnings summary, plus the two static closers) and deletes the rest; cap table replaces `Rectangle 3` on the overview slide (range `B15:F31`).
+   - clones library slides 1, 7, 8, 14, 15 (cover, overview, earnings summary, plus the two static closers) and deletes the rest; cap table replaces `Rectangle 3` on the overview slide (range `B15:F36`, including the Financial Metrics section).
 
 2. **Slide-library pitch POC**
    - `SlidePlan.deliverable_type = "pitch"`

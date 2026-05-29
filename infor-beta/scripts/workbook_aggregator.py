@@ -13,7 +13,9 @@ Two merge backends, mirroring `excel_to_powerpoint.py`:
 
   - **Excel COM** (Windows + Excel) — copies whole worksheet collections
     between open workbooks, so formulas, CapIQ links, charts, and formatting
-    survive intact, and intra-workbook references stay internal.
+    survive intact, and intra-workbook references stay internal. CapIQ's
+    very-hidden `__snloffice` helper sheet is copied along with the rest, then
+    deleted from the combined workbook so it never surfaces as a tab.
 
   - **openpyxl** (Cowork / Linux / macOS, or Windows without Excel) — a
     best-effort cell-and-style copy. External data connections (CapIQ) and
@@ -36,6 +38,16 @@ from typing import Mapping
 _XL_OPEN_XML_WORKBOOK = 51
 _EXCEL_SHEET_NAME_MAX = 31
 _FORBIDDEN_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]+")
+
+# CapIQ's Excel add-in stows formula metadata in a very-hidden helper sheet
+# named "__snloffice". Copied verbatim it surfaces as a garbled (CJK-looking)
+# tab in the combined workbook, so it's excluded from aggregation. The add-in
+# regenerates it on refresh, so dropping it from the merged file is harmless.
+_CAPIQ_HELPER_SHEET = re.compile(r"^__snl", re.IGNORECASE)
+
+
+def _is_capiq_helper_sheet(name: str) -> bool:
+    return bool(_CAPIQ_HELPER_SHEET.match(name.strip()))
 
 
 def _safe_file_stem(value: str) -> str:
@@ -173,15 +185,28 @@ def _combine_via_com(sources: list[tuple[str, Path]], output_path: Path) -> None
                 original_names = [
                     src.Worksheets(i + 1).Name for i in range(src.Worksheets.Count)
                 ]
+                content_count = sum(
+                    1 for n in original_names if not _is_capiq_helper_sheet(n)
+                )
                 before = combined.Sheets.Count
                 # Copy the whole worksheet collection in one operation so any
                 # intra-workbook references resolve against the new copies.
                 src.Worksheets.Copy(After=combined.Sheets(combined.Sheets.Count))
-                for offset, original in enumerate(original_names):
-                    sheet = combined.Sheets(before + 1 + offset)
+                # Walk only the sheets that were actually added (don't assume the
+                # count matches len(original_names)), renaming content sheets and
+                # collecting CapIQ helper copies (`__snloffice`) to delete.
+                drop: list = []
+                for idx in range(before + 1, combined.Sheets.Count + 1):
+                    sheet = combined.Sheets(idx)
+                    if _is_capiq_helper_sheet(sheet.Name):
+                        drop.append(sheet)
+                        continue
                     sheet.Name = _unique_sheet_name(
-                        _tab_name(skill, original, len(original_names)), used_names
+                        _tab_name(skill, sheet.Name, content_count), used_names
                     )
+                for sheet in drop:
+                    sheet.Visible = -1  # xlSheetVisible — can't delete a hidden sheet
+                    sheet.Delete()
             finally:
                 src.Close(SaveChanges=False)
 
@@ -210,11 +235,11 @@ def _combine_via_openpyxl(sources: list[tuple[str, Path]], output_path: Path) ->
 
     for skill, path in sources:
         src = load_workbook(path, data_only=False)
-        sheet_count = len(src.sheetnames)
-        for original in src.sheetnames:
+        content_sheets = [n for n in src.sheetnames if not _is_capiq_helper_sheet(n)]
+        for original in content_sheets:
             src_ws = src[original]
             title = _unique_sheet_name(
-                _tab_name(skill, original, sheet_count), used_names
+                _tab_name(skill, original, len(content_sheets)), used_names
             )
             dst_ws = combined.create_sheet(title=title)
             _copy_sheet(src_ws, dst_ws)
