@@ -208,8 +208,8 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
     assert [stage.id for stage in plan.stages] == [
         "wireframe",
         "content",
-        "captable",
         "ltm-metrics",
+        "captable",
         "deck",
         "workbook-aggregation",
     ]

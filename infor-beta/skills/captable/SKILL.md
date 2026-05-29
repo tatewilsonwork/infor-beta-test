@@ -5,7 +5,7 @@ description: >
   statements to populate a capitalization table. Activates on /captable and on tasks involving
   shares outstanding, debt schedules, lease obligations, options/RSU/warrant tables, convertible
   debentures, cash balances, preferred shares, or non-controlling interest sourced from company filings.
-version: 0.5.4
+version: 0.5.5
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -20,6 +20,7 @@ Today's date is available from the system context (`currentDate`) — do not she
 When invoked as a stage of a conductor plan, the environment carries `$STAGE_INPUTS`, `$STAGE_OUTPUTS`, and `$DEAL_DIR`:
 
 - Read your inputs (ticker, optional company facts) from `$STAGE_INPUTS` instead of asking the analyst. If `$STAGE_INPUTS` is missing fields you need, surface the gap by writing `{"error": "missing input: <field>"}` to `$STAGE_OUTPUTS` and stop — the conductor halts on that.
+- `$STAGE_INPUTS` may also carry `ltm_revenue` and `ltm_adj_ebitda` (millions, in the **filing's reporting currency**) handed off by the upstream `ltm-metrics` stage. Use them in Step 6b to populate the cap table's LTM valuation column (D47 / D48). They are optional — when absent (e.g. direct `/captable` invocation, or a plan with no `ltm-metrics` stage), Step 6b restores the CapIQ fallback formulas instead.
 - Write the cap table to `$DEAL_DIR/artefacts/<SANITIZED_TICKER> - Capitalization Table.xlsx` (NOT cwd). Bootstrap `$DEAL_DIR/artefacts/` if it doesn't exist.
 - At the end of Step 8, also write the structured handoff:
   ```bash
@@ -182,6 +183,32 @@ Write the file.
 
 ---
 
+### Step 6b — Populate LTM Valuation Metrics (D47 / D48)
+
+The Financial Metrics block reads its **LTM** column from `D47` (Revenue) and `D48` (Adj. EBITDA): `D34=D47`, `D35=D48`, which in turn drive `EV / Revenue` (D39), `EV / Adj. EBITDA` (D40) and the Adj. EBITDA margin (D36). The template ships with `D47`/`D48` **empty** — you fill them here.
+
+**Currency / units.** The CapIQ estimate columns next to them (`E47`/`F47`, `E48`/`F48`) are expressed in the **Output currency (F5), in millions**. Whatever you write to `D47`/`D48` must match: millions, in F5 currency.
+
+**Case A — LTM values supplied (`ltm_revenue` / `ltm_adj_ebitda` in `$STAGE_INPUTS`).** These arrive in the filing's reporting currency, in millions. Convert to the Output currency the same way the rest of the template does — by **multiplying by F7** (Output per Input/filing currency; F7 is `1.0` when the filing currency equals F5, so this is a safe no-op then). Write each as a formula embedding the figure so the conversion stays auditable, and apply blue font (it is an authored hardcoded-derived value, like the Section IV OTM rows):
+
+```python
+if ltm_revenue is not None:
+    c = ws["D47"]; c.value = f"={ltm_revenue}*F7"; c.font = Font(color="0000FF")
+if ltm_adj_ebitda is not None:
+    c = ws["D48"]; c.value = f"={ltm_adj_ebitda}*F7"; c.font = Font(color="0000FF")
+```
+
+**Case B — no LTM values (direct invocation / no `ltm-metrics` stage).** Restore the CapIQ LTM formulas so the cap table still auto-populates in Excel with the CapIQ add-in. Do **not** color these blue (they are formula cells):
+
+```python
+ws["D47"] = '=_xll.SNL.Clients.Office.Excel.Functions.SPG($F$3,"IQ_REV",D$33,$F$6,"Options:Mag=Millions,NA=NA,Curr="&$F$5)'
+ws["D48"] = '=_xll.SNL.Clients.Office.Excel.Functions.SPG($F$3,"SP_EBITDA",D$33,$F$6,"Options:Mag=Millions,NA=NA,Curr="&$F$5)'
+```
+
+Write the file.
+
+---
+
 ### Step 7 — Recalculate and Verify
 
 Run the recalc script if available:
@@ -201,11 +228,12 @@ Report to the user:
 
 1. **Output file:** path to the saved file
 2. **Web-sourced market values:** the FX rate (F7) and share price (F16) you wrote, each with its source and as-of date. Remind the user these are static snapshots — the analyst can paste the CapIQ formula stored in each cell's comment to refresh them live in Excel.
-3. **CapIQ auto-populated fields** (will refresh when file is opened in Excel with CapIQ connection): company name, FYE, currency, report dates, revenue & EBITDA consensus estimates, analyst coverage, average target price
-4. **Fields populated from MD&A:** list each section and what was found
-5. **Subsequent events applied:** for each adjustment made in Step 5, list the event date, description, source (filing note vs. press release), and which row it adjusted. If none were found, state "No subsequent events identified in filing sub-events note or newsroom screen through [today's date]."
-6. **Items not found:** any line items missing from the attached documents (user should fill these manually in blue)
-7. **Reminder:** Open in Excel with the CapIQ add-in active to refresh market data and the commented F7/F16 formulas
+3. **LTM valuation metrics (D47 / D48):** state whether LTM Revenue and Adj. EBITDA came from the `ltm-metrics` handoff (give the figures and note `*F7` FX conversion to the F5 currency) or fell back to the CapIQ `IQ_REV`/`SP_EBITDA` formula because no LTM values were supplied.
+4. **CapIQ auto-populated fields** (will refresh when file is opened in Excel with CapIQ connection): company name, FYE, currency, report dates, revenue & EBITDA consensus estimates, analyst coverage, average target price
+5. **Fields populated from MD&A:** list each section and what was found
+6. **Subsequent events applied:** for each adjustment made in Step 5, list the event date, description, source (filing note vs. press release), and which row it adjusted. If none were found, state "No subsequent events identified in filing sub-events note or newsroom screen through [today's date]."
+7. **Items not found:** any line items missing from the attached documents (user should fill these manually in blue)
+8. **Reminder:** Open in Excel with the CapIQ add-in active to refresh market data and the commented F7/F16 formulas
 
 ---
 
@@ -217,6 +245,7 @@ Report to the user:
 |---------|-------------|---------------|------|----------------------------------|
 | Header | Ticker | F3 | — | — |
 | Header | FX Rate (web-sourced, Output per Input), Share Price (web-sourced, in F5 currency) | F7, F16 | — | — |
+| LTM | LTM Revenue (D47), LTM Adj. EBITDA (D48) — `=<value>*F7` from `ltm-metrics`, else CapIQ fallback (Step 6b) | D47, D48 | — | D34/D35 read these (do NOT overwrite D34/D35) |
 | I | Preferred Shares, NCI | F52, F53 | — | — |
 | II | Options / Warrants / RSUs / DSUs | B (type), C (amount, M shares), D (strike) | 57–81 | E82, F82, F84, F85, F86 |
 | III | Convertible Debentures / Preferred | B (type), C (face, $M), D (shares/1000), E (strike) | 90–103 | F104 |
@@ -338,5 +367,6 @@ Apply the following event types when found in the filing's sub-events note or in
 8. Section VII col E dates reflect capital stock note subsequent-event date
 9. Every row populated in Section III has a matching `=IF(E[row]<F$16,0,C[row])` row in Section IV, with F$7 applied to the strike or share price whenever filing currency ≠ Output currency (F5)
 10. Section II option/warrant strikes in col D are stated in the Output currency (F5) — if filing currency ≠ F5, each strike has been converted by multiplying by F7 (Output per Input) so the template's ITM comparison against F$16 works correctly
-12. F7 (FX Rate) and F16 (Share Price) carry web-sourced numeric values in blue font, and their CapIQ-formula comments are still intact for the analyst to refresh
-11. Subsequent-events scan completed: both the filing's sub-events note (ASC 855 / IAS 10) and a company-source-only newsroom screen (IR page and company press releases — no third-party news wires or analyst coverage) have been reviewed. Every applied adjustment is deduplicated against the filing's disclosures and documented in the relevant row's cell comment
+11. F7 (FX Rate) and F16 (Share Price) carry web-sourced numeric values in blue font, and their CapIQ-formula comments are still intact for the analyst to refresh
+12. D47/D48 (LTM Revenue / Adj. EBITDA) are populated — either `=<value>*F7` in blue from the `ltm-metrics` handoff (millions, FX-converted to F5 currency), or the CapIQ `IQ_REV`/`SP_EBITDA` fallback when no LTM values were supplied — so D34/D35 and the EV multiples (D39/D40) resolve to numbers, not `n/a`
+13. Subsequent-events scan completed: both the filing's sub-events note (ASC 855 / IAS 10) and a company-source-only newsroom screen (IR page and company press releases — no third-party news wires or analyst coverage) have been reviewed. Every applied adjustment is deduplicated against the filing's disclosures and documented in the relevant row's cell comment

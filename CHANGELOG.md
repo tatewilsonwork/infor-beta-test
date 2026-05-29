@@ -4,6 +4,17 @@ All notable changes to `infor-beta` are documented here. Format: [Keep a Changel
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-05-29
+
+### Changed
+- **LTM metrics now feed the cap table.** The earnings-update plan runs `ltm-metrics` **before** `captable` (previously parallel siblings). `ltm-metrics` emits its LTM revenue and LTM Adj. EBITDA bridge totals (`ltm_revenue` / `ltm_adj_ebitda`, in millions, filing reporting currency) as typed stage outputs; `captable` reads them and writes the cap table's LTM valuation column — `D47` (Revenue) and `D48` (Adj. EBITDA) — as `=<value>*F7` so the cap table's FX rate converts them into the output currency (F5). New `bridge_total()` helper in `ltm_metrics.py` mirrors the workbook's bridge formula for the handoff.
+- **Revised `INFOR Cap Table Template.xlsx`** swapped in: `D47`/`D48` ship empty (the old CapIQ `IQ_REV`/`SP_EBITDA` LTM formulas removed) for the skill to populate. The CapIQ `__snloffice` helper tab was stripped again (it had crept back into the revised file), keeping the standalone workbook clean and consistent with v0.5.3.
+- **`captable` Step 6b** added: populate `D47`/`D48` from the `ltm-metrics` handoff (`=<value>*F7`, blue font), or restore the CapIQ `IQ_REV`/`SP_EBITDA` fallback formulas when no LTM values are supplied (direct `/captable` invocation or a plan without an `ltm-metrics` stage), so EV/Revenue and EV/Adj. EBITDA multiples still resolve.
+- **Cap-table picture range widened `B15:F36` → `B15:F40`** so the overview-slide picture now also shows the LTM/forward Valuation Metrics rows (EV/Revenue, EV/Adj. EBITDA). Updated `earnings_update_assembler._CAP_TABLE_RANGE`, `excel_to_powerpoint.insert_cap_table_into_placeholder` default `source_range`, and the `deck-assembler` / `excel-to-powerpoint` skill docs.
+
+### Bumped
+- marketplace, plugin manifest, pyproject, and all shipped skill frontmatter versions to `0.5.5`.
+
 ## [0.5.4] — 2026-05-28
 
 ### Changed

@@ -7,7 +7,7 @@ description: >
   (or EBITDA) bridge. Activates as the earnings-update plan stage `ltm-metrics`, supplying the
   companion data behind the overview slide's LTM revenue pie placeholder. Segment by service /
   product line when disclosed, else by geography.
-version: 0.5.4
+version: 0.5.5
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -59,9 +59,13 @@ If `$STAGE_INPUTS` is missing a field you need, write `{"error": "missing input:
 
 ```json
 {
-  "workbook_path": "/absolute/path/to/<Company> - LTM Metrics.xlsx"
+  "workbook_path": "/absolute/path/to/<Company> - LTM Metrics.xlsx",
+  "ltm_revenue": 4062.0,
+  "ltm_adj_ebitda": 2045.0
 }
 ```
+
+`ltm_revenue` and `ltm_adj_ebitda` are the bridge totals **in millions, in the filing's reporting currency** — the same currency as the bridge components. The downstream `captable` stage reads them and writes them to the cap table's LTM column (D47 / D48), applying the cap table's FX rate F7 to convert into the output currency, so emit them unconverted here. Use `bridge_total(...)` to compute each from the same component list you pass to the workbook (omit a key when its bridge is absent).
 
 When `$STAGE_OUTPUTS` is unset (direct invocation), write the workbook to cwd and skip the JSON handoff.
 
@@ -73,11 +77,22 @@ from pathlib import Path
 
 plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
 sys.path.insert(0, str(plugin_root / "scripts"))
-from ltm_metrics import build_ltm_metrics_workbook, RevenueSegment, BridgeComponent
+from ltm_metrics import build_ltm_metrics_workbook, bridge_total, RevenueSegment, BridgeComponent
 
 inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())
 deal_dir = Path(os.environ.get("DEAL_DIR", "."))
 out_dir = deal_dir / "artefacts"
+
+revenue_bridge = [
+    BridgeComponent("FY2025 Revenue", 5400.0),
+    BridgeComponent("Q3 2026 YTD Revenue", 3050.0),
+    BridgeComponent("Q3 2025 YTD Revenue", 2388.0, subtract=True),
+]
+ebitda_bridge = [
+    BridgeComponent("FY2025 Adj. EBITDA", 1820.0),
+    BridgeComponent("Q3 2026 YTD Adj. EBITDA", 1040.0),
+    BridgeComponent("Q3 2025 YTD Adj. EBITDA", 815.0, subtract=True),
+]
 
 workbook_path = build_ltm_metrics_workbook(
     company_name=inputs["company"]["legal_name"],
@@ -90,20 +105,21 @@ workbook_path = build_ltm_metrics_workbook(
         RevenueSegment("License", 360.0),
         RevenueSegment("Professional Service & Other", 290.0),
     ],
-    revenue_bridge=[
-        BridgeComponent("FY2025 Revenue", 5400.0),
-        BridgeComponent("Q3 2026 YTD Revenue", 3050.0),
-        BridgeComponent("Q3 2025 YTD Revenue", 2388.0, subtract=True),
-    ],
-    ebitda_bridge=[
-        BridgeComponent("FY2025 Adj. EBITDA", 1820.0),
-        BridgeComponent("Q3 2026 YTD Adj. EBITDA", 1040.0),
-        BridgeComponent("Q3 2025 YTD Adj. EBITDA", 815.0, subtract=True),
-    ],
+    revenue_bridge=revenue_bridge,
+    ebitda_bridge=ebitda_bridge,
     ebitda_label="LTM Adj. EBITDA",                # or "LTM EBITDA" if no Adj. disclosed
     output_dir=out_dir,
 )
-Path(os.environ["STAGE_OUTPUTS"]).write_text(json.dumps({"workbook_path": str(workbook_path)}, indent=2) + "\n")
+
+# Mirror the workbook's bridge formulas for the typed handoff (filing-currency millions).
+handoff = {"workbook_path": str(workbook_path)}
+ltm_revenue = bridge_total(revenue_bridge)
+ltm_adj_ebitda = bridge_total(ebitda_bridge)
+if ltm_revenue is not None:
+    handoff["ltm_revenue"] = ltm_revenue
+if ltm_adj_ebitda is not None:
+    handoff["ltm_adj_ebitda"] = ltm_adj_ebitda
+Path(os.environ["STAGE_OUTPUTS"]).write_text(json.dumps(handoff, indent=2) + "\n")
 ```
 
 ## Boundary
