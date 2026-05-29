@@ -69,7 +69,7 @@ def test_revenue_bridge_sums_fy_plus_ytd_minus_prior(tmp_path: Path):
     assert ws["B16"].value == 5400.0
     assert ws["A18"].value == "(−) Q3 2025 YTD Revenue"
     # LTM = FY + current YTD − prior YTD, referencing the component cells.
-    assert ws["A19"].value == "= LTM Revenue"
+    assert ws["A19"].value == "(=) LTM Revenue"
     assert ws["B19"].value == "=B16+B17-B18"
 
 
@@ -79,7 +79,7 @@ def test_ebitda_bridge_only_and_label(tmp_path: Path):
 
     # Revenue result is row 19; row 20 is a blank spacer, EBITDA starts at 21.
     assert ws["A21"].value == "LTM Adj. EBITDA Bridge"
-    assert ws["A26"].value == "= LTM Adj. EBITDA"
+    assert ws["A26"].value == "(=) LTM Adj. EBITDA"
     assert ws["B26"].value == "=B23+B24-B25"
 
 
@@ -87,7 +87,7 @@ def test_ebitda_label_falls_back_to_unadjusted(tmp_path: Path):
     path = _build(tmp_path, ebitda_label="LTM EBITDA")
     ws = load_workbook(path).active
     assert ws["A21"].value == "LTM EBITDA Bridge"
-    assert ws["A26"].value == "= LTM EBITDA"
+    assert ws["A26"].value == "(=) LTM EBITDA"
 
 
 def test_segments_and_bridges_accept_plain_tuples(tmp_path: Path):

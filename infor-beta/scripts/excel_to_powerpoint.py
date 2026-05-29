@@ -4,11 +4,14 @@ The cap-table insertion path renders the Excel source range as a picture and
 pastes it into the deck placeholder at the placeholder's exact width and
 height. Two render backends are wired in:
 
-  - **Excel COM** (Windows + Excel) — `Range.CopyPicture(Format=xlPicture)`
-    puts a metafile on the Office clipboard; we then paste it into a
-    temporary `ChartObject` sized to the range, export the chart as PNG via
-    `Chart.Export`, and feed those bytes to python-pptx. The chart-export
-    round-trip bypasses the system clipboard, so Excel can stay invisible.
+  - **Excel COM** (Windows + Excel) — we force a full recalc first (the
+    workbook is saved by openpyxl with stripped caches and is manual-calc, so
+    its formulas otherwise load blank), then `Range.CopyPicture(xlScreen,
+    xlPicture)` puts a metafile on the Office clipboard; we paste it into a
+    temporary `ChartObject` sized to the range and export the chart as PNG via
+    `Chart.Export`. A recalc invalidates an invisible instance's render buffer
+    (yielding a blank picture), so the instance runs visible but parked far
+    off-screen.
 
   - **LibreOffice headless** (Cowork / Linux / macOS) — set the print area
     to the source range via openpyxl, convert the workbook to PDF with
@@ -28,12 +31,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from pptx import Presentation
 
 
 _XL_SCREEN = 1
+_XL_NORMAL = -4143
 _XL_PICTURE = -4147
 
 
@@ -107,24 +112,62 @@ def _excel_com_range_to_png(workbook: Path, sheet_name: str, source_range: str) 
     tmp_png_path: str | None = None
     try:
         excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
+        # CopyPicture(xlScreen) captures what the instance renders, and the
+        # recalc below invalidates the render buffer of an invisible instance
+        # (producing a blank picture). So run visible — but parked far
+        # off-screen so the window doesn't pop in front of the analyst.
+        excel.Visible = True
         excel.DisplayAlerts = False
+        try:
+            excel.WindowState = _XL_NORMAL  # minimized windows don't render
+            excel.Top, excel.Left = 4000, 6000
+        except Exception:
+            pass
         wb = excel.Workbooks.Open(str(workbook), ReadOnly=True, UpdateLinks=0)
         try:
+            # openpyxl drops the cached value of every formula cell when the
+            # cap-table skill saves the workbook, and the template is manual-calc,
+            # so the EV cascade (market cap, net debt, Enterprise Value, multiples
+            # — all in-workbook math, no CapIQ functions in the picture range)
+            # loads blank. Force a recalc before snapshotting or the image shows
+            # empty cells down through Enterprise Value.
+            try:
+                excel.CalculateFull()
+            except Exception:
+                # A flaky recalc is no worse than the prior no-recalc behaviour;
+                # never let it abort the deck assembly.
+                pass
+
             ws = wb.Worksheets(sheet_name)
             rng = ws.Range(source_range)
-            rng.CopyPicture(Appearance=_XL_SCREEN, Format=_XL_PICTURE)
-
-            chart_obj = ws.ChartObjects().Add(Left=0, Top=0, Width=rng.Width, Height=rng.Height)
-            try:
-                chart = chart_obj.Chart
-                chart.ChartArea.Border.LineStyle = 0
-                chart.Paste()
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                    tmp_png_path = f.name
-                chart.Export(Filename=tmp_png_path, FilterName="PNG")
-            finally:
-                chart_obj.Delete()
+            # CopyPicture uses the shared Office clipboard; retry a couple of
+            # times in case another Excel instance momentarily holds it.
+            last_exc: Exception | None = None
+            for attempt in range(5):
+                try:
+                    rng.CopyPicture(Appearance=_XL_SCREEN, Format=_XL_PICTURE)
+                    chart_obj = ws.ChartObjects().Add(
+                        Left=0, Top=0, Width=rng.Width, Height=rng.Height
+                    )
+                    try:
+                        chart = chart_obj.Chart
+                        chart.ChartArea.Border.LineStyle = 0
+                        chart.Paste()
+                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                            tmp_png_path = f.name
+                        chart.Export(Filename=tmp_png_path, FilterName="PNG")
+                    finally:
+                        chart_obj.Delete()
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    time.sleep(0.5 * (attempt + 1))
+            else:
+                # Exhausted retries. Re-raise the underlying Excel/clipboard
+                # error itself (a com_error, not a RuntimeError) so the caller
+                # does not mistake it for "pywin32 unavailable" and fall through
+                # to the LibreOffice renderer.
+                raise last_exc  # type: ignore[misc]
 
             with open(tmp_png_path, "rb") as f:
                 buf = io.BytesIO(f.read())

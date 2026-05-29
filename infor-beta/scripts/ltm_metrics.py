@@ -150,7 +150,10 @@ def _write_bridge(
         for i, comp in enumerate(components)
     ).lstrip("+")
 
-    ws.cell(row=result_row, column=1, value=f"= {result_label}").font = _TOTAL_FONT
+    # The label is a plain string. A leading "=" makes openpyxl store the cell
+    # as a formula (Excel then renders it as "=@LTM Revenue"), so use the "(=)"
+    # bridge glyph, mirroring the "(+)" / "(−)" component rows above.
+    ws.cell(row=result_row, column=1, value=f"(=) {result_label}").font = _TOTAL_FONT
     rv = ws.cell(row=result_row, column=2, value=f"={terms}")
     rv.font = _TOTAL_FONT
     rv.number_format = "#,##0.0"
