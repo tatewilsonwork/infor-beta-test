@@ -8,11 +8,13 @@ five-slide deck and fills them from a typed `EarningsUpdateContent` bundle.
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.util import Emu, Inches, Pt
 
 from excel_to_powerpoint import insert_cap_table_into_placeholder
 from pptx_helpers import (
@@ -122,6 +124,75 @@ def _write_flexible_bullets(shape, bullets, items=None) -> None:
     enable_normal_autofit(shape)
 
 
+# Empirical layout constants for the overview bullets (Palatino ~10.5 pt, the
+# ~4.5"-wide TextBox 9 with zero side insets). Calibrated against a 1,055-char /
+# 7-bullet block that rendered to ~19 lines and overran the LTM header.
+_OVERVIEW_CHARS_PER_LINE = 64
+_OVERVIEW_LINE_IN = 0.182
+_OVERVIEW_MIN_SCALE = 70.0
+
+
+def _overview_band_bottom_in(slide) -> float | None:
+    """Top edge (inches) of the 'LTM Revenue Breakdown' header — the lower bound
+    the overview bullets must stay above. Returns None if the header is absent."""
+    for shape in slide.shapes:
+        if getattr(shape, "has_text_frame", False) and "LTM Revenue" in shape.text_frame.text:
+            return Emu(shape.top).inches
+    return None
+
+
+def _fit_overview_textbox(slide, shape) -> None:
+    """Keep the overview bullets above the LTM revenue pie header.
+
+    The library ships TextBox 9 one line tall and relies on autofit, but
+    PowerPoint ignores a scale-less ``<a:normAutofit/>`` on open, so an
+    over-long run renders at full size and spills into the 'LTM Revenue
+    Breakdown' header below. Size the box to the available band, and when the
+    copy would still overflow at the template font, write an explicit
+    ``fontScale`` so the shrink actually happens on open.
+    """
+    top_in = Emu(shape.top).inches
+    band_bottom = _overview_band_bottom_in(slide)
+    if band_bottom is not None and band_bottom - top_in > 0.5:
+        avail_in = band_bottom - 0.12 - top_in
+        shape.height = Inches(avail_in)
+    else:
+        avail_in = Emu(shape.height).inches
+
+    paras = [p.text for p in shape.text_frame.paragraphs if p.text.strip()]
+    lines = sum(max(1, math.ceil(len(t) / _OVERVIEW_CHARS_PER_LINE)) for t in paras)
+    needed_in = lines * _OVERVIEW_LINE_IN
+    if needed_in > avail_in:
+        scale = max(_OVERVIEW_MIN_SCALE, (avail_in / needed_in) * 100.0)
+        enable_normal_autofit(shape, font_scale=scale, line_space_reduction=8)
+    else:
+        enable_normal_autofit(shape)
+
+
+def _metric_name_pt(name: str) -> float | None:
+    """Point size for an over-long KPI tile name, or None to keep the template 9 pt.
+
+    The tile is ~1.44" wide; a name past ~24 chars wraps to a second line and,
+    together with the value line, overflows the fixed tile height. Shrink only
+    the name (not the value) so the values stay uniform across tiles.
+    """
+    n = len(name)
+    if n <= 24:
+        return None
+    if n <= 32:
+        return 8.0
+    return 7.0
+
+
+def _set_metric_box(box, value_str: str, name: str) -> None:
+    """Write the value + name into a tile, shrinking only an over-long name."""
+    set_text(box, [value_str, name])
+    size = _metric_name_pt(name)
+    if size is not None:
+        for run in box.text_frame.paragraphs[1].runs:
+            run.font.size = Pt(size)
+
+
 def _table_shape(slide):
     for shape in slide.shapes:
         if getattr(shape, "has_table", False):
@@ -143,10 +214,9 @@ def _set_cover(slide, content: EarningsUpdateContent) -> None:
 
 def _set_overview(slide, content: EarningsUpdateContent) -> None:
     set_text(find_shape(slide, "Title 6"), [f"Introduction to {content.company_name}"])
-    _write_flexible_bullets(
-        find_shape(slide, "TextBox 9"),
-        content.company_overview_bullets,
-    )
+    overview = find_shape(slide, "TextBox 9")
+    _write_flexible_bullets(overview, content.company_overview_bullets)
+    _fit_overview_textbox(slide, overview)
     _fill_footnote(find_shape(slide, "Text Placeholder 1"), content.currency)
 
 
@@ -185,8 +255,8 @@ def _set_earnings_summary(slide, content: EarningsUpdateContent) -> None:
     ):
         group = find_shape(slide, group_name)
         name = _strip_currency_unit(kpi.name)
-        set_text(find_shape_in_group(group, prior_box), [_fmt_mm(kpi.prior_value), name])
-        set_text(find_shape_in_group(group, current_box), [_fmt_mm(kpi.current_value), name])
+        _set_metric_box(find_shape_in_group(group, prior_box), _fmt_mm(kpi.prior_value), name)
+        _set_metric_box(find_shape_in_group(group, current_box), _fmt_mm(kpi.current_value), name)
         color = COLOR_UP if kpi.delta_sign > 0 else (COLOR_DOWN if kpi.delta_sign < 0 else None)
         set_text(find_shape_in_group(group, var_box), [kpi.delta_str], size_pt=10, color_hex=color)
 
