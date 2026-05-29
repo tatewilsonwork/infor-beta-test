@@ -5,7 +5,7 @@ description: >
   statements to populate a capitalization table. Activates on /captable and on tasks involving
   shares outstanding, debt schedules, lease obligations, options/RSU/warrant tables, convertible
   debentures, cash balances, preferred shares, or non-controlling interest sourced from company filings.
-version: 0.5.2
+version: 0.5.3
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -82,13 +82,26 @@ ls -lh "$OUTPUT"
 
 Open the copied file with openpyxl (NOT data_only — preserve all formulas).
 
-Update ONLY this cell in the `Cap with Links` sheet:
+Update this cell in the `Cap with Links` sheet:
 
 | Cell | Value |
 |------|-------|
 | F3 | CapIQ ticker exactly as provided (e.g., `NasdaqGS:MSFT`) |
 
-**Do not modify any other header cells.** Cell F6 already contains a `=TODAY()-1` formula — leave it untouched. Do not modify F4, F5, F7, F10, F11, or any formula cells.
+**Do not modify these header cells:** F4, F5, F10, F11, or any formula cell. Cell F6 already contains a `=TODAY()-1` formula — leave it untouched.
+
+**F7 (FX Rate) and F16 (Share Price) are intentionally empty in the template and you fill them from the web (see Step 3b).** Each carries a cell **comment** holding the CapIQ formula the analyst pastes back to refresh the value live — **never delete or overwrite that comment.** Write only the cell value; openpyxl leaves an existing comment intact.
+
+---
+
+### Step 3b — Populate FX Rate (F7) and Share Price (F16) from the web
+
+The template no longer carries live CapIQ formulas in F7 and F16; you supply a current static value from the web so the cap table computes immediately, and the analyst can later paste the commented CapIQ formula to refresh it. Source both from a reputable market data site, as of the F6 date (yesterday — the latest prior trading close).
+
+- **F16 — Share Price.** The price of one common share, expressed in the **Output currency (F5)**. Read F5 first (default `CAD`). If the share trades in a different currency, convert the quoted price into F5 using the same FX rate you write to F7. Write a numeric value (e.g. `42.18`), not a string.
+- **F7 — FX Rate.** Defined by the template math as **Output-currency units per 1 unit of the filing's reporting (Input) currency**: downstream cells convert filing-currency figures to the output currency by *multiplying* by F7 (e.g. `F24 = F122*F7`), and Section II/III strike comparisons assume `strike_output = strike_filing * F7`. So if the filing reports in USD and F5 is `CAD`, F7 is **CAD per USD** (e.g. `1.37`). If the filing currency equals F5, write `1.0`.
+
+Determine the filing's reporting currency from the attached documents. Write both values with blue font `Font(color="0000FF")` (they are hardcoded), and leave their CapIQ-formula comments untouched. Note the source and as-of date for each in the Step 8 summary (not as a cell comment — the comment slot is reserved for the CapIQ formula).
 
 ---
 
@@ -185,11 +198,12 @@ Perform the cross-checks listed in the Domain Reference below before delivering.
 Report to the user:
 
 1. **Output file:** path to the saved file
-2. **CapIQ auto-populated fields** (will refresh when file is opened in Excel with CapIQ connection): share price, company name, FYE, currency, report dates, revenue & EBITDA consensus estimates, analyst coverage, average target price
-3. **Fields populated from MD&A:** list each section and what was found
-4. **Subsequent events applied:** for each adjustment made in Step 5, list the event date, description, source (filing note vs. press release), and which row it adjusted. If none were found, state "No subsequent events identified in filing sub-events note or newsroom screen through [today's date]."
-5. **Items not found:** any line items missing from the attached documents (user should fill these manually in blue)
-6. **Reminder:** Open in Excel with the CapIQ add-in active to refresh market data
+2. **Web-sourced market values:** the FX rate (F7) and share price (F16) you wrote, each with its source and as-of date. Remind the user these are static snapshots — the analyst can paste the CapIQ formula stored in each cell's comment to refresh them live in Excel.
+3. **CapIQ auto-populated fields** (will refresh when file is opened in Excel with CapIQ connection): company name, FYE, currency, report dates, revenue & EBITDA consensus estimates, analyst coverage, average target price
+4. **Fields populated from MD&A:** list each section and what was found
+5. **Subsequent events applied:** for each adjustment made in Step 5, list the event date, description, source (filing note vs. press release), and which row it adjusted. If none were found, state "No subsequent events identified in filing sub-events note or newsroom screen through [today's date]."
+6. **Items not found:** any line items missing from the attached documents (user should fill these manually in blue)
+7. **Reminder:** Open in Excel with the CapIQ add-in active to refresh market data and the commented F7/F16 formulas
 
 ---
 
@@ -200,6 +214,7 @@ Report to the user:
 | Section | Description | Input Columns | Rows | Formula Totals (do NOT overwrite) |
 |---------|-------------|---------------|------|----------------------------------|
 | Header | Ticker | F3 | — | — |
+| Header | FX Rate (web-sourced, Output per Input), Share Price (web-sourced, in F5 currency) | F7, F16 | — | — |
 | I | Preferred Shares, NCI | F52, F53 | — | — |
 | II | Options / Warrants / RSUs / DSUs | B (type), C (amount, M shares), D (strike) | 57–81 | E82, F82, F84, F85, F86 |
 | III | Convertible Debentures / Preferred | B (type), C (face, $M), D (shares/1000), E (strike) | 90–103 | F104 |
@@ -251,17 +266,15 @@ Examples:
 
 **Options/Warrants/RSUs/DSUs:** Stock-based compensation footnote. Enter one row per exercise-price tranche for options — do NOT aggregate to WAEP. RSUs/DSUs use $0 strike. **Always exclude PSUs, and exclude any RSUs/DSUs that are exclusively cash-settled** (they pay out in cash rather than shares, so they don't factor into ITM dilutive share count). Check the equity comp footnote for settlement terms — language like "settled in cash," "cash-settled only," or "no share issuance" signals exclusion. If an RSU/DSU plan allows share OR cash settlement at the company's discretion, include it.
 
-**Options strike — FX conversion required whenever filing currency ≠ Output currency (F5).** The template's ITM calculation compares the strike in col D against the share price in F$16, which is stated in the Output currency (F5). Unlike Section III (where the ITM formula is authored per-row and can apply FX inline), Section II strikes are compared natively by template formulas you cannot modify — so the strike **value written to col D must already be in the Output currency**. Convert each tranche's strike using F7 before writing:
-- If F7 is stated as **Output-per-Filing** (e.g., USD per CAD = 0.74), multiply: `strike_output = strike_filing * F7`
-- If F7 is stated as **Filing-per-Output** (e.g., CAD per USD = 1.35), divide: `strike_output = strike_filing / F7`
+**Options strike — FX conversion required whenever filing currency ≠ Output currency (F5).** The template's ITM calculation compares the strike in col D against the share price in F$16, which is stated in the Output currency (F5). Unlike Section III (where the ITM formula is authored per-row and can apply FX inline), Section II strikes are compared natively by template formulas you cannot modify — so the strike **value written to col D must already be in the Output currency**. F7 is **Output-currency per Input(filing)-currency** (you set it in Step 3b), so convert by **multiplying**: `strike_output = strike_filing * F7`.
 
-Pick the direction based on F7's definition in the template header. In the cell comment on col B, note both the original filing-currency strike and the FX rate applied, e.g., `"Rogers 2024 Annual Report - Page 102, Note 20: Stock Options. Original strike CAD $45.20 converted to USD at F7 = 0.74"`. Apply blue font to col D as with any hardcoded value.
+In the cell comment on col B, note both the original filing-currency strike and the FX rate applied, e.g., `"Rogers 2024 Annual Report - Page 102, Note 20: Stock Options. Original strike CAD $45.20 converted to USD at F7 = 0.74"`. Apply blue font to col D as with any hardcoded value.
 
 **Convertible Debentures / Convertible Preferreds:** Face amount (col C), shares per $1,000 face = 1,000 / conversion price (col D), conversion price (col E). **Also add a matching row in Section IV (Debt)** so the face is captured as debt only when the convert is out-of-the-money:
 - Label col B: `"[Convert name] (if OTM)"`
 - Date col E: the as-of date of the financial statement the convert face amount is sourced from (NOT the maturity of the convert — col E is an as-of date throughout Section IV).
 - Amount col F: enter as an **IF formula** referencing the Section III row. If strike < share price (ITM) the convert will convert to shares and contributes $0 to debt; otherwise the face (C[row]) flows into total debt.
-  - **FX-aware comparison — required whenever filing currency ≠ Output currency (F5):** share price (F$16) is stated in the Output currency (F5); strike (col E in Section III) is in the filing's reporting currency. F7 holds the FX rate. You MUST align the two sides before comparing, or the ITM/OTM classification will be wrong whenever F5 and the filing currency differ. Pick the direction based on F7's definition (multiply or divide) so both sides land in the same currency. Same-currency example (row 90): `=IF(E90<F$16,0,C90)`. Cross-currency example (row 90) converting the strike into F5 currency: `=IF(E90*F$7<F$16,0,C90)` — flip to `/F$7` if F7 is inverted.
+  - **FX-aware comparison — required whenever filing currency ≠ Output currency (F5):** share price (F$16) is stated in the Output currency (F5); strike (col E in Section III) is in the filing's reporting currency. F7 holds the FX rate (Output per Input — set in Step 3b). You MUST align the two sides before comparing, or the ITM/OTM classification will be wrong whenever F5 and the filing currency differ. Multiply the strike by F$7 to bring it into F5 currency. Same-currency example (row 90): `=IF(E90<F$16,0,C90)`. Cross-currency example (row 90) converting the strike into F5 currency: `=IF(E90*F$7<F$16,0,C90)`.
 - Apply blue font to col B, E, and F (the F cell holds a hardcoded formula you authored, not a template formula, so color it).
 
 **Preferred Shares / NCI:** Balance sheet equity section. Enter 0 if none.
@@ -322,5 +335,6 @@ Apply the following event types when found in the filing's sub-events note or in
 7. Options appear as one row per tranche, not single WAEP row
 8. Section VII col E dates reflect capital stock note subsequent-event date
 9. Every row populated in Section III has a matching `=IF(E[row]<F$16,0,C[row])` row in Section IV, with F$7 applied to the strike or share price whenever filing currency ≠ Output currency (F5)
-10. Section II option/warrant strikes in col D are stated in the Output currency (F5) — if filing currency ≠ F5, each strike has been converted via F7 (multiplied or divided per F7's definition) so the template's ITM comparison against F$16 works correctly
+10. Section II option/warrant strikes in col D are stated in the Output currency (F5) — if filing currency ≠ F5, each strike has been converted by multiplying by F7 (Output per Input) so the template's ITM comparison against F$16 works correctly
+12. F7 (FX Rate) and F16 (Share Price) carry web-sourced numeric values in blue font, and their CapIQ-formula comments are still intact for the analyst to refresh
 11. Subsequent-events scan completed: both the filing's sub-events note (ASC 855 / IAS 10) and a company-source-only newsroom screen (IR page and company press releases — no third-party news wires or analyst coverage) have been reviewed. Every applied adjustment is deduplicated against the filing's disclosures and documented in the relevant row's cell comment

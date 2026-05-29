@@ -82,6 +82,19 @@ def test_multi_sheet_source_tabs_prefixed_with_skill(tmp_path: Path):
     assert wb.sheetnames == ["captable-Cap with Links", "captable-Inputs"]
 
 
+def test_capiq_helper_sheet_is_dropped(tmp_path: Path):
+    # The CapIQ add-in's "__snloffice" metadata sheet must not surface as a tab;
+    # with it filtered out the lone content sheet collapses to the skill name.
+    a = _make_workbook(
+        tmp_path / "a.xlsx",
+        {"__snloffice": [["garbage"]], "Cap with Links": [["a"]]},
+    )
+    out = tmp_path / "out.xlsx"
+    _combine_via_openpyxl([("captable", a)], out)
+    wb = load_workbook(out)
+    assert wb.sheetnames == ["captable"]
+
+
 def test_merge_preserves_values_and_formulas(tmp_path: Path):
     a = _make_workbook(tmp_path / "a.xlsx", {"S": [["Total", 10], [None, "=B1*2"]]})
     out = tmp_path / "out.xlsx"
