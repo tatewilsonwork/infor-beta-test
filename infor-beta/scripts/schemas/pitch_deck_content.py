@@ -72,13 +72,23 @@ class InvestmentHighlight(BaseModel):
 class MarketEntryTarget(BaseModel):
     """One target column on the Potential Market Entry Targets slide.
 
-    `cells` are positional values aligned 1:1 with the fixed 12-row
-    `market_entry_row_labels` (Overview / HQ / Year Founded → 7 industry metrics
-    → Scale KPIs / Strategic Rationale).
+    `name` is the target company's name, used to label its deferred logo box as
+    `[<name> Logo]`. `cells` are positional values aligned 1:1 with the fixed
+    12-row `market_entry_row_labels` (Overview / HQ / Year Founded → 7 industry
+    metrics → Scale KPIs / Strategic Rationale).
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    name: str | None = Field(
+        default=None,
+        max_length=80,
+        description=(
+            "Optional target company name. Labels the deferred logo box as "
+            "'[<name> Logo]' (e.g. '[Kueski Logo]'); falls back to the generic "
+            "'[Company Name Logo]' when absent."
+        ),
+    )
     cells: list[str] = Field(..., min_length=1, max_length=_MARKET_ENTRY_ROW_COUNT)
 
 

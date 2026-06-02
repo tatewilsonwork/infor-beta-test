@@ -2,6 +2,20 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.7] — 2026-06-02
+
+Pitch-deck fixes surfaced by the Project PRL2 review. Slides 1–6, 8, 10, 11, 16, 17 were already correct and are unchanged; the earnings-update behaviour is untouched (it remains the reference implementation). All three items below change the pitch deck output.
+
+### Fixed
+- **Pitch slide 7 cap table had no LTM Revenue / Adj. EBITDA rows.** The pitch plan ran `captable` with no LTM inputs, so the cap table's LTM valuation cells (`D47`/`D48`) fell back to CapIQ formulas and rendered empty / `#NAME?`. The pitch plan now runs an `ltm-metrics` stage **before** `captable` and feeds its `ltm_revenue` / `ltm_adj_ebitda` totals into `D47`/`D48` — mirroring the earnings-update plan — so the slide-7 picture (range `B15:F40`, already identical to the earnings overview) shows both LTM rows and the EV multiples resolve. The pitch flow now requires two new analyst inputs, `reporting_quarter` and `comparison_quarter`, and the LTM workbook is folded into the combined `pitch-<codename>.xlsx`. (`plans/pitch.yaml`; test updated)
+- **Pitch slide 9 (Considerations / Mitigants) rendered too small.** The risk/mitigant table hardcoded a 9 pt header and 8 pt body; the library uses 12 pt / 10 pt. Now driven by named constants (`_RISK_HEADER_SIZE = 12`, `_RISK_BODY_SIZE = 10`) so the table matches the library. (`pitch_deck_assembler.py`; test added)
+
+### Changed
+- **Pitch market-entry logo boxes name the company.** Each populated target column's logo box read the generic template string `[Placeholder for Logo]`; it now reads `[<target> Logo]` (e.g. `[Kueski Logo]`) so the analyst knows which logo to drop in. `MarketEntryTarget` gains an optional `name` field (the assembler falls back to a generic `[Company Name Logo]` when it is absent), and `pitch-content` populates it from each target's heading. The unused logo box on an odd final slide is still blanked. (`schemas/pitch_deck_content.py` + regenerated JSON schema, `pitch_deck_assembler.py`, `pitch-content` SKILL.md; tests updated + added)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.7`.
+
 ## [0.5.6] — 2026-06-02
 
 Repository cleanup, earnings-update fixes surfaced by Test #5 (OTEX), and pitch-deck fixes surfaced by the Project PRL1 review. The cleanup is behaviour-neutral; the **Fixed** / **Changed** items below change the earnings-update and pitch deck output.

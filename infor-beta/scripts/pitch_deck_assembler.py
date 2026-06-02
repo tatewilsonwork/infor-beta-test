@@ -147,6 +147,12 @@ _ME_LABEL_SIZE = 11
 _ME_VALUE_SIZE = 10
 _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
 
+# Slide 9 Considerations/Mitigants table sizing. The library ships the header row
+# at 12 pt and the body cells at 10 pt; the old code hardcoded 9 pt / 8 pt, which
+# rendered noticeably smaller than the template.
+_RISK_HEADER_SIZE = 12
+_RISK_BODY_SIZE = 10
+
 
 def _output_currency_letter(workbook_path) -> str:
     """Derive the footnote currency letter ('US' / 'C') from the cap table.
@@ -194,8 +200,10 @@ def _fill_market_entry_targets(
     12-row structure (Overview / HQ / Year Founded → 7 consistent industry
     metrics → Scale KPIs / Strategic Rationale): the label column (col 0) is
     written white at 11 pt and the target value columns at 10 pt, matching the
-    library style. Logo placeholders stay deferred; the unused one is blanked on
-    an odd final slide so a single-target slide shows no stray logo box.
+    library style. Each populated column's logo box is relabelled
+    '[<target name> Logo]' (generic '[Company Name Logo]' when the target has no
+    name); the unused box is blanked on an odd final slide so a single-target
+    slide shows no stray logo box.
     """
     title = "Potential " + (f"{market} " if market else "") + "Market Entry Targets"
     if total_slides > 1:
@@ -231,16 +239,21 @@ def _fill_market_entry_targets(
         for col in range(n_cols):
             set_cell_text(table.cell(row, col), "", size_pt=_ME_VALUE_SIZE)
 
-    # Align logo placeholders left→right with the target columns (sort by .left);
-    # blank any whose column has no target (odd final slide). Populated columns
-    # keep the deferred '[Placeholder for Logo]' image placeholder.
+    # Align logo placeholders left→right with the target columns (sort by .left).
+    # The library ships each box as the default '[Placeholder for Logo]'; for a
+    # populated column, relabel it '[<target name> Logo]' (generic '[Company Name
+    # Logo]' when the target carries no name) so the box names whose logo belongs
+    # there. Blank any box whose column has no target (odd final slide).
     logos = sorted(
         (s for s in slide.shapes
          if getattr(s, "has_text_frame", False) and "[Placeholder for Logo]" in s.text),
         key=lambda s: s.left,
     )
     for col_idx, logo in enumerate(logos):
-        if col_idx >= len(targets):
+        if col_idx < len(targets):
+            name = getattr(targets[col_idx], "name", None)
+            set_text(logo, [f"[{name} Logo]" if name else "[Company Name Logo]"])
+        else:
             set_text(logo, [""])
 
 
@@ -349,16 +362,16 @@ def assemble_pitch_deck(
     slide9 = prs.slides[8]
     set_text(find_shape(slide9, "Text Placeholder 6"), [content.risks_tagline])
     table = _table_shape(slide9).table
-    set_cell_text(table.cell(0, 0), "Considerations", size_pt=9)
-    set_cell_text(table.cell(0, 1), "Mitigants", size_pt=9)
+    set_cell_text(table.cell(0, 0), "Considerations", size_pt=_RISK_HEADER_SIZE)
+    set_cell_text(table.cell(0, 1), "Mitigants", size_pt=_RISK_HEADER_SIZE)
     max_rows = min(len(content.risk_mitigants), len(table.rows) - 1)
     for idx in range(max_rows):
         row = content.risk_mitigants[idx]
-        set_cell_text(table.cell(idx + 1, 0), row.risk, size_pt=8)
-        set_cell_text(table.cell(idx + 1, 1), "\n".join(row.mitigants), size_pt=8)
+        set_cell_text(table.cell(idx + 1, 0), row.risk, size_pt=_RISK_BODY_SIZE)
+        set_cell_text(table.cell(idx + 1, 1), "\n".join(row.mitigants), size_pt=_RISK_BODY_SIZE)
     for idx in range(max_rows + 1, len(table.rows)):
-        set_cell_text(table.cell(idx, 0), "", size_pt=8)
-        set_cell_text(table.cell(idx, 1), "", size_pt=8)
+        set_cell_text(table.cell(idx, 0), "", size_pt=_RISK_BODY_SIZE)
+        set_cell_text(table.cell(idx, 1), "", size_pt=_RISK_BODY_SIZE)
 
     # Slide 10 — comps takeaway; chart placeholder remains unless insertion later replaces it.
     slide10 = prs.slides[9]

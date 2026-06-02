@@ -29,7 +29,7 @@
     },
     "MarketEntryTarget": {
       "additionalProperties": false,
-      "description": "One target column on the Potential Market Entry Targets slide.\n\n`cells` are positional values aligned 1:1 with the fixed 12-row\n`market_entry_row_labels` (Overview / HQ / Year Founded \u2192 7 industry metrics\n\u2192 Scale KPIs / Strategic Rationale).",
+      "description": "One target column on the Potential Market Entry Targets slide.\n\n`name` is the target company's name, used to label its deferred logo box as\n`[<name> Logo]`. `cells` are positional values aligned 1:1 with the fixed\n12-row `market_entry_row_labels` (Overview / HQ / Year Founded \u2192 7 industry\nmetrics \u2192 Scale KPIs / Strategic Rationale).",
       "properties": {
         "cells": {
           "items": {
@@ -39,6 +39,20 @@
           "minItems": 1,
           "title": "Cells",
           "type": "array"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 80,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional target company name. Labels the deferred logo box as '[<name> Logo]' (e.g. '[Kueski Logo]'); falls back to the generic '[Company Name Logo]' when absent.",
+          "title": "Name"
         }
       },
       "required": [
