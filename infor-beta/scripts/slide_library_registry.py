@@ -25,6 +25,8 @@ _ENTRIES: tuple[SlideLibraryEntry, ...] = (
     SlideLibraryEntry("acquirer-considerations-mitigants", 9, "Potential Perceived Acquiror Considerations and Mitigants"),
     SlideLibraryEntry("comparable-companies", 10, "Comparable Companies Financial Analysis"),
     SlideLibraryEntry("key-investment-highlights", 11, "Key Investment Highlights"),
+    # One physical library slide; the wireframe/assembler repeat it two targets
+    # per slide when a deal has more than two market-entry targets.
     SlideLibraryEntry("market-entry-targets", 12, "Potential [Market] Market Entry Targets"),
     SlideLibraryEntry("disclaimer", 13, "Disclaimer", static=True),
     SlideLibraryEntry("contact", 14, "Contact", static=True),

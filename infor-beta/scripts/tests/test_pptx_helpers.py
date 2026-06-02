@@ -15,6 +15,7 @@ from copy import deepcopy
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pptx import Presentation
+from pptx.dml.color import RGBColor
 from pptx.util import Inches, Pt
 
 from pptx_helpers import (
@@ -86,6 +87,49 @@ def _make_bulleted_shape(slide, name, seed_paragraphs):
         run.text = text
         run.font.name = PALATINO
         run.font.size = Pt(size_pt)
+    return tb
+
+
+def _make_exec_summary_shape(slide, name, body_color="203864"):
+    """Mimic the INFOR exec-summary placeholder: a leading marL=0 buNone spacer
+    and a trailing glyph-less spacer bracketing a coloured square-main + dash-sub
+    seed. The old harvest keyed templates per-paragraph after a marL sort, so the
+    marL=0 buNone spacer became 'level 0' and main bullets lost their glyph and
+    inherited the placeholder list colour. This guards the level-deduped harvest
+    + run-colour preservation."""
+    from lxml import etree
+
+    a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(4))
+    tb.name = name
+    tf = tb.text_frame
+
+    def _seed(p, marL, *, glyph, size_pt=None, no_bullet=False):
+        for r in list(p.runs):
+            r._r.getparent().remove(r._r)
+        for child in list(p._p):
+            if child.tag.endswith("}pPr"):
+                p._p.remove(child)
+        pPr = etree.SubElement(p._p, f"{{{a_ns}}}pPr")
+        pPr.set("marL", str(marL))
+        pPr.set("indent", f"-{marL}")
+        if no_bullet:
+            etree.SubElement(pPr, f"{{{a_ns}}}buNone")
+        elif glyph is not None:
+            etree.SubElement(pPr, f"{{{a_ns}}}buChar").set("char", glyph)
+        p._p.remove(pPr)
+        p._p.insert(0, pPr)
+        if size_pt is not None:
+            run = p.add_run()
+            run.text = "[x]"
+            run.font.name = PALATINO
+            run.font.size = Pt(size_pt)
+            run.font.color.rgb = RGBColor.from_string(body_color)
+
+    _seed(tf.paragraphs[0], 0, glyph=None, no_bullet=True)          # buNone spacer
+    _seed(tf.add_paragraph(), 180000, glyph="§", size_pt=12)        # main (square)
+    _seed(tf.add_paragraph(), 360000, glyph="-", size_pt=11)        # sub (dash)
+    _seed(tf.add_paragraph(), 180000, glyph=None)                   # glyph-less spacer
     return tb
 
 
@@ -257,6 +301,44 @@ class TestWriteBulletedShape(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             write_bulleted_shape(shape, [("a", "b", "c", "d")])  # wrong arity
+
+    def test_exec_summary_keeps_template_colour_and_buchar(self):
+        """Slide-2-style placeholder: main/sub bullets must keep the template
+        run colour (not fall back to the navy list default) and every paragraph
+        must carry a bullet glyph — the regression behind 'blue body text'."""
+        shape = _make_exec_summary_shape(self.slide, "Content Placeholder 7")
+        write_bulleted_shape(
+            shape,
+            [("Main one", 0), ("Sub under it", 1), ("Second main", 0)],
+        )
+        paras = shape.text_frame.paragraphs
+        self.assertEqual(len(paras), 3)
+        glyphs = []
+        for p in paras:
+            buChars = [e for e in p._p.iter() if e.tag.endswith("}buChar")]
+            self.assertEqual(len(buChars), 1, "every paragraph must keep a bullet glyph")
+            glyphs.append(buChars[0].get("char"))
+            for run in p.runs:
+                self.assertEqual(
+                    str(run.font.color.rgb), "203864",
+                    "run must keep the harvested template colour, not the list default",
+                )
+        # buNone spacer must NOT hijack level 0: main->square, sub->dash, main->square.
+        self.assertEqual(glyphs, ["§", "-", "§"])
+
+    def test_harvest_dedupes_levels_and_skips_bunone(self):
+        """Harvest must collapse the many polluted paragraphs to two levels."""
+        from pptx_helpers import _harvest_bullet_templates
+
+        shape = _make_exec_summary_shape(self.slide, "Content Placeholder 7")
+        templates = _harvest_bullet_templates(shape)
+        self.assertEqual(sorted(templates), [0, 1], "exactly two bullet levels")
+        # level 0 = smallest indent = the square main bullet
+        lvl0_pPr = templates[0][0]
+        self.assertEqual(lvl0_pPr.get("marL"), "180000")
+        self.assertTrue(
+            any(c.tag.endswith("}buChar") and c.get("char") == "§" for c in lvl0_pPr.iter())
+        )
 
 
 # ─── find_shape / find_shape_in_group tests ──────────────────────────────────

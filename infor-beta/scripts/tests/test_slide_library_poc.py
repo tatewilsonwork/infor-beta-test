@@ -3,12 +3,15 @@
 from pathlib import Path
 
 import yaml
+from openpyxl import Workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.util import Pt
 from pydantic import ValidationError
 import pytest
 
 from schemas import Company, PitchDeckContent, Plan
+from pptx_helpers import find_shape
 from pitch_deck_wireframe import build_pitch_deck_slide_plan, write_slide_plan
 from pitch_deck_assembler import assemble_pitch_deck
 from slide_library_registry import load_slide_library_registry
@@ -72,10 +75,23 @@ def _sample_content() -> PitchDeckContent:
         ],
         investment_highlights_tagline="SampleCo offers a scarce, scaled platform in a structurally attractive market with multiple value-creation paths.",
         market_entry_market="Canada",
-        market_entry_row_labels=["Overview", "Headquarters", "Year Founded", "Product / Channel", "Target Segment", "Funding Model", "Scale KPIs", "Strategic Rationale"],
+        market_entry_row_labels=[
+            "Overview",
+            "Headquarters",
+            "Year Founded",
+            "Lending Product",
+            "Customer Segment",
+            "Funding Model",
+            "Credit Approach",
+            "Geographic Footprint",
+            "Regulatory Status",
+            "Technology Platform",
+            "Scale KPIs",
+            "Strategic Rationale",
+        ],
         market_entry_targets=[
-            {"cells": ["Digital lender", "Toronto, ON", "2014", "Online & retail", "Prime / near-prime", "Equity and debt facilities", ">1MM customers", "Scaled platform with brand recognition"]},
-            {"cells": ["Mobile-first lender", "Vancouver, BC", "2017", "Direct-to-consumer app", "Thin-file", "Venture capital and debt warehouse", "~0.5MM customers", "Actionable platform subject to diligence"]},
+            {"cells": ["Digital lender", "Toronto, ON", "2014", "Unsecured instalment", "Prime / near-prime", "Equity and debt facilities", "Proprietary scoring", "Canada-wide", "Provincially licensed", "Cloud-native", ">1MM customers", "Scaled platform with brand recognition"]},
+            {"cells": ["Mobile-first lender", "Vancouver, BC", "2017", "Line of credit", "Thin-file", "Venture capital and debt warehouse", "Alternative data", "Western Canada", "Provincially licensed", "Mobile-first", "~0.5MM customers", "Actionable platform subject to diligence"]},
         ],
         sources=[{"section": "Company Overview", "citation": "Company filings, company website and analyst notes"}],
         manual_steps=["LTM revenue breakdown and financial summary charts remain placeholders in this POC."],
@@ -239,3 +255,220 @@ def test_pitch_library_poc_plan_stage_order():
     assert plan.stages[3].inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert plan.stages[3].inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
     assert plan.stages[3].inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+
+
+# ─── Helpers for the post-review fixes ───────────────────────────────────────
+
+def _assemble(tmp_path: Path, content: PitchDeckContent, *, market_entry_target_count=None, **kwargs) -> Path:
+    plan = build_pitch_deck_slide_plan(
+        company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),
+        section_labels=["Overview", "Financial Summary", "Valuation", "Process"],
+        market_entry_target_count=market_entry_target_count,
+    )
+    plan_path = write_slide_plan(plan, tmp_path / "slide_plan.json")
+    content_path = tmp_path / "content.json"
+    content_path.write_text(content.model_dump_json(indent=2), encoding="utf-8")
+    return assemble_pitch_deck(
+        slide_plan_path=plan_path,
+        content_path=content_path,
+        template_path=TEMPLATE,
+        output_dir=tmp_path,
+        **kwargs,
+    )
+
+
+def _content_with_targets(n: int) -> PitchDeckContent:
+    """Clone the sample content but with `n` market-entry targets (12 cells each)."""
+    base = _sample_content().model_dump()
+    template_cells = base["market_entry_targets"][0]["cells"]
+    base["market_entry_targets"] = [
+        {"cells": [f"Target {i + 1}"] + template_cells[1:]} for i in range(n)
+    ]
+    return PitchDeckContent.model_validate(base)
+
+
+def _write_sample_cap_table(path: Path, currency: str = "CAD") -> Path:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cap with Links"
+    ws["F5"] = currency  # output currency drives the footnote letter
+    rows = {
+        15: ("Capitalization Summary", None),
+        16: ("Share Price", "12.34"),
+        17: ("Basic Shares Outstanding", "100.0"),
+        18: ("Basic Market Cap", "1,234.0"),
+        31: ("Enterprise Value", "1,483.4"),
+        40: ("EV / Adj. EBITDA", "10.0x"),
+    }
+    for row, (label, value) in rows.items():
+        ws.cell(row=row, column=2).value = label
+        if value is not None:
+            ws.cell(row=row, column=6).value = value
+    wb.save(path)
+    return path
+
+
+def _all_slides_text(prs: Presentation) -> str:
+    parts: list[str] = []
+
+    def _collect(shapes):
+        for shape in shapes:
+            if getattr(shape, "has_text_frame", False):
+                parts.append(shape.text)
+            if getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    for cell in row.cells:
+                        parts.append(cell.text)
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                _collect(shape.shapes)
+
+    for slide in prs.slides:
+        _collect(slide.shapes)
+    return "\n".join(parts)
+
+
+# ─── Fix 1: slide 2 exec summary keeps template colour + bullets ─────────────
+
+def test_slide2_exec_summary_keeps_template_colour_and_bullets(tmp_path: Path):
+    deck_path = _assemble(tmp_path, _sample_content())
+    shape = find_shape(Presentation(deck_path).slides[1], "Content Placeholder 7")
+    paras = [p for p in shape.text_frame.paragraphs if p.text.strip()]
+    assert len(paras) == 4  # the four exec-summary bullets
+    for p in paras:
+        buchars = [e for e in p._p.iter() if e.tag.endswith("}buChar")]
+        assert buchars, "every exec-summary bullet must keep its template glyph"
+        for run in p.runs:
+            xml = run._r.xml
+            assert "<a:solidFill>" in xml, "run must carry an explicit template colour"
+            assert "1B2759" not in xml, "body text must not fall back to the navy list colour"
+
+
+# ─── Fix 3: financial-summary tiles are metric NAMES only ────────────────────
+
+def test_financial_metric_labels_reject_value_laden_strings():
+    base = _sample_content().model_dump()
+    base["financial_metric_labels"] = [
+        "FY2025 Revenue: US$589.8MM (+31% YoY)", "Gross Margin", "Adjusted EBITDA", "Free Cash Flow",
+    ]
+    with pytest.raises(ValidationError):
+        PitchDeckContent.model_validate(base)
+    base["financial_metric_labels"] = [
+        "Revenue", "Adjusted EBITDA", "Combined Loan Balances", "Adjusted Return on Equity",
+    ]
+    assert PitchDeckContent.model_validate(base).financial_metric_labels[2] == "Combined Loan Balances"
+
+
+# ─── Fix 4a: fixed 12-row market-entry structure ─────────────────────────────
+
+def test_market_entry_row_labels_enforce_fixed_12_row_structure():
+    # Wrong count (8 rows) rejected even when targets align 1:1.
+    bad = _sample_content().model_dump()
+    bad["market_entry_row_labels"] = [
+        "Overview", "Headquarters", "Year Founded", "A", "B", "C", "Scale KPIs", "Strategic Rationale",
+    ]
+    bad["market_entry_targets"] = [{"cells": ["x"] * 8}, {"cells": ["y"] * 8}]
+    with pytest.raises(ValidationError):
+        PitchDeckContent.model_validate(bad)
+
+    # Wrong fixed top label rejected.
+    bad2 = _sample_content().model_dump()
+    labels = list(bad2["market_entry_row_labels"])
+    labels[0] = "Summary"  # must be 'Overview'
+    bad2["market_entry_row_labels"] = labels
+    with pytest.raises(ValidationError):
+        PitchDeckContent.model_validate(bad2)
+
+    # Wrong fixed bottom label rejected.
+    bad3 = _sample_content().model_dump()
+    labels = list(bad3["market_entry_row_labels"])
+    labels[-1] = "Why Acquire"  # must be 'Strategic Rationale'
+    bad3["market_entry_row_labels"] = labels
+    with pytest.raises(ValidationError):
+        PitchDeckContent.model_validate(bad3)
+
+
+# ─── Fix 4b / 4c: N targets across N/2 slides, formatting ────────────────────
+
+def test_market_entry_expands_two_targets_per_slide(tmp_path: Path):
+    deck_path = _assemble(tmp_path, _content_with_targets(8))
+    prs = Presentation(deck_path)
+    # 14 base - 1 market-entry + 4 market-entry = 17 slides.
+    assert len(prs.slides) == 17
+    titles = [find_shape(prs.slides[11 + j], "Title 1").text for j in range(4)]
+    assert titles == [
+        "Potential Canada Market Entry Targets (1 of 4)",
+        "Potential Canada Market Entry Targets (2 of 4)",
+        "Potential Canada Market Entry Targets (3 of 4)",
+        "Potential Canada Market Entry Targets (4 of 4)",
+    ]
+    # Static disclaimer + contact preserved at the tail.
+    tail = _all_slides_text(prs)
+    assert "These materials are confidential and proprietary" in tail
+    assert "Neil Selfe, Managing Principal" in tail
+
+
+def test_market_entry_table_formatting_no_blank_rows(tmp_path: Path):
+    deck_path = _assemble(tmp_path, _sample_content())  # 2 targets -> 1 slide
+    table = next(
+        s for s in Presentation(deck_path).slides[11].shapes if getattr(s, "has_table", False)
+    ).table
+    # 12 data rows (rows 1-12); every one populated, label white@11, values @10.
+    for row in range(1, 13):
+        label_run = table.cell(row, 0).text_frame.paragraphs[0].runs[0]
+        assert label_run.font.size == Pt(11), "label column must be 11 pt"
+        assert str(label_run.font.color.rgb) == "FFFFFF", "label column must be white"
+        for col in (1, 2):
+            cell = table.cell(row, col)
+            assert cell.text.strip(), f"data cell ({row},{col}) must be populated"
+            assert cell.text_frame.paragraphs[0].runs[0].font.size == Pt(10), "values must be 10 pt"
+
+
+def test_market_entry_odd_count_blanks_unused_column_and_logo(tmp_path: Path):
+    deck_path = _assemble(tmp_path, _content_with_targets(3))  # -> 2 slides
+    prs = Presentation(deck_path)
+    assert len(prs.slides) == 15  # 13 base + 2 market-entry
+    last_me = prs.slides[12]  # the second (final) market-entry slide
+    table = next(s for s in last_me.shapes if getattr(s, "has_table", False)).table
+    assert table.cell(1, 1).text.strip(), "the single target fills the first target column"
+    assert table.cell(1, 2).text.strip() == "", "the unused target column is blanked"
+    logos = [
+        s for s in last_me.shapes
+        if getattr(s, "has_text_frame", False) and "[Placeholder for Logo]" in s.text
+    ]
+    assert len(logos) == 1, "the unused (rightmost) logo box is blanked"
+
+
+def test_pitch_wireframe_expands_market_entry_slides():
+    plan = build_pitch_deck_slide_plan(
+        company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),
+        market_entry_target_count=8,
+    )
+    me = [s for s in plan.slides if s.library_entry_id == "market-entry-targets"]
+    assert len(me) == 4
+    assert len(plan.slides) == 17
+    assert me[0].title.endswith("(1 of 4)")
+    assert me[3].title.endswith("(4 of 4)")
+    # Count unknown (live pipeline) -> single market-entry slide, 14-slide plan.
+    default_plan = build_pitch_deck_slide_plan(company=Company(legal_name="X Co", ticker="T:X"))
+    assert sum(1 for s in default_plan.slides if s.library_entry_id == "market-entry-targets") == 1
+    assert len(default_plan.slides) == 14
+
+
+# ─── Fix 2: cap table pasted onto slide 7 + footnote currency ────────────────
+
+def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
+    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
+    workbook = _write_sample_cap_table(tmp_path / "cap-table.xlsx", currency="USD")
+    deck_path = _assemble(tmp_path, _sample_content(), captable_workbook_path=workbook)
+    prs = Presentation(deck_path)
+    slide7 = prs.slides[6]
+    assert next((s for s in slide7.shapes if s.name == "Rectangle 3"), None) is None, (
+        "slide 7 cap-table placeholder should be replaced by the picture"
+    )
+    pictures = [s for s in slide7.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    assert pictures, "expected a cap-table picture on slide 7"
+    note = find_shape(slide7, "Text Placeholder 1").text
+    assert "US$MM" in note and "[x]" not in note, "footnote currency derived from the cap table (USD)"
+    # The figure-footnote currency token is resolved on slide 11 too (no stray [x]).
+    note11 = find_shape(prs.slides[10], "Text Placeholder 13").text
+    assert "US$MM" in note11 and "[x]" not in note11, "slide 11 footnote currency derived from the cap table"
