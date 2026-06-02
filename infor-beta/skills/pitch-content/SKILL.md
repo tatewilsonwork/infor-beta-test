@@ -1,7 +1,7 @@
 ---
 name: pitch-content
 description: Drafts the broad typed content bundle for the 14-slide INFOR slide-library POC deck from analyst notes and optional supporting sources.
-version: 0.5.6
+version: 0.5.7
 allowed-tools:
   - Read
   - Write
@@ -39,7 +39,7 @@ Scope:
 - Acquirer risks/mitigants: concise rows, exactly three short mitigants each.
 - Comps takeaway: one sentence.
 - Key investment highlights: up to 4 numbered quadrants, each a short header + 1–3 concise bullets, plus an optional one-line tagline. Optional — omit to leave the slide's placeholders.
-- Market-entry targets: optional `market_entry_market` (fills the title), `market_entry_row_labels`, and up to **8** target columns whose `cells` align 1:1 with the labels. The deck lays targets out **two per slide** (`ceil(N/2)` market-entry slides, titled `Potential <Market> Market Entry Targets (N of M)`); target logos stay as deferred image placeholders.
+- Market-entry targets: optional `market_entry_market` (fills the title), `market_entry_row_labels`, and up to **8** target columns. Each target carries an optional `name` (the company name) plus `cells` that align 1:1 with the labels. Set `name` from the target's heading in the analyst notes — it labels the slide's logo box as `[<name> Logo]` (e.g. `[Kueski Logo]`) so the analyst knows which logo to drop in; omit it only when the company is unnamed (it then falls back to a generic `[Company Name Logo]`). The deck lays targets out **two per slide** (`ceil(N/2)` market-entry slides, titled `Potential <Market> Market Entry Targets (N of M)`).
   - `market_entry_row_labels` is a **fixed 12-row structure**, in this exact order:
     1. `Overview` — very short description of who the target is
     2. `Headquarters` — City, Country

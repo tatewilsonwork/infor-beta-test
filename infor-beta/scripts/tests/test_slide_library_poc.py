@@ -209,8 +209,11 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
     assert "Potential Canada Market Entry Targets" in all_text
     assert "[Investment Highlight #1]" not in all_text
     assert "Potential [x] Market Entry Targets" not in all_text
-    # Logo placeholders on the market-entry slide remain deferred.
-    assert "[Placeholder for Logo]" in all_text
+    # Market-entry logo boxes are relabelled to name the company; with no target
+    # name supplied they fall back to the generic label and the template's
+    # '[Placeholder for Logo]' string is gone.
+    assert "[Company Name Logo]" in all_text
+    assert "[Placeholder for Logo]" not in all_text
 
     # Static credential slide text remains present.
     assert "INFOR is Canada’s leading provider of innovative, independent, forward thinking financial & strategic advice" in all_text
@@ -243,18 +246,28 @@ def test_pitch_library_poc_plan_stage_order():
     assert [stage.id for stage in plan.stages] == [
         "wireframe",
         "content",
+        "ltm-metrics",
         "captable",
         "deck",
         "workbook-aggregation",
     ]
     assert plan.stages[0].skill == "pitch-wireframe"
     assert plan.stages[1].skill == "pitch-content"
-    assert plan.stages[2].skill == "captable"
-    assert plan.stages[3].skill == "deck-assembler"
-    assert plan.stages[4].skill == "workbook-aggregator"
-    assert plan.stages[3].inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
-    assert plan.stages[3].inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
-    assert plan.stages[3].inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+    assert plan.stages[2].skill == "ltm-metrics"
+    assert plan.stages[3].skill == "captable"
+    assert plan.stages[4].skill == "deck-assembler"
+    assert plan.stages[5].skill == "workbook-aggregator"
+    deck_stage = next(s for s in plan.stages if s.id == "deck")
+    assert deck_stage.inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
+    assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
+    assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+    # LTM metrics feed the cap table's LTM valuation column (mirrors earnings update).
+    captable_stage = next(s for s in plan.stages if s.id == "captable")
+    assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
+    assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
+    # The LTM workbook is folded into the combined pitch workbook.
+    agg_stage = next(s for s in plan.stages if s.id == "workbook-aggregation")
+    assert agg_stage.inputs["workbooks"]["ltm-metrics"] == "$stages.ltm-metrics.workbook_path"
 
 
 # ─── Helpers for the post-review fixes ───────────────────────────────────────
@@ -325,6 +338,19 @@ def _all_slides_text(prs: Presentation) -> str:
     for slide in prs.slides:
         _collect(slide.shapes)
     return "\n".join(parts)
+
+
+# The two market-entry logo boxes in the library, ordered left→right by .left
+# (matches the assembler's own sort): Rectangle 7 sits above the first target
+# column, Rectangle 5 above the second.
+_LOGO_SHAPE_NAMES = {"Rectangle 5", "Rectangle 7"}
+
+
+def _logo_boxes(slide):
+    return sorted(
+        (s for s in slide.shapes if s.name in _LOGO_SHAPE_NAMES),
+        key=lambda s: s.left,
+    )
 
 
 # ─── Fix 1: slide 2 exec summary keeps template colour + bullets ─────────────
@@ -431,11 +457,40 @@ def test_market_entry_odd_count_blanks_unused_column_and_logo(tmp_path: Path):
     table = next(s for s in last_me.shapes if getattr(s, "has_table", False)).table
     assert table.cell(1, 1).text.strip(), "the single target fills the first target column"
     assert table.cell(1, 2).text.strip() == "", "the unused target column is blanked"
-    logos = [
-        s for s in last_me.shapes
-        if getattr(s, "has_text_frame", False) and "[Placeholder for Logo]" in s.text
+    boxes = _logo_boxes(last_me)
+    assert len(boxes) == 2
+    assert boxes[0].text.strip() == "[Company Name Logo]", "the single target's logo box is labelled"
+    assert boxes[1].text.strip() == "", "the unused (rightmost) logo box is blanked"
+
+
+def test_market_entry_logo_box_names_each_target(tmp_path: Path):
+    base = _sample_content().model_dump()
+    base["market_entry_targets"] = [
+        {"name": "Kueski", "cells": base["market_entry_targets"][0]["cells"]},
+        {"name": "Nubank", "cells": base["market_entry_targets"][1]["cells"]},
     ]
-    assert len(logos) == 1, "the unused (rightmost) logo box is blanked"
+    deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(base))  # 2 targets -> 1 slide
+    boxes = _logo_boxes(Presentation(deck_path).slides[11])
+    assert [b.text.strip() for b in boxes] == ["[Kueski Logo]", "[Nubank Logo]"]
+
+
+# ─── Slide 9: Considerations/Mitigants font sizes match the library ──────────
+
+def test_slide9_risk_table_uses_library_font_sizes(tmp_path: Path):
+    deck_path = _assemble(tmp_path, _sample_content())  # 3 risk/mitigant rows
+    table = next(
+        s for s in Presentation(deck_path).slides[8].shapes if getattr(s, "has_table", False)
+    ).table
+    # Header row at 12 pt (was 9 pt), matching the library.
+    for col, label in ((0, "Considerations"), (1, "Mitigants")):
+        run = table.cell(0, col).text_frame.paragraphs[0].runs[0]
+        assert run.text == label
+        assert run.font.size == Pt(12), "risk/mitigant header must be 12 pt"
+    # Body rows at 10 pt (was 8 pt) — three populated rows in the sample content.
+    for row in range(1, 4):
+        for col in (0, 1):
+            run = table.cell(row, col).text_frame.paragraphs[0].runs[0]
+            assert run.font.size == Pt(10), "risk/mitigant body must be 10 pt"
 
 
 def test_pitch_wireframe_expands_market_entry_slides():

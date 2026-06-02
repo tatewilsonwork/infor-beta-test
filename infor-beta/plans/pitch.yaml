@@ -20,6 +20,14 @@ plan_inputs:
     type: str
     required: true
     description: Required analyst notes for executive summary, company overview, risks, and takeaway drafting.
+  - name: reporting_quarter
+    type: str
+    required: true
+    description: Reporting quarter for the LTM metrics bridge, e.g. "Q4 2025".
+  - name: comparison_quarter
+    type: str
+    required: true
+    description: Prior-year comparison quarter for the LTM metrics bridge, e.g. "Q4 2024".
   - name: section_labels
     type: list[str]
     required: false
@@ -76,15 +84,40 @@ stages:
         description: Absolute path to the typed PitchDeckContent JSON artefact.
     checkpoint: informational
 
+  # LTM metrics run *before* the cap table (mirrors the earnings-update plan) so
+  # its LTM revenue / Adj. EBITDA totals flow into the cap table's LTM valuation
+  # column (D47 / D48). Without this, the cap table falls back to CapIQ LTM
+  # formulas that render empty / #NAME? in the slide-7 picture.
+  - id: ltm-metrics
+    skill: ltm-metrics
+    inputs:
+      company: $deal.subject_company
+      ticker: $deal.subject_company.ticker
+      reporting_quarter: $plan_inputs.reporting_quarter
+      comparison_quarter: $plan_inputs.comparison_quarter
+    outputs:
+      - name: workbook_path
+        type: Path
+        description: Absolute path to the standalone LTM metrics .xlsx (revenue overview + revenue/EBITDA bridges; companion to the overview slide pie placeholder).
+      - name: ltm_revenue
+        type: float
+        description: LTM revenue total (millions, filing reporting currency) — fed to the cap table D47.
+      - name: ltm_adj_ebitda
+        type: float
+        description: LTM Adj. EBITDA total (millions, filing reporting currency) — fed to the cap table D48.
+    checkpoint: informational
+
   - id: captable
     skill: captable
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker
+      ltm_revenue: $stages.ltm-metrics.ltm_revenue
+      ltm_adj_ebitda: $stages.ltm-metrics.ltm_adj_ebitda
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the generated cap table .xlsx workbook.
+        description: Absolute path to the generated companion cap table .xlsx (with LTM revenue/EBITDA in D47/D48).
     checkpoint: informational
 
   - id: deck
@@ -112,6 +145,7 @@ stages:
     inputs:
       workbooks:
         captable: $stages.captable.workbook_path
+        ltm-metrics: $stages.ltm-metrics.workbook_path
         comps: $plan_inputs.comps_workbook_path
       deliverable_type: $deal.deliverable_type
       deal_name: $deal.codename
