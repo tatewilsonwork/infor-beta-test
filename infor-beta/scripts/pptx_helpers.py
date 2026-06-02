@@ -171,23 +171,64 @@ def set_cell_text(cell, text, size_pt=9, color_hex=None):
 
 # ─── write_bulleted_shape ────────────────────────────────────────────────────
 
+def _has_bullet_glyph(pPr):
+    """True if the paragraph properties carry a real bullet glyph (not buNone)."""
+    return any(
+        child.tag.endswith("}buChar") or child.tag.endswith("}buAutoNum")
+        for child in pPr
+    )
+
+
 def _harvest_bullet_templates(shape):
-    """Capture pPr + rPr templates from the shape's seed paragraphs BEFORE wiping.
+    """Capture pPr + rPr templates from the shape's bulleted seed paragraphs.
 
     Returns {level_index: (pPr_copy, rPr_copy)} keyed 0, 1, 2... by ascending
     marL (smallest indent = main bullet = level 0).
+
+    Only paragraphs that carry a real bullet glyph (`<a:buChar>` / `<a:buAutoNum>`)
+    define a level. Empty spacer paragraphs and explicit `<a:buNone>` paragraphs
+    are skipped, and multiple seed paragraphs sharing an indent collapse to one
+    level — keyed by distinct marL, not one-entry-per-paragraph. (The INFOR
+    library's exec-summary placeholder ships ~14 paragraphs, most empty or
+    buNone; the old per-paragraph enumeration mapped level 0 to the marL=0
+    buNone spacer, so main bullets lost their glyph and fell back to the
+    placeholder's navy list colour.) When several seed paragraphs share a marL,
+    the first wins, preferring one whose run carries an rPr so the level keeps
+    the template's colour / size.
     """
     tf = shape.text_frame
-    harvested = []
+    by_marL: dict[int, tuple] = {}
     for para in tf.paragraphs:
         pPr = _pPr_of(para)
-        rPr = _first_run_rPr(para)
-        if pPr is None:
+        if pPr is None or not _has_bullet_glyph(pPr):
             continue
         marL = int(pPr.get("marL") or "0")
-        harvested.append((marL, deepcopy(pPr), deepcopy(rPr) if rPr is not None else None))
-    harvested.sort(key=lambda t: t[0])
-    return {i: (pPr, rPr) for i, (_, pPr, rPr) in enumerate(harvested)}
+        rPr = _first_run_rPr(para)
+        if marL not in by_marL:
+            by_marL[marL] = (deepcopy(pPr), deepcopy(rPr) if rPr is not None else None)
+        elif by_marL[marL][1] is None and rPr is not None:
+            by_marL[marL] = (deepcopy(pPr), deepcopy(rPr))
+    ordered = sorted(by_marL.items(), key=lambda kv: kv[0])
+    return {i: tpl for i, (_marL, tpl) in enumerate(ordered)}
+
+
+def _emit_bullet_run(paragraph, text, tmpl_rPr, size, *, bold):
+    """Append a run, grafting the harvested template rPr so it keeps the
+    template's colour (and italic / etc.), then re-assert Palatino/size/bold.
+
+    Grafting the harvested rPr is what keeps body copy the template's intended
+    colour: without it the run carries no `<a:solidFill>` and inherits the
+    placeholder list-style `defRPr`, which on the INFOR library is navy
+    (`1B2759`) and renders as blue body text. name/size/bold are re-applied on
+    top because PowerPoint's list/table fallback typeface is Calibri."""
+    run = paragraph.add_run()
+    run.text = text
+    if tmpl_rPr is not None:
+        _replace_run_rPr(run, tmpl_rPr)
+    run.font.name = PALATINO
+    run.font.size = size
+    run.font.bold = bold
+    return run
 
 
 def write_bulleted_shape(shape, items):
@@ -251,27 +292,15 @@ def write_bulleted_shape(shape, items):
                 if child.tag.endswith("}pPr"):
                     p._p.remove(child)
 
-        tmpl_pPr, _ = templates.get(level, templates[0])
+        tmpl_pPr, tmpl_rPr = templates.get(level, templates[0])
         p._p.insert(0, deepcopy(tmpl_pPr))
 
         size = _size_for(level)
         if prefix:
-            r1 = p.add_run()
-            r1.text = prefix
-            r1.font.name = PALATINO
-            r1.font.size = size
-            r1.font.bold = True
-            r2 = p.add_run()
-            r2.text = rest
-            r2.font.name = PALATINO
-            r2.font.size = size
-            r2.font.bold = False
+            _emit_bullet_run(p, prefix, tmpl_rPr, size, bold=True)
+            _emit_bullet_run(p, rest, tmpl_rPr, size, bold=False)
         else:
-            r = p.add_run()
-            r.text = rest
-            r.font.name = PALATINO
-            r.font.size = size
-            r.font.bold = False
+            _emit_bullet_run(p, rest, tmpl_rPr, size, bold=False)
 
     # Post-write: every paragraph must have a bullet character
     for i, para in enumerate(tf.paragraphs):
@@ -339,3 +368,35 @@ def delete_slide(prs, index):
     xml_slides.remove(sldId)
     if rId is not None:
         prs.part.drop_rel(rId)
+
+
+# ─── clone_slide_after ────────────────────────────────────────────────────────
+
+def clone_slide_after(prs, index):
+    """Duplicate the slide at `index`, inserting the copy immediately after it.
+
+    Returns the new slide. Creates a fresh slide from the source's layout, drops
+    the placeholders `add_slide` seeds, deep-copies every shape element from the
+    source `spTree`, then moves the new `sldId` from the tail to position
+    `index + 1`.
+
+    Used to grow a fixed-size library section to a variable count — e.g. the
+    pitch market-entry slide, which the deck repeats (two targets per slide) when
+    a deal has more than two targets.
+
+    Caveat: this copies shape XML only. Slide-level relationships (embedded
+    pictures, charts, hyperlinks) are NOT re-created, so the source slide must
+    not depend on them. The INFOR market-entry slide carries only a table, text,
+    and shape-based logo placeholders, so an spTree copy is sufficient.
+    """
+    source = prs.slides[index]
+    new_slide = prs.slides.add_slide(source.slide_layout)
+    for shape in list(new_slide.shapes):
+        shape._element.getparent().remove(shape._element)
+    for shape in source.shapes:
+        new_slide.shapes._spTree.append(deepcopy(shape._element))
+    sldIdLst = prs.slides._sldIdLst
+    new_sldId = list(sldIdLst)[-1]
+    sldIdLst.remove(new_sldId)
+    sldIdLst.insert(index + 1, new_sldId)
+    return new_slide

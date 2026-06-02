@@ -1,7 +1,8 @@
-"""Build the 14-slide SlidePlan for the INFOR slide-library POC."""
+"""Build the SlidePlan for the INFOR slide-library pitch deck."""
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -15,60 +16,85 @@ def _company_name(company: Company | dict[str, Any]) -> str:
     return company.legal_name
 
 
+def _content_block(entry, *, labels: list[str], current: str) -> dict[str, Any]:
+    block: dict[str, Any] = {"slide_number": entry.slide_number}
+    if entry.static:
+        block["template_static"] = True
+    if entry.library_entry_id == "pitch-cover":
+        block["requires"] = ["client_name", "presentation_date"]
+    elif entry.library_entry_id == "executive-summary":
+        block["requires"] = ["executive_summary_bullets"]
+    elif entry.library_entry_id == "section-divider":
+        block.update({"section_labels": labels, "current_section": current})
+    elif entry.library_entry_id == "public-company-overview":
+        block["requires"] = ["company_overview_bullets", "cap_table"]
+        block["deferred"] = ["ltm_revenue_breakdown"]
+    elif entry.library_entry_id == "financial-summary":
+        block["requires"] = ["financial_metric_labels"]
+        block["deferred"] = ["financial_summary_charts"]
+    elif entry.library_entry_id == "acquirer-considerations-mitigants":
+        block["requires"] = ["risk_mitigants", "risks_tagline"]
+    elif entry.library_entry_id == "comparable-companies":
+        block["requires"] = ["comps_takeaway"]
+        block["optional"] = ["comps_chart_or_table"]
+    elif entry.library_entry_id == "key-investment-highlights":
+        block["requires"] = ["investment_highlights"]
+        block["optional"] = ["investment_highlights_tagline"]
+    elif entry.library_entry_id == "market-entry-targets":
+        block["requires"] = ["market_entry_row_labels", "market_entry_targets"]
+        block["optional"] = ["market_entry_market"]
+        block["deferred"] = ["target_logos"]
+    return block
+
+
 def build_pitch_deck_slide_plan(
     *,
     company: Company | dict[str, Any],
     section_labels: list[str] | None = None,
     current_section: str | None = None,
+    market_entry_target_count: int | None = None,
 ) -> SlidePlan:
-    """Return the canonical 14-slide plan for the slide-library POC."""
+    """Return the canonical pitch plan for the slide-library deck.
+
+    The blank library is 14 slides. The market-entry section expands to
+    ``ceil(market_entry_target_count / 2)`` slides (two targets per slide). When
+    the count is unknown at wireframe time — the live pipeline drafts targets
+    later, in pitch-content — it defaults to a single market-entry slide; the
+    deck-assembler clones to the true count from the content bundle regardless.
+    """
     name = _company_name(company)
     labels = section_labels or ["Overview", "Financial Summary", "Valuation", "Process"]
     current = current_section or labels[0]
+    n_market_entry = (
+        max(1, math.ceil(market_entry_target_count / 2)) if market_entry_target_count else 1
+    )
+
     slides: list[SlideEntry] = []
-    for idx, entry in enumerate(load_slide_library_registry()):
-        title = entry.title.replace("[Client Name]", name)
-        content_block: dict[str, Any] = {"slide_number": entry.slide_number}
-        if entry.static:
-            content_block["template_static"] = True
-        if entry.library_entry_id == "pitch-cover":
-            content_block["requires"] = ["client_name", "presentation_date"]
-        elif entry.library_entry_id == "executive-summary":
-            content_block["requires"] = ["executive_summary_bullets"]
-        elif entry.library_entry_id == "section-divider":
-            content_block.update({"section_labels": labels, "current_section": current})
-        elif entry.library_entry_id == "public-company-overview":
-            content_block["requires"] = ["company_overview_bullets", "cap_table"]
-            content_block["deferred"] = ["ltm_revenue_breakdown"]
-        elif entry.library_entry_id == "financial-summary":
-            content_block["requires"] = ["financial_metric_labels"]
-            content_block["deferred"] = ["financial_summary_charts"]
-        elif entry.library_entry_id == "acquirer-considerations-mitigants":
-            content_block["requires"] = ["risk_mitigants", "risks_tagline"]
-        elif entry.library_entry_id == "comparable-companies":
-            content_block["requires"] = ["comps_takeaway"]
-            content_block["optional"] = ["comps_chart_or_table"]
-        elif entry.library_entry_id == "key-investment-highlights":
-            content_block["requires"] = ["investment_highlights"]
-            content_block["optional"] = ["investment_highlights_tagline"]
-        elif entry.library_entry_id == "market-entry-targets":
-            content_block["requires"] = ["market_entry_row_labels", "market_entry_targets"]
-            content_block["optional"] = ["market_entry_market"]
-            content_block["deferred"] = ["target_logos"]
-        slides.append(
-            SlideEntry(
-                library_entry_id=entry.library_entry_id,
-                title=title,
-                section=_section_for(entry.library_entry_id),
-                order=idx,
-                content_block=content_block,
+    order = 0
+    for entry in load_slide_library_registry():
+        repeat = n_market_entry if entry.library_entry_id == "market-entry-targets" else 1
+        for k in range(repeat):
+            title = entry.title.replace("[Client Name]", name)
+            block = _content_block(entry, labels=labels, current=current)
+            if entry.library_entry_id == "market-entry-targets" and n_market_entry > 1:
+                block["market_entry_slide"] = k + 1
+                block["market_entry_slide_count"] = n_market_entry
+                title = f"{title} ({k + 1} of {n_market_entry})"
+            slides.append(
+                SlideEntry(
+                    library_entry_id=entry.library_entry_id,
+                    title=title,
+                    section=_section_for(entry.library_entry_id),
+                    order=order,
+                    content_block=block,
+                )
             )
-        )
+            order += 1
     return SlidePlan(
         deliverable_type="pitch",
         deck_title=f"{name} Confidential Discussion Materials",
         slides=slides,
-        notes="Phase 3 slide-library POC structure for INFOR Slide Library.pptx.",
+        notes="INFOR Slide Library pitch structure; market-entry expands two targets per slide.",
     )
 
 

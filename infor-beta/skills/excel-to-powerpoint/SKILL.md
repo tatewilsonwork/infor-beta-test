@@ -1,7 +1,7 @@
 ---
 name: excel-to-powerpoint
 description: Reusable POC skill for moving Excel chart/table outputs into PowerPoint placeholders, initially cap table and comps artefacts for the slide-library POC.
-version: 0.5.5
+version: 0.5.6
 allowed-tools:
   - Read
   - Write
@@ -30,9 +30,9 @@ Reusable Excel-to-PowerPoint insertion stage for INFOR decks.
 
 Current implemented use:
 - earnings-update cap table workbook from `captable` → overview slide `Rectangle 3` Capitalization Summary placeholder via `scripts/excel_to_powerpoint.py::insert_cap_table_into_placeholder`
+- pitch slide-library cap table workbook from `captable` → Slide 7 `Rectangle 3` cap table placeholder. Wired inside `pitch_deck_assembler.assemble_pitch_deck` (same `insert_cap_table_into_placeholder` call, `slide_index=6`, range `B15:F40`) and invoked whenever the deck-assembler stage receives `captable_workbook_path` — so no separate plan stage is needed.
 
 POC/future uses:
-- pitch slide-library cap table workbook from `captable` → Slide 7 cap table placeholder
 - comps workbook/chart → Slide 10 comps placeholder
 
 Current boundary:

@@ -1,20 +1,49 @@
-"""Assembler for the 14-slide INFOR slide-library POC deck."""
+"""Assembler for the INFOR slide-library pitch deck.
+
+The blank library is 14 slides; the market-entry section grows across multiple
+slides — two targets per slide — by cloning the library's market-entry slide, so
+an assembled deck has ``14 + (market_entry_slides - 1)`` slides (e.g. 8 targets →
+4 market-entry slides → 17-slide deck, disclaimer/contact at 16/17).
+"""
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-from pptx_helpers import delete_slide, find_shape, set_cell_text, set_text, write_bulleted_shape
+from excel_to_powerpoint import insert_cap_table_into_placeholder
+from pptx_helpers import (
+    clone_slide_after,
+    delete_slide,
+    find_shape,
+    set_cell_text,
+    set_text,
+    write_bulleted_shape,
+)
 from schemas import PitchDeckContent, SlidePlan
 
 # Zero-based index of the earnings-summary entry inserted into the shared
 # 15-slide library. The pitch deck does not use it, so it is dropped on open,
 # restoring the original 14-slide ordering this assembler's indices assume.
 _EARNINGS_LIBRARY_SLIDE_INDEX = 7
+
+# Market-entry slide index in the raw 15-slide library (before the earnings
+# slide is dropped). Market-entry slides are cloned here BEFORE the delete so
+# python-pptx allocates fresh, non-colliding slide part names.
+_LIBRARY_MARKET_ENTRY_INDEX = 12
+
+# Deck indices after the earnings slide is dropped (final 14-slide ordering).
+_OVERVIEW_SLIDE_INDEX = 6          # slide 7 — public-company overview
+_MARKET_ENTRY_SLIDE_INDEX = 11     # slide 12 — first market-entry slide
+
+# Slide 7 cap-table placeholder; the picture covers the capitalization summary
+# plus the Financial/Valuation metric rows (same range as the earnings overview).
+_CAP_TABLE_PLACEHOLDER = "Rectangle 3"
+_CAP_TABLE_RANGE = "B15:F40"
 
 
 def _safe_name(value: str) -> str:
@@ -111,28 +140,108 @@ def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
                 set_text(shape, [content.investment_highlights_tagline])
 
 
-def _fill_market_entry_targets(slide, content: PitchDeckContent) -> None:
-    """Fill the market-entry comparison table; logos stay deferred image placeholders."""
-    if content.market_entry_market:
-        set_text(
-            find_shape(slide, "Title 1"),
-            [f"Potential {content.market_entry_market} Market Entry Targets"],
+# Market-entry cell sizing: the library ships the label column white at 11 pt
+# and the target value columns at 10 pt. The old code hardcoded a single 8 pt,
+# which rendered the labels black and everything too small.
+_ME_LABEL_SIZE = 11
+_ME_VALUE_SIZE = 10
+_ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
+
+
+def _output_currency_letter(workbook_path) -> str:
+    """Derive the footnote currency letter ('US' / 'C') from the cap table.
+
+    Reads the cap table's output-currency cell (``F5`` on ``Cap with Links``) so
+    the ``[x]$MM`` footnote token resolves to ``US$MM`` / ``C$MM`` instead of
+    being hardcoded. Falls back to ``C`` (the template default) if the cell is
+    missing or unreadable, so a footnote never ships the literal ``[x]``.
+    """
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(workbook_path, data_only=True)
+        ws = wb["Cap with Links"] if "Cap with Links" in wb.sheetnames else wb.active
+        code = str(ws["F5"].value or "").strip().upper()
+    except Exception:
+        code = ""
+    if code.startswith("US"):
+        return "US"
+    if code.startswith("C"):  # CAD / C$
+        return "C"
+    return "C"
+
+
+def _fill_footnote_currency(shape, letter: str) -> None:
+    """Swap the ``[x]$MM`` currency-letter token in a library footnote, keeping
+    the rest of the standardized source/note lines (and their formatting)."""
+    lines = [p.text.replace("[x]", letter) for p in shape.text_frame.paragraphs]
+    set_text(shape, lines)
+
+
+def _fill_market_entry_targets(
+    slide,
+    *,
+    row_labels: list[str],
+    targets: list,
+    market: str | None,
+    currency_letter: str | None,
+    slide_number: int,
+    total_slides: int,
+) -> None:
+    """Fill one market-entry slide with up to two targets.
+
+    `targets` holds the 1-2 targets for THIS slide. The table is the fixed
+    12-row structure (Overview / HQ / Year Founded → 7 consistent industry
+    metrics → Scale KPIs / Strategic Rationale): the label column (col 0) is
+    written white at 11 pt and the target value columns at 10 pt, matching the
+    library style. Logo placeholders stay deferred; the unused one is blanked on
+    an odd final slide so a single-target slide shows no stray logo box.
+    """
+    title = "Potential " + (f"{market} " if market else "") + "Market Entry Targets"
+    if total_slides > 1:
+        title += f" ({slide_number} of {total_slides})"
+    set_text(find_shape(slide, "Title 1"), [title])
+
+    if currency_letter is not None:
+        footnote = next(
+            (s for s in slide.shapes
+             if s.name == "Text Placeholder 3" and getattr(s, "has_text_frame", False)),
+            None,
         )
-    if not content.market_entry_targets:
+        if footnote is not None:
+            _fill_footnote_currency(footnote, currency_letter)
+
+    if not targets:
         return
+
     table = _table_shape(slide).table
-    labels = content.market_entry_row_labels
-    # Table row 0 is the blank logo/header row; data labels start at row 1.
-    for i, label in enumerate(labels):
+    n_cols = len(table.columns)  # label column + target columns (3 in the library)
+    # Table row 0 is the blank logo/header row; data labels start at row 1. With
+    # the fixed 12-row structure every data row is populated — no blank rows.
+    for i, label in enumerate(row_labels):
         row = i + 1
         if row >= len(table.rows):
             break
-        set_cell_text(table.cell(row, 0), label, size_pt=8)
-        for col, target in enumerate(content.market_entry_targets, start=1):
-            set_cell_text(table.cell(row, col), target.cells[i], size_pt=8)
-    for row in range(len(labels) + 1, len(table.rows)):
-        for col in range(len(table.columns)):
-            set_cell_text(table.cell(row, col), "", size_pt=8)
+        set_cell_text(table.cell(row, 0), label, size_pt=_ME_LABEL_SIZE, color_hex=_ME_LABEL_COLOR)
+        for col in range(1, n_cols):
+            target = targets[col - 1] if (col - 1) < len(targets) else None
+            value = target.cells[i] if target is not None else ""
+            set_cell_text(table.cell(row, col), value, size_pt=_ME_VALUE_SIZE)
+    for row in range(len(row_labels) + 1, len(table.rows)):
+        for col in range(n_cols):
+            set_cell_text(table.cell(row, col), "", size_pt=_ME_VALUE_SIZE)
+
+    # Align logo placeholders left→right with the target columns (sort by .left);
+    # blank any whose column has no target (odd final slide). Populated columns
+    # keep the deferred '[Placeholder for Logo]' image placeholder.
+    logos = sorted(
+        (s for s in slide.shapes
+         if getattr(s, "has_text_frame", False) and "[Placeholder for Logo]" in s.text),
+        key=lambda s: s.left,
+    )
+    for col_idx, logo in enumerate(logos):
+        if col_idx >= len(targets):
+            set_text(logo, [""])
 
 
 def assemble_pitch_deck(
@@ -144,18 +253,20 @@ def assemble_pitch_deck(
     captable_workbook_path: Path | str | None = None,
     comps_workbook_path: Path | str | None = None,
 ) -> Path:
-    """Fill the canonical 14-slide blank INFOR slide-library deck.
+    """Fill the INFOR slide-library pitch deck.
 
-    Complex Excel-to-PowerPoint chart/table insertion is intentionally delegated
-    to `excel-to-powerpoint`; this assembler preserves placeholders when
-    no inserted artefact is available.
+    The blank library is 14 slides; the market-entry section expands across
+    multiple slides (two targets per slide) based on
+    ``content.market_entry_targets``. The cap table is pasted into slide 7 when
+    ``captable_workbook_path`` is supplied (via `excel-to-powerpoint`); other
+    chart/table insertions remain deferred placeholders.
     """
     slide_plan = SlidePlan.model_validate_json(Path(slide_plan_path).read_text(encoding="utf-8"))
     content = PitchDeckContent.model_validate_json(Path(content_path).read_text(encoding="utf-8"))
     if slide_plan.deliverable_type != "pitch":
         raise ValueError("pitch deck assembler only supports pitch SlidePlan objects")
-    if len(slide_plan.slides) != 14:
-        raise ValueError("pitch deck POC expects the 14-slide INFOR Slide Library template")
+    if len(slide_plan.slides) < 14:
+        raise ValueError("pitch deck expects at least the 14 base INFOR Slide Library entries")
 
     template = Path(template_path)
     if not template.exists():
@@ -165,10 +276,29 @@ def assemble_pitch_deck(
     out_dir.mkdir(parents=True, exist_ok=True)
     output_path = out_dir / f"Pitch Deck - {_safe_name(content.client_name)}.pptx"
 
+    # Footnote currency letter for the slide-7 + market-entry '[x]$MM' tokens,
+    # derived from the cap table's output currency (None when no workbook).
+    currency_letter = (
+        _output_currency_letter(captable_workbook_path)
+        if captable_workbook_path is not None
+        else None
+    )
+
     prs = Presentation(template)
 
+    # Grow the market-entry section (two targets per slide) by cloning the
+    # library's market-entry slide. Clone BEFORE dropping the earnings slide so
+    # python-pptx allocates fresh, non-colliding slide part names.
+    n_market_entry = (
+        max(1, math.ceil(len(content.market_entry_targets) / 2))
+        if content.market_entry_targets
+        else 1
+    )
+    for _ in range(n_market_entry - 1):
+        clone_slide_after(prs, _LIBRARY_MARKET_ENTRY_INDEX)
+
     # The shared library carries the earnings-update slide at index 7. Drop it
-    # so the remaining slides keep the original 14-slide pitch ordering.
+    # so the remaining slides keep the canonical pitch ordering.
     delete_slide(prs, _EARNINGS_LIBRARY_SLIDE_INDEX)
 
     # Slide 1 — cover: client name/date only.
@@ -197,13 +327,17 @@ def assemble_pitch_deck(
         else:
             set_text(rect, [""])
 
-    # Slide 7 — public company overview; cap table/revenue chart placeholders stay unless insertion later replaces them.
-    slide7 = prs.slides[6]
+    # Slide 7 — public company overview. The cap table is pasted into the
+    # 'Rectangle 3' placeholder after save (when a workbook is supplied); the
+    # revenue pie stays a deferred placeholder.
+    slide7 = prs.slides[_OVERVIEW_SLIDE_INDEX]
     set_text(find_shape(slide7, "Title 6"), [f"Introduction to {content.client_name}"])
     _write_flexible_bullets(
         find_shape(slide7, "TextBox 9"),
         content.company_overview_bullets,
     )
+    if currency_letter is not None:
+        _fill_footnote_currency(find_shape(slide7, "Text Placeholder 1"), currency_letter)
 
     # Slide 8 — financial metric labels only; charts remain placeholders.
     slide8 = prs.slides[7]
@@ -231,19 +365,47 @@ def assemble_pitch_deck(
     set_text(find_shape(slide10, "Text Placeholder 5"), [content.comps_takeaway])
 
     # Slide 11 — key investment highlights; placeholders remain unless content supplies them.
-    _fill_investment_highlights(prs.slides[10], content)
+    slide11 = prs.slides[10]
+    _fill_investment_highlights(slide11, content)
+    if currency_letter is not None:
+        _fill_footnote_currency(find_shape(slide11, "Text Placeholder 13"), currency_letter)
 
-    # Slide 12 — potential market-entry targets; logos remain deferred image placeholders.
-    _fill_market_entry_targets(prs.slides[11], content)
+    # Slides 12+ — potential market-entry targets, two per slide. The section was
+    # grown above; fill each slide with its pair and title it '(N of M)'.
+    for j in range(n_market_entry):
+        pair = content.market_entry_targets[2 * j : 2 * j + 2]
+        _fill_market_entry_targets(
+            prs.slides[_MARKET_ENTRY_SLIDE_INDEX + j],
+            row_labels=content.market_entry_row_labels,
+            targets=pair,
+            market=content.market_entry_market,
+            currency_letter=currency_letter,
+            slide_number=j + 1,
+            total_slides=n_market_entry,
+        )
 
-    # Slides 13–14 (disclaimer, contact) are static. Do not touch.
+    # Disclaimer + contact are static library entries — left untouched.
 
     prs.save(output_path)
-    _verify_pitch_output(output_path)
+
+    # Paste the generated cap table into slide 7's placeholder (mirrors the
+    # earnings overview insertion). Done after save so the picture write re-opens
+    # and re-saves the finished deck.
+    if captable_workbook_path is not None:
+        insert_cap_table_into_placeholder(
+            deck_path=output_path,
+            workbook_path=captable_workbook_path,
+            output_path=output_path,
+            slide_index=_OVERVIEW_SLIDE_INDEX,
+            placeholder_name=_CAP_TABLE_PLACEHOLDER,
+            source_range=_CAP_TABLE_RANGE,
+        )
+
+    _verify_pitch_output(output_path, cap_table_inserted=captable_workbook_path is not None)
     return output_path
 
 
-def _verify_pitch_output(path: Path) -> None:
+def _verify_pitch_output(path: Path, *, cap_table_inserted: bool = False) -> None:
     prs = Presentation(path)
     text = _all_text(prs)
     forbidden = ["[CLIENT NAME]", "[Date]"]
@@ -251,7 +413,6 @@ def _verify_pitch_output(path: Path) -> None:
     if leftovers:
         raise ValueError(f"assembled pitch deck still contains required-field placeholders: {leftovers}")
     required_placeholders = [
-        "[Cap Table Placeholder]",
         "[Pie Chart Placeholder]",
         "[Placeholder for Metric #1 Chart]",
         "[Placeholder for Comps Chart]",
@@ -259,3 +420,8 @@ def _verify_pitch_output(path: Path) -> None:
     missing = [token for token in required_placeholders if token not in text]
     if missing:
         raise ValueError(f"deferred placeholders were unexpectedly removed: {missing}")
+    has_cap_placeholder = "[Cap Table Placeholder]" in text
+    if cap_table_inserted and has_cap_placeholder:
+        raise ValueError("slide 7 cap-table placeholder was not replaced by the Excel insertion stage")
+    if not cap_table_inserted and not has_cap_placeholder:
+        raise ValueError("slide 7 cap-table placeholder must remain when no workbook is supplied")

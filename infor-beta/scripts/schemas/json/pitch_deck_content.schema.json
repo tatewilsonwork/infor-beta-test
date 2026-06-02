@@ -29,7 +29,7 @@
     },
     "MarketEntryTarget": {
       "additionalProperties": false,
-      "description": "One target column on the Potential Market Entry Targets slide.\n\n`cells` are positional values aligned 1:1 with `market_entry_row_labels`.",
+      "description": "One target column on the Potential Market Entry Targets slide.\n\n`cells` are positional values aligned 1:1 with the fixed 12-row\n`market_entry_row_labels` (Overview / HQ / Year Founded \u2192 7 industry metrics\n\u2192 Scale KPIs / Strategic Rationale).",
       "properties": {
         "cells": {
           "items": {
@@ -163,6 +163,7 @@
       "type": "array"
     },
     "financial_metric_labels": {
+      "description": "Exactly four financial-summary tile labels \u2014 metric NAMES ONLY (e.g. 'Revenue', 'Adjusted EBITDA', 'Combined Loan Balances', 'Adjusted Return on Equity'). No amounts, currency/percent tokens, colons, periods, or YoY deltas: the (placeholder) charts show the values.",
       "items": {
         "type": "string"
       },
@@ -213,6 +214,7 @@
       "title": "Market Entry Market"
     },
     "market_entry_row_labels": {
+      "description": "The fixed 12-row comparison labels, in order: 'Overview', 'Headquarters', 'Year Founded', then exactly seven industry-relevant metric labels (chosen once for the deck and identical across every target slide), then 'Scale KPIs', 'Strategic Rationale'. Required whenever market_entry_targets is non-empty.",
       "items": {
         "type": "string"
       },
@@ -221,10 +223,11 @@
       "type": "array"
     },
     "market_entry_targets": {
+      "description": "Up to eight target companies. The deck lays them out two per slide (ceil(N/2) market-entry slides), each target's cells aligning 1:1 with the 12 market_entry_row_labels.",
       "items": {
         "$ref": "#/$defs/MarketEntryTarget"
       },
-      "maxItems": 2,
+      "maxItems": 8,
       "title": "Market Entry Targets",
       "type": "array"
     },

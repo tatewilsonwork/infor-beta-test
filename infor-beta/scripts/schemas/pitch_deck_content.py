@@ -9,6 +9,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _DATE_RE = re.compile(r"^[A-Z][a-z]+\s+\d{4}$")
 
+# A financial-summary tile shows the metric NAME only — the (placeholder) chart
+# carries the amount. Reject anything that looks value-laden: digits, currency or
+# percent tokens, or a colon (as in "FY2025 Revenue: US$589.8MM (+31% YoY)").
+_METRIC_VALUE_TOKEN_RE = re.compile(r"[\d$%:]")
+
+# The market-entry comparison table is a fixed 12-row structure: three fixed
+# top rows, seven industry-relevant metric rows chosen once per deck (and so
+# identical across every target slide), then two fixed bottom rows.
+_MARKET_ENTRY_FIXED_TOP = ("Overview", "Headquarters", "Year Founded")
+_MARKET_ENTRY_FIXED_BOTTOM = ("Scale KPIs", "Strategic Rationale")
+_MARKET_ENTRY_ROW_COUNT = 12
+
 
 class PitchBullet(BaseModel):
     """Flexible bullet item used by the deck-content POC."""
@@ -60,12 +72,14 @@ class InvestmentHighlight(BaseModel):
 class MarketEntryTarget(BaseModel):
     """One target column on the Potential Market Entry Targets slide.
 
-    `cells` are positional values aligned 1:1 with `market_entry_row_labels`.
+    `cells` are positional values aligned 1:1 with the fixed 12-row
+    `market_entry_row_labels` (Overview / HQ / Year Founded → 7 industry metrics
+    → Scale KPIs / Strategic Rationale).
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    cells: list[str] = Field(..., min_length=1, max_length=12)
+    cells: list[str] = Field(..., min_length=1, max_length=_MARKET_ENTRY_ROW_COUNT)
 
 
 class PitchSourceNote(BaseModel):
@@ -91,15 +105,43 @@ class PitchDeckContent(BaseModel):
     section_labels: list[str] = Field(..., min_length=1, max_length=8)
     current_section: str = Field(..., min_length=1, max_length=80)
     company_overview_bullets: list[PitchBullet] = Field(..., min_length=1, max_length=10)
-    financial_metric_labels: list[str] = Field(..., min_length=4, max_length=4)
+    financial_metric_labels: list[str] = Field(
+        ...,
+        min_length=4,
+        max_length=4,
+        description=(
+            "Exactly four financial-summary tile labels — metric NAMES ONLY "
+            "(e.g. 'Revenue', 'Adjusted EBITDA', 'Combined Loan Balances', "
+            "'Adjusted Return on Equity'). No amounts, currency/percent tokens, "
+            "colons, periods, or YoY deltas: the (placeholder) charts show the values."
+        ),
+    )
     risk_mitigants: list[RiskMitigantRow] = Field(..., min_length=1, max_length=5)
     risks_tagline: str = Field(..., min_length=1, max_length=180)
     comps_takeaway: str = Field(..., min_length=1, max_length=180)
     investment_highlights: list[InvestmentHighlight] = Field(default_factory=list, max_length=4)
     investment_highlights_tagline: str | None = Field(default=None, max_length=240)
     market_entry_market: str | None = Field(default=None, max_length=60)
-    market_entry_row_labels: list[str] = Field(default_factory=list, max_length=12)
-    market_entry_targets: list[MarketEntryTarget] = Field(default_factory=list, max_length=2)
+    market_entry_row_labels: list[str] = Field(
+        default_factory=list,
+        max_length=_MARKET_ENTRY_ROW_COUNT,
+        description=(
+            "The fixed 12-row comparison labels, in order: 'Overview', "
+            "'Headquarters', 'Year Founded', then exactly seven industry-relevant "
+            "metric labels (chosen once for the deck and identical across every "
+            "target slide), then 'Scale KPIs', 'Strategic Rationale'. Required "
+            "whenever market_entry_targets is non-empty."
+        ),
+    )
+    market_entry_targets: list[MarketEntryTarget] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "Up to eight target companies. The deck lays them out two per slide "
+            "(ceil(N/2) market-entry slides), each target's cells aligning 1:1 "
+            "with the 12 market_entry_row_labels."
+        ),
+    )
     sources: list[PitchSourceNote] = Field(default_factory=list)
     manual_steps: list[str] = Field(default_factory=list)
 
@@ -117,6 +159,24 @@ class PitchDeckContent(BaseModel):
             raise ValueError("list values cannot be blank")
         return values
 
+    @field_validator("financial_metric_labels")
+    @classmethod
+    def metric_labels_are_names_only(cls, values: list[str]) -> list[str]:
+        for value in values:
+            if _METRIC_VALUE_TOKEN_RE.search(value):
+                raise ValueError(
+                    f"financial_metric_labels must be metric NAMES only, not a "
+                    f"value-laden string like {value!r}. Drop the amount, currency "
+                    f"and YoY delta (the chart shows them) — e.g. 'Revenue', "
+                    f"'Adjusted EBITDA', 'Combined Loan Balances'."
+                )
+            if len(value) > 40:
+                raise ValueError(
+                    f"financial_metric_labels must stay short enough for a tile "
+                    f"(<= 40 chars); {value!r} reads like a phrase, not a metric name."
+                )
+        return values
+
     @model_validator(mode="after")
     def current_section_must_be_listed(self) -> "PitchDeckContent":
         if self.current_section not in self.section_labels:
@@ -124,10 +184,27 @@ class PitchDeckContent(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def market_entry_targets_align_to_labels(self) -> "PitchDeckContent":
+    def market_entry_structure(self) -> "PitchDeckContent":
         if self.market_entry_targets and not self.market_entry_row_labels:
             raise ValueError("market_entry_row_labels are required when market_entry_targets are provided")
+        labels = self.market_entry_row_labels
+        if labels:
+            if len(labels) != _MARKET_ENTRY_ROW_COUNT:
+                raise ValueError(
+                    f"market_entry_row_labels must be exactly {_MARKET_ENTRY_ROW_COUNT} rows: "
+                    f"{list(_MARKET_ENTRY_FIXED_TOP)}, then 7 industry-relevant metrics "
+                    f"(consistent across every target slide), then {list(_MARKET_ENTRY_FIXED_BOTTOM)} "
+                    f"(got {len(labels)})"
+                )
+            if tuple(labels[:3]) != _MARKET_ENTRY_FIXED_TOP:
+                raise ValueError(
+                    f"the first three market_entry_row_labels must be {list(_MARKET_ENTRY_FIXED_TOP)}"
+                )
+            if tuple(labels[-2:]) != _MARKET_ENTRY_FIXED_BOTTOM:
+                raise ValueError(
+                    f"the last two market_entry_row_labels must be {list(_MARKET_ENTRY_FIXED_BOTTOM)}"
+                )
         for target in self.market_entry_targets:
-            if len(target.cells) != len(self.market_entry_row_labels):
+            if len(target.cells) != len(labels):
                 raise ValueError("each market-entry target's cells must align 1:1 with market_entry_row_labels")
         return self
