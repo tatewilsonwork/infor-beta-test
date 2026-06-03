@@ -1,7 +1,7 @@
 ---
 name: excel-to-powerpoint
 description: Reusable POC skill for moving Excel chart/table outputs into PowerPoint placeholders, initially cap table and comps artefacts for the slide-library POC.
-version: 0.5.7
+version: 0.5.8
 allowed-tools:
   - Read
   - Write
@@ -28,9 +28,10 @@ side_effects:
 
 Reusable Excel-to-PowerPoint insertion stage for INFOR decks.
 
-Current implemented use:
-- earnings-update cap table workbook from `captable` → overview slide `Rectangle 3` Capitalization Summary placeholder via `scripts/excel_to_powerpoint.py::insert_cap_table_into_placeholder`
-- pitch slide-library cap table workbook from `captable` → Slide 7 `Rectangle 3` cap table placeholder. Wired inside `pitch_deck_assembler.assemble_pitch_deck` (same `insert_cap_table_into_placeholder` call, `slide_index=6`, range `B15:F40`) and invoked whenever the deck-assembler stage receives `captable_workbook_path` — so no separate plan stage is needed.
+Current implemented use — all via the generic `scripts/excel_to_powerpoint.py::insert_excel_into_placeholder`, which renders any `sheet!range` as a picture and pastes it into a named placeholder:
+- earnings-update cap table workbook from `captable` → overview slide `Rectangle 3` Capitalization Summary placeholder (`Cap with Links!B15:F40`).
+- pitch slide-library cap table workbook from `captable` → Slide 7 `Rectangle 3` cap table placeholder. Wired inside `pitch_deck_assembler.assemble_pitch_deck` (`slide_index=6`, `Cap with Links!B15:F40`) and invoked whenever the deck-assembler stage receives `captable_workbook_path` — so no separate plan stage is needed.
+- pitch insider-ownership workbook from `ownership` → ownership slide left `Rectangle 1` "Insiders" placeholder (`Ownership!B4:G17`), invoked when the deck-assembler stage receives `ownership_workbook_path`.
 
 POC/future uses:
 - comps workbook/chart → Slide 10 comps placeholder

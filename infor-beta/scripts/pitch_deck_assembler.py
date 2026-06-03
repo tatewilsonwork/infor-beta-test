@@ -1,9 +1,10 @@
 """Assembler for the INFOR slide-library pitch deck.
 
-The blank library is 14 slides; the market-entry section grows across multiple
-slides — two targets per slide — by cloning the library's market-entry slide, so
-an assembled deck has ``14 + (market_entry_slides - 1)`` slides (e.g. 8 targets →
-4 market-entry slides → 17-slide deck, disclaimer/contact at 16/17).
+The blank library is 15 slides (incl. the insider-ownership slide); the
+market-entry section grows across multiple slides — two targets per slide — by
+cloning the library's market-entry slide, so an assembled deck has
+``15 + (market_entry_slides - 1)`` slides (e.g. 8 targets → 4 market-entry
+slides → 18-slide deck, ownership/disclaimer/contact at 16/17/18).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
-from excel_to_powerpoint import insert_cap_table_into_placeholder
+from excel_to_powerpoint import insert_excel_into_placeholder
 from pptx_helpers import (
     clone_slide_after,
     delete_slide,
@@ -43,7 +44,17 @@ _MARKET_ENTRY_SLIDE_INDEX = 11     # slide 12 — first market-entry slide
 # Slide 7 cap-table placeholder; the picture covers the capitalization summary
 # plus the Financial/Valuation metric rows (same range as the earnings overview).
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
+_CAP_TABLE_SHEET = "Cap with Links"
 _CAP_TABLE_RANGE = "B15:F40"
+
+# Insider-ownership slide. The left "Insiders" placeholder ('Rectangle 1') is
+# replaced by a picture of the ownership workbook's Select-Insiders block; the
+# right "Institutions" side ('Rectangle 3' / 'Picture 9') stays a Bloomberg
+# placeholder. The slide follows the last market-entry slide, so its deck index
+# is _MARKET_ENTRY_SLIDE_INDEX + n_market_entry (after the earnings-slide drop).
+_OWNERSHIP_PLACEHOLDER = "Rectangle 1"
+_OWNERSHIP_SHEET = "Ownership"
+_OWNERSHIP_RANGE = "B4:G17"
 
 
 def _safe_name(value: str) -> str:
@@ -265,14 +276,17 @@ def assemble_pitch_deck(
     output_dir: Path | str,
     captable_workbook_path: Path | str | None = None,
     comps_workbook_path: Path | str | None = None,
+    ownership_workbook_path: Path | str | None = None,
 ) -> Path:
     """Fill the INFOR slide-library pitch deck.
 
-    The blank library is 14 slides; the market-entry section expands across
+    The blank library is 15 slides; the market-entry section expands across
     multiple slides (two targets per slide) based on
     ``content.market_entry_targets``. The cap table is pasted into slide 7 when
-    ``captable_workbook_path`` is supplied (via `excel-to-powerpoint`); other
-    chart/table insertions remain deferred placeholders.
+    ``captable_workbook_path`` is supplied, and the insider-ownership table into
+    the ownership slide when ``ownership_workbook_path`` is supplied (both via
+    `excel-to-powerpoint`); other chart/table insertions remain deferred
+    placeholders.
     """
     slide_plan = SlidePlan.model_validate_json(Path(slide_plan_path).read_text(encoding="utf-8"))
     content = PitchDeckContent.model_validate_json(Path(content_path).read_text(encoding="utf-8"))
@@ -405,20 +419,42 @@ def assemble_pitch_deck(
     # earnings overview insertion). Done after save so the picture write re-opens
     # and re-saves the finished deck.
     if captable_workbook_path is not None:
-        insert_cap_table_into_placeholder(
+        insert_excel_into_placeholder(
             deck_path=output_path,
             workbook_path=captable_workbook_path,
             output_path=output_path,
             slide_index=_OVERVIEW_SLIDE_INDEX,
             placeholder_name=_CAP_TABLE_PLACEHOLDER,
+            sheet_name=_CAP_TABLE_SHEET,
             source_range=_CAP_TABLE_RANGE,
         )
 
-    _verify_pitch_output(output_path, cap_table_inserted=captable_workbook_path is not None)
+    # Paste the insider-ownership table into the ownership slide's left
+    # "Insiders" placeholder (mirrors the cap-table insertion). The ownership
+    # slide follows the last market-entry slide; the institutional/right side is
+    # left as a Bloomberg placeholder.
+    if ownership_workbook_path is not None:
+        insert_excel_into_placeholder(
+            deck_path=output_path,
+            workbook_path=ownership_workbook_path,
+            output_path=output_path,
+            slide_index=_MARKET_ENTRY_SLIDE_INDEX + n_market_entry,
+            placeholder_name=_OWNERSHIP_PLACEHOLDER,
+            sheet_name=_OWNERSHIP_SHEET,
+            source_range=_OWNERSHIP_RANGE,
+        )
+
+    _verify_pitch_output(
+        output_path,
+        cap_table_inserted=captable_workbook_path is not None,
+        ownership_inserted=ownership_workbook_path is not None,
+    )
     return output_path
 
 
-def _verify_pitch_output(path: Path, *, cap_table_inserted: bool = False) -> None:
+def _verify_pitch_output(
+    path: Path, *, cap_table_inserted: bool = False, ownership_inserted: bool = False
+) -> None:
     prs = Presentation(path)
     text = _all_text(prs)
     forbidden = ["[CLIENT NAME]", "[Date]"]
@@ -429,6 +465,9 @@ def _verify_pitch_output(path: Path, *, cap_table_inserted: bool = False) -> Non
         "[Pie Chart Placeholder]",
         "[Placeholder for Metric #1 Chart]",
         "[Placeholder for Comps Chart]",
+        # The ownership slide's institutional side is always a Bloomberg
+        # placeholder (the SEDI pipeline fills only the insider side).
+        "[Placeholder for Institutional Ownership]",
     ]
     missing = [token for token in required_placeholders if token not in text]
     if missing:
@@ -438,3 +477,8 @@ def _verify_pitch_output(path: Path, *, cap_table_inserted: bool = False) -> Non
         raise ValueError("slide 7 cap-table placeholder was not replaced by the Excel insertion stage")
     if not cap_table_inserted and not has_cap_placeholder:
         raise ValueError("slide 7 cap-table placeholder must remain when no workbook is supplied")
+    has_insider_placeholder = "[Placeholder for Insider Ownership]" in text
+    if ownership_inserted and has_insider_placeholder:
+        raise ValueError("ownership slide insider placeholder was not replaced by the Excel insertion stage")
+    if not ownership_inserted and not has_insider_placeholder:
+        raise ValueError("ownership slide insider placeholder must remain when no workbook is supplied")

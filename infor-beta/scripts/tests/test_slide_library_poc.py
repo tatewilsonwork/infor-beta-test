@@ -114,20 +114,23 @@ def test_pitch_deck_content_schema_validates_concise_risk_mitigants():
         PitchDeckContent.model_validate(bad)
 
 
-def test_registry_loads_14_blank_slide_library_entries():
+def test_registry_loads_15_blank_slide_library_entries():
     entries = load_slide_library_registry()
 
-    assert len(entries) == 14
+    assert len(entries) == 15
     assert entries[0].library_entry_id == "pitch-cover"
     assert entries[6].library_entry_id == "public-company-overview"
     assert entries[10].library_entry_id == "key-investment-highlights"
     assert entries[11].library_entry_id == "market-entry-targets"
     assert entries[10].static is False
     assert entries[11].static is False
-    assert entries[12].library_entry_id == "disclaimer"
-    assert entries[12].static is True
-    assert entries[13].library_entry_id == "contact"
+    # Insider-ownership slide inserted before the static disclaimer/contact closers.
+    assert entries[12].library_entry_id == "insider-ownership"
+    assert entries[12].static is False
+    assert entries[13].library_entry_id == "disclaimer"
     assert entries[13].static is True
+    assert entries[14].library_entry_id == "contact"
+    assert entries[14].static is True
 
 
 def test_pitch_deck_wireframe_uses_blank_library_order():
@@ -137,11 +140,13 @@ def test_pitch_deck_wireframe_uses_blank_library_order():
     )
 
     assert plan.deliverable_type == "pitch"
-    assert len(plan.slides) == 14
+    assert len(plan.slides) == 15
     assert [slide.library_entry_id for slide in plan.slides[10:12]] == [
         "key-investment-highlights",
         "market-entry-targets",
     ]
+    assert plan.slides[12].library_entry_id == "insider-ownership"
+    assert plan.slides[12].content_block["requires"] == ["ownership_table"]
     assert plan.slides[10].content_block["requires"] == ["investment_highlights"]
     assert plan.slides[11].content_block["requires"] == ["market_entry_row_labels", "market_entry_targets"]
     assert [slide.library_entry_id for slide in plan.slides[:8]] == [
@@ -177,7 +182,7 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
 
     assert deck_path.exists()
     prs = Presentation(deck_path)
-    assert len(prs.slides) == 14
+    assert len(prs.slides) == 15
     text_parts = []
 
     def _collect(shapes):
@@ -202,6 +207,9 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
     assert "[Pie Chart Placeholder]" in all_text  # intentionally deferred
     assert "[Placeholder for Metric #1 Chart]" in all_text  # intentionally deferred
     assert "Neil Selfe, Managing Principal" in all_text
+    # Ownership slide present; both sides are placeholders when no ownership workbook is supplied.
+    assert "[Placeholder for Insider Ownership]" in all_text
+    assert "[Placeholder for Institutional Ownership]" in all_text
 
     # New content slides are filled and their placeholders replaced.
     assert "Durable Recurring Revenue" in all_text
@@ -248,6 +256,7 @@ def test_pitch_library_poc_plan_stage_order():
         "content",
         "ltm-metrics",
         "captable",
+        "ownership",
         "deck",
         "workbook-aggregation",
     ]
@@ -255,19 +264,25 @@ def test_pitch_library_poc_plan_stage_order():
     assert plan.stages[1].skill == "pitch-content"
     assert plan.stages[2].skill == "ltm-metrics"
     assert plan.stages[3].skill == "captable"
-    assert plan.stages[4].skill == "deck-assembler"
-    assert plan.stages[5].skill == "workbook-aggregator"
+    assert plan.stages[4].skill == "ownership"
+    assert plan.stages[5].skill == "deck-assembler"
+    assert plan.stages[6].skill == "workbook-aggregator"
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
     assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+    assert deck_stage.inputs["ownership_workbook_path"] == "$stages.ownership.workbook_path"
+    # Ownership runs after captable so F35 can be sourced from the cap table's basic shares.
+    ownership_stage = next(s for s in plan.stages if s.id == "ownership")
+    assert ownership_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
     # LTM metrics feed the cap table's LTM valuation column (mirrors earnings update).
     captable_stage = next(s for s in plan.stages if s.id == "captable")
     assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
-    # The LTM workbook is folded into the combined pitch workbook.
+    # The LTM and ownership workbooks are folded into the combined pitch workbook.
     agg_stage = next(s for s in plan.stages if s.id == "workbook-aggregation")
     assert agg_stage.inputs["workbooks"]["ltm-metrics"] == "$stages.ltm-metrics.workbook_path"
+    assert agg_stage.inputs["workbooks"]["ownership"] == "$stages.ownership.workbook_path"
 
 
 # ─── Helpers for the post-review fixes ───────────────────────────────────────
@@ -418,8 +433,8 @@ def test_market_entry_row_labels_enforce_fixed_12_row_structure():
 def test_market_entry_expands_two_targets_per_slide(tmp_path: Path):
     deck_path = _assemble(tmp_path, _content_with_targets(8))
     prs = Presentation(deck_path)
-    # 14 base - 1 market-entry + 4 market-entry = 17 slides.
-    assert len(prs.slides) == 17
+    # 15 base - 1 market-entry + 4 market-entry = 18 slides.
+    assert len(prs.slides) == 18
     titles = [find_shape(prs.slides[11 + j], "Title 1").text for j in range(4)]
     assert titles == [
         "Potential Canada Market Entry Targets (1 of 4)",
@@ -452,7 +467,7 @@ def test_market_entry_table_formatting_no_blank_rows(tmp_path: Path):
 def test_market_entry_odd_count_blanks_unused_column_and_logo(tmp_path: Path):
     deck_path = _assemble(tmp_path, _content_with_targets(3))  # -> 2 slides
     prs = Presentation(deck_path)
-    assert len(prs.slides) == 15  # 13 base + 2 market-entry
+    assert len(prs.slides) == 16  # 14 base + 2 market-entry
     last_me = prs.slides[12]  # the second (final) market-entry slide
     table = next(s for s in last_me.shapes if getattr(s, "has_table", False)).table
     assert table.cell(1, 1).text.strip(), "the single target fills the first target column"
@@ -500,13 +515,13 @@ def test_pitch_wireframe_expands_market_entry_slides():
     )
     me = [s for s in plan.slides if s.library_entry_id == "market-entry-targets"]
     assert len(me) == 4
-    assert len(plan.slides) == 17
+    assert len(plan.slides) == 18
     assert me[0].title.endswith("(1 of 4)")
     assert me[3].title.endswith("(4 of 4)")
-    # Count unknown (live pipeline) -> single market-entry slide, 14-slide plan.
+    # Count unknown (live pipeline) -> single market-entry slide, 15-slide plan.
     default_plan = build_pitch_deck_slide_plan(company=Company(legal_name="X Co", ticker="T:X"))
     assert sum(1 for s in default_plan.slides if s.library_entry_id == "market-entry-targets") == 1
-    assert len(default_plan.slides) == 14
+    assert len(default_plan.slides) == 15
 
 
 # ─── Fix 2: cap table pasted onto slide 7 + footnote currency ────────────────
@@ -527,3 +542,39 @@ def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
     # The figure-footnote currency token is resolved on slide 11 too (no stray [x]).
     note11 = find_shape(prs.slides[10], "Text Placeholder 13").text
     assert "US$MM" in note11 and "[x]" not in note11, "slide 11 footnote currency derived from the cap table"
+
+
+# ─── Ownership: insider table pasted onto the ownership slide ─────────────────
+
+def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
+    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
+    import pywintypes
+
+    from ownership_workbook import build_ownership_workbook, InsiderHolding
+
+    own_wb = build_ownership_workbook(
+        template_path=PLUGIN_ROOT / "templates" / "INFOR Ownership Template.xlsx",
+        insiders=[
+            InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),
+            InsiderHolding("Fowlie, Randy", "Randy Fowlie (Director)", [193000, 0], "2025-12-01"),
+        ],
+        total_shares_outstanding=261_000_000,
+        output_path=tmp_path / "Ownership.xlsx",
+    )
+    try:
+        deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
+    except (pywintypes.com_error, RuntimeError) as exc:  # Excel/LibreOffice unavailable here
+        pytest.skip(f"range render backend unavailable in this environment: {exc}")
+
+    prs = Presentation(deck_path)
+    own_slide = prs.slides[12]  # ownership follows the single market-entry slide (index 11)
+    assert next((s for s in own_slide.shapes if s.name == "Rectangle 1"), None) is None, (
+        "ownership insider placeholder (Rectangle 1) should be replaced by the picture"
+    )
+    assert [s for s in own_slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE], (
+        "expected an insider-ownership picture on the ownership slide"
+    )
+    text = _all_slides_text(prs)
+    assert "[Placeholder for Insider Ownership]" not in text, "insider placeholder replaced"
+    # The institutional / Bloomberg side stays a placeholder (SEDI fills only insiders).
+    assert "[Placeholder for Institutional Ownership]" in text

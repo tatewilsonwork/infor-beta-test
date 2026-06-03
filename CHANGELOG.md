@@ -2,6 +2,23 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.8] — 2026-06-03
+
+Adds an **insider-ownership slide** to the pitch deck for Canadian public targets, sourced from a SEDI "Insider Information by Issuer" report. The earnings-update flow is unchanged.
+
+### Added
+- **`ownership` skill + `ownership_workbook.py`.** New skill that parses an analyst-attached SEDI PDF, keeps only current insiders (`Ceased to be Insider: Not Applicable`), sums each one's **common shares** (multiple registered-holder tranches are written as an in-cell `=a+b+c` sum, never hand-totalled), records the latest common-share date, and builds the adjusted `First Last (Role)` name (role from the relationship code + the company site / LinkedIn). `build_ownership_workbook(...)` fills the template's Select-Insiders block (rows 39-65: B/F/G/J) and the `F35` % denominator. SEDI is Canadian-only and **cannot be auto-fetched** (Radware/ShieldSquare bot wall) — the analyst downloads the PDF; see the skill's `references/sedi-extraction.md`. (`skills/ownership/`, `scripts/ownership_workbook.py`; tests added)
+- **Ownership template.** `templates/INFOR Ownership Template.xlsx` — the display block `B4:G17` ranks the top 12 insiders by common shares (`LARGE`/`XLOOKUP`); the right "Institutions" side is Bloomberg-sourced and out of scope here.
+
+### Changed
+- **Slide library is now 15 entries (was 14).** The updated `INFOR Slide Library.pptx` inserts the **Ownership** slide before the static disclaimer/contact closers; `slide_library_registry` and `pitch_deck_wireframe` register `insider-ownership`. A pitch deck with one market-entry slide is now 15 slides (8 targets → 18). (`scripts/slide_library_registry.py`, `scripts/pitch_deck_wireframe.py`, `pitch-wireframe` SKILL.md; tests updated)
+- **Pitch plan gains an `ownership` stage.** It runs **after `captable`** (so `F35` can be sourced from the cap table's Section VII basic shares) and **before `deck`**; the deck stage receives `ownership_workbook_path` and the combined `pitch-<codename>.xlsx` folds in an `ownership` tab. When the target is not a Canadian issuer or no SEDI PDF is attached, the stage emits a null workbook and the deck-assembler leaves the slide's placeholders — the rest of the deck still assembles. (`plans/pitch.yaml`; test updated)
+- **deck-assembler inserts the insider-ownership picture.** `assemble_pitch_deck` gains `ownership_workbook_path`; when supplied it pastes `Ownership!B4:G17` into the ownership slide's left `Rectangle 1` "Insiders" placeholder (`slide_index = _MARKET_ENTRY_SLIDE_INDEX + n_market_entry`), mirroring the slide-7 cap-table insertion. The cap-table-specific `insert_cap_table_into_placeholder` is replaced by a single generic `insert_excel_into_placeholder(sheet_name, source_range, placeholder_name, slide_index)` used by both the cap-table and ownership insertions (earnings + pitch assemblers). (`scripts/pitch_deck_assembler.py`, `scripts/earnings_update_assembler.py`, `scripts/excel_to_powerpoint.py`, `deck-assembler` + `excel-to-powerpoint` SKILL.md; tests added)
+- **Pre-cleaned the ownership template.** As received it carried 9 dead **external links** and ~5,000 legacy **defined names** (Lotus-era `={#N/A,...}` array literals) that openpyxl re-serializes into a workbook Excel refuses to open — silently breaking the picture render (a plain copy opens; the openpyxl round-trip does not). Both are stripped once from the shipped `templates/INFOR Ownership Template.xlsx` (neither is referenced by the live display formulas; 132 KB → 44 KB), and a regression test guards that the shipped template stays clean. (`templates/INFOR Ownership Template.xlsx`, test added)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.8`.
+
 ## [0.5.7] — 2026-06-02
 
 Pitch-deck fixes surfaced by the Project PRL2 review. Slides 1–6, 8, 10, 11, 16, 17 were already correct and are unchanged; the earnings-update behaviour is untouched (it remains the reference implementation). All three items below change the pitch deck output.

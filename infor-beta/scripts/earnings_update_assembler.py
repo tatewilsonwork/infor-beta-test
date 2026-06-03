@@ -16,7 +16,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu, Inches, Pt
 
-from excel_to_powerpoint import insert_cap_table_into_placeholder
+from excel_to_powerpoint import insert_excel_into_placeholder
 from pptx_helpers import (
     COLOR_DOWN,
     COLOR_UP,
@@ -326,12 +326,13 @@ def assemble_earnings_update_deck(
     prs.save(output_path)
 
     if captable_workbook_path is not None:
-        insert_cap_table_into_placeholder(
+        insert_excel_into_placeholder(
             deck_path=output_path,
             workbook_path=captable_workbook_path,
             output_path=output_path,
             slide_index=1,
             placeholder_name=_CAP_TABLE_PLACEHOLDER,
+            sheet_name="Cap with Links",
             source_range=_CAP_TABLE_RANGE,
         )
     _verify_output(output_path, cap_table_inserted=captable_workbook_path is not None)

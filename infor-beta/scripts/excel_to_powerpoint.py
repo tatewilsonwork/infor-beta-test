@@ -42,17 +42,23 @@ _XL_NORMAL = -4143
 _XL_PICTURE = -4147
 
 
-def insert_cap_table_into_placeholder(
+def insert_excel_into_placeholder(
     *,
     deck_path: Path | str,
     workbook_path: Path | str,
+    placeholder_name: str,
+    source_range: str,
+    sheet_name: str,
     output_path: Path | str | None = None,
-    slide_index: int = 1,
-    placeholder_name: str = "Rectangle 3",
-    sheet_name: str = "Cap with Links",
-    source_range: str = "B15:F40",
+    slide_index: int = 0,
 ) -> Path:
-    """Replace a deck placeholder with a picture of an Excel range."""
+    """Replace a deck placeholder with a picture of an Excel range.
+
+    Generic over (slide, placeholder, sheet, range): the cap table pastes
+    ``Cap with Links!B15:F40`` into a slide-7 ``Rectangle 3``; the ownership
+    slide pastes ``Ownership!B4:G17`` into its ``Rectangle 1`` insider
+    placeholder. The picture is stretched to the placeholder's exact box.
+    """
     deck = Path(deck_path).resolve()
     workbook = Path(workbook_path).resolve()
     if not deck.exists():

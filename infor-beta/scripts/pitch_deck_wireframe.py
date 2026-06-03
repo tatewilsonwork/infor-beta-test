@@ -44,6 +44,12 @@ def _content_block(entry, *, labels: list[str], current: str) -> dict[str, Any]:
         block["requires"] = ["market_entry_row_labels", "market_entry_targets"]
         block["optional"] = ["market_entry_market"]
         block["deferred"] = ["target_logos"]
+    elif entry.library_entry_id == "insider-ownership":
+        # The insider table is a picture of the ownership workbook (built by the
+        # `ownership` skill from a SEDI filing); the institutional side stays a
+        # Bloomberg-sourced placeholder, like the overview slide's revenue pie.
+        block["requires"] = ["ownership_table"]
+        block["deferred"] = ["institutional_ownership"]
     return block
 
 
@@ -56,8 +62,9 @@ def build_pitch_deck_slide_plan(
 ) -> SlidePlan:
     """Return the canonical pitch plan for the slide-library deck.
 
-    The blank library is 14 slides. The market-entry section expands to
-    ``ceil(market_entry_target_count / 2)`` slides (two targets per slide). When
+    The blank library is 15 slides (incl. the insider-ownership slide). The
+    market-entry section expands to ``ceil(market_entry_target_count / 2)``
+    slides (two targets per slide). When
     the count is unknown at wireframe time — the live pipeline drafts targets
     later, in pitch-content — it defaults to a single market-entry slide; the
     deck-assembler clones to the true count from the content bundle regardless.
@@ -107,7 +114,7 @@ def _section_for(entry_id: str) -> str:
         return "Overview"
     if entry_id in {"acquirer-considerations-mitigants", "comparable-companies"}:
         return "Valuation"
-    if entry_id in {"key-investment-highlights", "market-entry-targets"}:
+    if entry_id in {"key-investment-highlights", "market-entry-targets", "insider-ownership"}:
         return "Appendix"
     return "Appendix"
 
