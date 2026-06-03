@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.7
+version: 0.5.8
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -31,7 +31,7 @@ This stage assembles typed slide/content handoffs into PowerPoint decks.
 
 When invoked by the conductor, read:
 
-- `$STAGE_INPUTS` — JSON with `slide_plan_path`, `content_bundle_path`, `template_name`, and `output_dir`; may also include `captable_workbook_path` and `comps_workbook_path`
+- `$STAGE_INPUTS` — JSON with `slide_plan_path`, `content_bundle_path`, `template_name`, and `output_dir`; may also include `captable_workbook_path`, `comps_workbook_path`, and `ownership_workbook_path`
 - `$STAGE_OUTPUTS` — path where this stage must write its structured handoff
 - `$DEAL_DIR` — deal directory root
 
@@ -63,7 +63,8 @@ When invoked by the conductor, read:
 - Slide 9: concise risks/mitigants + tagline.
 - Slide 10: comps takeaway; chart placeholder stays unless insertion replaces it later.
 - Slide 11: key investment highlights (filled when content supplies them).
-- Slides 12+: potential market-entry targets — the fixed 12-row comparison table (Overview / HQ / Year Founded → 7 industry metrics → Scale KPIs / Strategic Rationale), **two targets per slide**. The assembler clones the library's market-entry slide to `ceil(len(market_entry_targets) / 2)` slides, titles them `(N of M)`, writes the label column white at 11 pt and target values at 10 pt, and blanks the unused column + logo on an odd final slide. Disclaimer/contact follow.
+- Slides 12+: potential market-entry targets — the fixed 12-row comparison table (Overview / HQ / Year Founded → 7 industry metrics → Scale KPIs / Strategic Rationale), **two targets per slide**. The assembler clones the library's market-entry slide to `ceil(len(market_entry_targets) / 2)` slides, titles them `(N of M)`, writes the label column white at 11 pt and target values at 10 pt, and blanks the unused column + logo on an odd final slide.
+- Ownership slide (Canadian public targets, follows the last market-entry slide): when `ownership_workbook_path` is supplied, the left **"Insiders"** placeholder (`Rectangle 1`) is replaced by a picture of the ownership workbook's Select-Insiders block (sheet `Ownership`, range `B4:G17`, `slide_index = _MARKET_ENTRY_SLIDE_INDEX + n_market_entry`). The right **"Institutions"** side stays a Bloomberg-sourced placeholder. Disclaimer/contact follow.
 
 ## Overflow QA (mandatory)
 
@@ -86,11 +87,13 @@ stage is incomplete without it:
     digit from a regex-substitution bug upstream); every dollar figure must
     start with a plain `$`.
 - **Pitch**: render slides 2, 7, 9 (executive summary, company overview,
-  risks/mitigants) and every market-entry slide (12+). On slide 2 confirm the
-  body text is the template dark colour with square/dash bullets (not blue); on
-  slide 7 confirm the cap-table picture landed and the footnote currency is
-  correct; on the market-entry slides confirm no row label or value clips and no
-  data row is blank.
+  risks/mitigants), every market-entry slide (12+), and the ownership slide. On
+  slide 2 confirm the body text is the template dark colour with square/dash
+  bullets (not blue); on slide 7 confirm the cap-table picture landed and the
+  footnote currency is correct; on the market-entry slides confirm no row label
+  or value clips and no data row is blank; on the ownership slide confirm the
+  insider picture landed on the left and the institutional side is still a
+  placeholder.
 
 ```python
 import sys, os
@@ -145,6 +148,7 @@ elif slide_plan.deliverable_type == "pitch":
         output_dir=output_dir,
         captable_workbook_path=inputs.get("captable_workbook_path"),
         comps_workbook_path=inputs.get("comps_workbook_path"),
+        ownership_workbook_path=inputs.get("ownership_workbook_path"),
     )
 else:
     raise ValueError(f"unsupported deliverable_type: {slide_plan.deliverable_type}")

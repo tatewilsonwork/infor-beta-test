@@ -1,4 +1,8 @@
-"""Simple registry for the 14-slide INFOR slide-library POC."""
+"""Simple registry for the INFOR slide-library deck.
+
+The blank library is 15 entries: the original 14 plus an insider-ownership
+slide inserted before the static disclaimer/contact closers.
+"""
 
 from __future__ import annotations
 
@@ -28,11 +32,15 @@ _ENTRIES: tuple[SlideLibraryEntry, ...] = (
     # One physical library slide; the wireframe/assembler repeat it two targets
     # per slide when a deal has more than two market-entry targets.
     SlideLibraryEntry("market-entry-targets", 12, "Potential [Market] Market Entry Targets"),
-    SlideLibraryEntry("disclaimer", 13, "Disclaimer", static=True),
-    SlideLibraryEntry("contact", 14, "Contact", static=True),
+    # Insider-ownership slide (Canadian public targets): the left "Insiders"
+    # placeholder is replaced by a picture of the ownership workbook; the right
+    # "Institutions" side stays a Bloomberg-sourced placeholder.
+    SlideLibraryEntry("insider-ownership", 13, "Ownership"),
+    SlideLibraryEntry("disclaimer", 14, "Disclaimer", static=True),
+    SlideLibraryEntry("contact", 15, "Contact", static=True),
 )
 
 
 def load_slide_library_registry() -> list[SlideLibraryEntry]:
-    """Return the canonical blank-library order for the POC."""
+    """Return the canonical blank-library order for the deck."""
     return list(_ENTRIES)

@@ -1,7 +1,7 @@
 ---
 name: pitch-content
 description: Drafts the broad typed content bundle for the 14-slide INFOR slide-library POC deck from analyst notes and optional supporting sources.
-version: 0.5.7
+version: 0.5.8
 allowed-tools:
   - Read
   - Write

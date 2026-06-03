@@ -120,12 +120,31 @@ stages:
         description: Absolute path to the generated companion cap table .xlsx (with LTM revenue/EBITDA in D47/D48).
     checkpoint: informational
 
+  # Insider ownership (Canadian public targets only). Runs *after* captable so
+  # F35 (the % denominator) can be sourced from the cap table's basic shares.
+  # Parses the analyst-attached SEDI "Insider Information by Issuer" PDF. When
+  # the target is not a Canadian issuer or no SEDI PDF is attached, the stage
+  # emits a null workbook_path and the deck-assembler leaves the ownership
+  # slide's placeholders in place — the rest of the deck still assembles.
+  - id: ownership
+    skill: ownership
+    inputs:
+      company: $deal.subject_company
+      ticker: $deal.subject_company.ticker
+      captable_workbook_path: $stages.captable.workbook_path
+    outputs:
+      - name: workbook_path
+        type: Path
+        description: Absolute path to the ownership companion .xlsx (Select-Insiders block + F35); null when the target is not a Canadian issuer or no SEDI PDF was attached.
+    checkpoint: informational
+
   - id: deck
     skill: deck-assembler
     inputs:
       slide_plan_path: $stages.wireframe.slide_plan_path
       content_bundle_path: $stages.content.content_bundle_path
       captable_workbook_path: $stages.captable.workbook_path
+      ownership_workbook_path: $stages.ownership.workbook_path
       comps_workbook_path: $plan_inputs.comps_workbook_path
       template_name: INFOR Slide Library.pptx
       output_dir: $deal.deal_dir
@@ -146,6 +165,7 @@ stages:
       workbooks:
         captable: $stages.captable.workbook_path
         ltm-metrics: $stages.ltm-metrics.workbook_path
+        ownership: $stages.ownership.workbook_path
         comps: $plan_inputs.comps_workbook_path
       deliverable_type: $deal.deliverable_type
       deal_name: $deal.codename
