@@ -8,7 +8,7 @@ description: >
   pitch-Project Atlas.xlsx. Activates as the plan stage `workbook-aggregation`. Preserves formulas,
   CapIQ links, charts, and formatting via Excel COM on Windows; falls back to a best-effort openpyxl
   merge off-Windows. The individual source workbooks are replaced by the combined file.
-version: 0.5.9
+version: 0.5.10
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -31,7 +31,7 @@ If `$STAGE_INPUTS` is missing a field you need, write `{"error": "missing input:
 ## Tab naming
 
 - A **single-sheet** source workbook becomes one tab named exactly after the producing skill (`captable`, `ltm-metrics`).
-- A **multi-sheet** source contributes one tab per sheet, each named `<skill>-<sheet>` (e.g. `captable-Cap with Links`, `captable-Inputs`).
+- A **multi-sheet** source keeps its **original sheet names**, unprefixed — e.g. the `ownership` workbook contributes `Ownership` and `Bloomberg Output` (not `ownership-Ownership` / `ownership-Bloomberg Output`). The sheet names are self-describing, and prefixing them would force a rename that breaks the source's intra-workbook cross-sheet references (the ownership `Ownership` sheet's hundreds of `='Bloomberg Output'!…` lookups → `#REF`).
 - Excel's constraints are enforced automatically: tab names are truncated to 31 chars, forbidden characters (`[]:*?/\`) are replaced, and collisions are disambiguated with a ` (2)`, ` (3)`, … suffix.
 
 ## Output naming
@@ -44,6 +44,12 @@ The combined workbook is `<deliverable>-<deal name>.xlsx`, where the deliverable
 ## Merge base + cross-tab links
 
 When a `captable` workbook is among the sources, the COM backend opens **it** as the base workbook (and saves it as the combined file), then copies the other skills' sheets in after it. This preserves the cap table's theme, CapIQ links, and formatting — the previous blank-base merge shifted colours and could drop CapIQ links, which made the combined file hard to format and link. (Without a cap table, a blank base is used, as before.)
+
+Each source's content sheets are copied **as a group in one operation** so a source's intra-workbook cross-sheet references survive as internal references (copying sheet-by-sheet turns them into external links to the soon-deleted source → `#REF`; this is the ownership `Ownership` → `Bloomberg Output` case), and the copy destination is passed **positionally** — the named `After=` argument is silently dropped by some Excel builds, which then copy into a stray new workbook (a no-op append that, before, forced the openpyxl fallback and lost the theme).
+
+## Brand theme
+
+The combined workbook is stamped with the INFOR brand theme (`templates/INFORFG.thmx`) — via `ApplyTheme` on the COM backend, `loaded_theme` on the openpyxl backend — so it carries the INFOR colour scheme / fonts even when the merge base is a blank workbook (no cap table) or the openpyxl fallback runs. It is best-effort: a missing theme file or a theme-apply error never loses the merged workbook.
 
 Once every workbook is one file, a **relink** pass rewrites the skills' standalone scalar handoffs into live cross-tab formulas, so the analyst's combined workbook stays internally linked:
 

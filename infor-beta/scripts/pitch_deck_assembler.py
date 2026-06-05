@@ -17,6 +17,7 @@ from pathlib import Path
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.util import Inches
 
 from excel_to_powerpoint import insert_excel_into_placeholder
 from pptx_helpers import (
@@ -105,6 +106,31 @@ def _table_shape(slide):
     raise KeyError("table shape not found")
 
 
+def _set_table_height(table_frame, total_height: int) -> None:
+    """Resize a table to an exact total height by scaling its row heights.
+
+    Mirrors setting a table's height in PowerPoint (drag the bottom handle / set
+    Height in the Size pane): the graphic-frame extent and every row height are
+    scaled to `total_height` proportionally, so the rows still sum to exactly the
+    target (rounding remainder folded into the last row). Call AFTER the cells are
+    filled — row heights are only meaningful once content is in place.
+    """
+    table = table_frame.table
+    rows = list(table.rows)
+    current = sum(r.height for r in rows)
+    if not rows or current <= 0:
+        return
+    target = int(total_height)
+    running = 0
+    for i, row in enumerate(rows):
+        if i < len(rows) - 1:
+            row.height = int(round(row.height * target / current))
+            running += row.height
+        else:
+            row.height = max(0, target - running)  # absorb rounding so rows sum exactly
+    table_frame.height = target
+
+
 def _write_flexible_bullets(shape, bullets) -> None:
     """Write bullets, falling back to plain paragraphs if a library shape has no bullet glyph template."""
     items = [_bullet_tuple(bullet) for bullet in bullets]
@@ -160,6 +186,13 @@ def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
 _ME_LABEL_SIZE = 11
 _ME_VALUE_SIZE = 10
 _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
+
+# Target total height for a filled market-entry (acquisition-target) table.
+# Real content can grow rows past the library's ~5.7" so the table runs off the
+# slide; after the cells are filled we clamp the table back to this height
+# (mirrors dragging the table's resize handle in PowerPoint). 5.71" keeps the
+# table's bottom above the slide edge (table top is 1.2" on a 7.5" slide).
+_ME_TABLE_HEIGHT = Inches(5.71)
 
 # Slide 9 Considerations/Mitigants table sizing. The library ships the header row
 # at 12 pt and the body cells at 10 pt; the old code hardcoded 9 pt / 8 pt, which
@@ -236,7 +269,8 @@ def _fill_market_entry_targets(
     if not targets:
         return
 
-    table = _table_shape(slide).table
+    table_frame = _table_shape(slide)
+    table = table_frame.table
     n_cols = len(table.columns)  # label column + target columns (3 in the library)
     # Table row 0 is the blank logo/header row; data labels start at row 1. With
     # the fixed 12-row structure every data row is populated — no blank rows.
@@ -269,6 +303,10 @@ def _fill_market_entry_targets(
             set_text(logo, [f"[{name} Logo]" if name else "[Company Name Logo]"])
         else:
             set_text(logo, [""])
+
+    # Clamp the now-filled table to a fixed height so long content can't run it
+    # off the slide. Done last, after every cell is populated.
+    _set_table_height(table_frame, _ME_TABLE_HEIGHT)
 
 
 def assemble_pitch_deck(
