@@ -1,7 +1,8 @@
 """Simple registry for the INFOR slide-library deck.
 
 The blank library is 15 entries: the original 14 plus an insider-ownership
-slide inserted before the static disclaimer/contact closers.
+slide, which follows the Financial Summary slide (before the Considerations /
+Mitigants slide).
 """
 
 from __future__ import annotations
@@ -26,16 +27,17 @@ _ENTRIES: tuple[SlideLibraryEntry, ...] = (
     SlideLibraryEntry("section-divider", 6, "Section Divider"),
     SlideLibraryEntry("public-company-overview", 7, "Introduction to [Client Name]"),
     SlideLibraryEntry("financial-summary", 8, "Financial Summary"),
-    SlideLibraryEntry("acquirer-considerations-mitigants", 9, "Potential Perceived Acquiror Considerations and Mitigants"),
-    SlideLibraryEntry("comparable-companies", 10, "Comparable Companies Financial Analysis"),
-    SlideLibraryEntry("key-investment-highlights", 11, "Key Investment Highlights"),
+    # Insider-ownership slide (Canadian public targets) follows the Financial
+    # Summary slide: the left "Insiders" placeholder is replaced by a picture of
+    # the ownership workbook; the right "Institutions" side stays a
+    # Bloomberg-sourced placeholder.
+    SlideLibraryEntry("insider-ownership", 9, "Ownership"),
+    SlideLibraryEntry("acquirer-considerations-mitigants", 10, "Potential Perceived Acquiror Considerations and Mitigants"),
+    SlideLibraryEntry("comparable-companies", 11, "Comparable Companies Financial Analysis"),
+    SlideLibraryEntry("key-investment-highlights", 12, "Key Investment Highlights"),
     # One physical library slide; the wireframe/assembler repeat it two targets
     # per slide when a deal has more than two market-entry targets.
-    SlideLibraryEntry("market-entry-targets", 12, "Potential [Market] Market Entry Targets"),
-    # Insider-ownership slide (Canadian public targets): the left "Insiders"
-    # placeholder is replaced by a picture of the ownership workbook; the right
-    # "Institutions" side stays a Bloomberg-sourced placeholder.
-    SlideLibraryEntry("insider-ownership", 13, "Ownership"),
+    SlideLibraryEntry("market-entry-targets", 13, "Potential [Market] Market Entry Targets"),
     SlideLibraryEntry("disclaimer", 14, "Disclaimer", static=True),
     SlideLibraryEntry("contact", 15, "Contact", static=True),
 )

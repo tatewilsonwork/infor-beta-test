@@ -2,6 +2,23 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.9] — 2026-06-05
+
+Pitch-deck and cap-table refinements requested by the analyst, plus a fix for an earnings-update regression introduced in 0.5.8.
+
+### Changed
+- **Updated cap table template.** `templates/INFOR Cap Table Template.xlsx` refreshed with the analyst's formatting changes; the `Cap with Links` sheet, all input cells (`F3`/`F5`/`F7`/`F16`/`D47`/`D48`), and the CapIQ array formulas are unchanged. The CapIQ very-hidden `__snloffice` helper sheet — re-introduced when the file was saved with the add-in active — is stripped again per repo convention (lossless, via Excel COM). (`templates/INFOR Cap Table Template.xlsx`)
+- **Workbook aggregator merges off the cap table and wires cross-tab links.** The COM merge now opens the `captable` workbook as the **base** (saved as the combined file) instead of starting from a blank workbook, so the cap table's theme, formatting and CapIQ links survive intact — the blank-base merge shifted colours and could drop CapIQ links, which made the combined file hard to format and link. The cross-workbook sheet copy is also made reliable: the destination workbook is activated before each copy (Excel otherwise silently copies into a *new* workbook — a no-op that left earlier-version combined files missing tabs), each sheet is copied individually with an append check, and the `Workbooks.Open`-returns-`None` pywin32 quirk is handled. A post-merge **relink** pass then rewrites the skills' standalone scalar handoffs into live cross-tab formulas: cap table `D47`/`D48` (LTM Revenue / Adj. EBITDA) → `='ltm-metrics'!B<bridge-total>*F7` (located by the `(=) LTM Revenue` / `(=) LTM Adj. EBITDA` labels, since the bridge rows are dynamic), and ownership `F35` (% denominator) → `='captable'!F17*1000000` (cap table millions → ownership full units). The skills still write plain values standalone, so each workbook stays valid on its own and the deck still renders. (`scripts/workbook_aggregator.py`, `workbook-aggregator` SKILL.md; tests added)
+- **Acquiror-considerations mitigants may be a short sentence.** The per-mitigant length cap rises from 90 → 160 chars and the `pitch-content` guidance now asks for one very short sentence per mitigant (still exactly three per row). (`scripts/schemas/pitch_deck_content.py` + regenerated JSON schema, `pitch-content` SKILL.md; test added)
+- **Insider-ownership slide follows the Financial Summary slide.** In the pitch it previously sat after the market-entry (acquisition-target) slides; the `INFOR Slide Library.pptx` slide is reordered to immediately follow Financial Summary (before Considerations / Mitigants), and `slide_library_registry`, `pitch_deck_wireframe` and `pitch_deck_assembler` follow. The ownership picture insertion is now at a fixed deck index, independent of the market-entry slide count. (`templates/INFOR Slide Library.pptx`, `scripts/slide_library_registry.py`, `scripts/pitch_deck_wireframe.py`, `scripts/pitch_deck_assembler.py`; tests updated)
+- **Default of 8 market-entry (acquisition) targets.** When the analyst doesn't specify how many targets they want, the pitch defaults to 8 (4 market-entry slides, two per slide): `pitch_deck_wireframe` defaults the count to 8, `pitch-content` drafts 8 by default (max 8), and the pitch plan gains an optional `market_entry_target_count` input so a specific count can still be requested. (`scripts/pitch_deck_wireframe.py`, `plans/pitch.yaml`, `pitch-content` + `pitch-wireframe` SKILL.md; test updated)
+
+### Fixed
+- **Earnings-update deck dropped its Contact slide (regression from 0.5.8).** Inserting the ownership slide into the 16-slide library in 0.5.8 shifted the disclaimer/contact closers to indices 14/15, but the earnings assembler's `_KEEP_LIBRARY_INDICES` stayed `(0, 6, 7, 13, 14)` — so earnings decks shipped as `[Cover, Overview, Earnings Summary, Ownership, Disclaimer]`, with a stray Ownership slide and no Contact slide. Corrected to `(0, 6, 7, 14, 15)`. (`scripts/earnings_update_assembler.py`; regression test added)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.9`.
+
 ## [0.5.8] — 2026-06-03
 
 Adds an **insider-ownership slide** to the pitch deck for Canadian public targets, sourced from a SEDI "Insider Information by Issuer" report. The earnings-update flow is unchanged.

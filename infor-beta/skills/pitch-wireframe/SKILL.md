@@ -1,7 +1,7 @@
 ---
 name: pitch-wireframe
 description: Builds the typed SlidePlan for the INFOR slide-library pitch deck, using the blank INFOR Slide Library order as canonical; the market-entry section expands to two targets per slide.
-version: 0.5.8
+version: 0.5.9
 allowed-tools:
   - Read
   - Write
@@ -39,12 +39,13 @@ Rules:
 - Do not draft copy.
 - Do not touch PowerPoint.
 - Infer section labels from the selected slide sequence unless analyst overrides them.
-- Pass `market_entry_target_count` when the number of market-entry targets is
-  already known so the plan reflects the real market-entry slide count and
-  titles them `(N of M)`. When it is omitted (the live pipeline drafts targets
-  later, in pitch-content), the plan carries a single market-entry slide and the
-  **deck-assembler clones to the true count from the content bundle** — so the
-  deck is always correct regardless.
+- Pass `market_entry_target_count` when the analyst has specified how many
+  market-entry (acquisition) targets they want, so the plan reflects the real
+  market-entry slide count and titles them `(N of M)`. When it is omitted (the
+  analyst didn't ask for a specific number), the plan **defaults to 8 targets
+  (4 market-entry slides)** — the standard layout — and the **deck-assembler
+  still clones to the true count from the content bundle**, so the deck is
+  always correct regardless.
 - Write `slide_plan_path` to `$STAGE_OUTPUTS` when running under the conductor.
 
 Implementation helper:
