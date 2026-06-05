@@ -18,11 +18,23 @@ Two merge backends, mirroring `excel_to_powerpoint.py`:
     the base before v0.5.9, which shifted theme colours and, on the openpyxl
     fallback, dropped CapIQ links — making the combined file hard to format and
     link.) CapIQ's very-hidden `__snloffice` helper sheet is dropped so it never
-    surfaces as a tab.
+    surfaces as a tab. Each source's content sheets are copied **as a group in a
+    single operation** so a source's intra-workbook cross-sheet references stay
+    internal (the ownership `Ownership` sheet's hundreds of `='Bloomberg
+    Output'!…` lookups would otherwise become external links to the soon-deleted
+    source and resolve to `#REF`); the copy destination is given positionally,
+    because the named `After=` argument is silently dropped by some Excel builds
+    (they then copy into a brand-new workbook — a no-op append that, pre-v0.5.10,
+    forced the openpyxl fallback and lost the theme).
 
   - **openpyxl** (Cowork / Linux / macOS, or Windows without Excel) — a
     best-effort cell-and-style copy. External data connections (CapIQ) and
     charts do NOT survive this path; use it only when COM is unavailable.
+
+Theme: the combined workbook is stamped with the INFOR brand theme
+(`templates/INFORFG.thmx`) on both backends — `ApplyTheme` under COM,
+`loaded_theme` under openpyxl — so it carries INFOR colours/fonts even when the
+merge base is a blank workbook (no cap table) or the openpyxl fallback runs.
 
 Cross-tab links: once every workbook is one file, a relink pass rewrites the
 skills' standalone scalar handoffs into live cross-tab formulas, so the
@@ -41,6 +53,8 @@ from __future__ import annotations
 
 import re
 import sys
+import time
+import zipfile
 from pathlib import Path
 from typing import Mapping
 
@@ -48,6 +62,12 @@ from typing import Mapping
 _XL_OPEN_XML_WORKBOOK = 51
 _EXCEL_SHEET_NAME_MAX = 31
 _FORBIDDEN_SHEET_CHARS = re.compile(r"[\[\]:*?/\\]+")
+
+# INFOR brand theme, applied to every combined workbook so it keeps INFOR
+# colours/fonts regardless of merge base or backend. Ships beside the templates.
+_THEME_FILENAME = "INFORFG.thmx"
+# A .thmx is a zip; the theme XML Excel/openpyxl want lives at this member path.
+_THMX_THEME_MEMBER = "theme/theme/theme1.xml"
 
 # CapIQ's Excel add-in stows formula metadata in a very-hidden helper sheet
 # named "__snloffice". Copied verbatim it surfaces as a garbled (CJK-looking)
@@ -58,6 +78,28 @@ _CAPIQ_HELPER_SHEET = re.compile(r"^__snl", re.IGNORECASE)
 
 def _is_capiq_helper_sheet(name: str) -> bool:
     return bool(_CAPIQ_HELPER_SHEET.match(name.strip()))
+
+
+def _default_theme_path() -> Path:
+    """Path to the shipped INFOR theme (`templates/INFORFG.thmx`)."""
+    return Path(__file__).resolve().parent.parent / "templates" / _THEME_FILENAME
+
+
+def _resolve_theme_path(theme_path: Path | str | None) -> Path | None:
+    """Return an existing theme path (caller override or the shipped default), or
+    None when no theme file is available — theming is then skipped."""
+    candidate = Path(theme_path) if theme_path is not None else _default_theme_path()
+    return candidate if candidate.exists() else None
+
+
+def _extract_theme_xml(theme_path: Path) -> bytes | None:
+    """Return the `theme1.xml` bytes from a `.thmx` package for openpyxl theme
+    injection, or None if the file is missing / not a valid theme zip."""
+    try:
+        with zipfile.ZipFile(theme_path) as z:
+            return z.read(_THMX_THEME_MEMBER)
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return None
 
 
 def _safe_file_stem(value: str) -> str:
@@ -101,8 +143,18 @@ def _unique_sheet_name(name: str, used: set[str]) -> str:
 
 
 def _tab_name(skill: str, original_sheet: str, sheet_count: int) -> str:
-    """Single-sheet source -> the skill name; multi-sheet -> `<skill>-<sheet>`."""
-    return skill if sheet_count == 1 else f"{skill}-{original_sheet}"
+    """Single-sheet source -> the skill name; multi-sheet -> the original sheet
+    names, unprefixed.
+
+    A single-sheet workbook's sheet is usually generic (`Sheet1`, `Cap with
+    Links`), so the skill name is the more useful tab label. A multi-sheet source
+    carries self-describing sheet names (`Ownership`, `Bloomberg Output`) that the
+    analyst expects to see verbatim — and prefixing them would force a rename that
+    breaks the source's intra-workbook cross-sheet references (the ownership
+    `Ownership` sheet's `='Bloomberg Output'!…` lookups -> `#REF`). So multi-sheet
+    sources keep their sheet names; only the `_unique_sheet_name` collision guard
+    can alter them."""
+    return skill if sheet_count == 1 else original_sheet
 
 
 def _resolve_sources(
@@ -130,6 +182,7 @@ def combine_workbooks(
     deliverable_type: str,
     deal_name: str,
     delete_sources: bool = True,
+    theme_path: Path | str | None = None,
 ) -> Path:
     """Merge the source workbooks into one combined `.xlsx` and return its path.
 
@@ -141,6 +194,10 @@ def combine_workbooks(
 
     When `delete_sources` is True (the default), the individual source files
     are removed after a successful merge — the combined workbook replaces them.
+
+    `theme_path` overrides the brand theme stamped on the combined workbook;
+    it defaults to the shipped `templates/INFORFG.thmx`. Theming is skipped
+    silently if no theme file is found.
     """
     kept, _skipped = _resolve_sources(sources)
     if not kept:
@@ -150,13 +207,14 @@ def combine_workbooks(
     out_dir.mkdir(parents=True, exist_ok=True)
     output_path = out_dir / combined_filename(deliverable_type, deal_name)
 
+    theme = _resolve_theme_path(theme_path)
     if sys.platform == "win32":
         try:
-            _combine_via_com(kept, output_path)
+            _combine_via_com(kept, output_path, theme)
         except RuntimeError:
-            _combine_via_openpyxl(kept, output_path)
+            _combine_via_openpyxl(kept, output_path, theme)
     else:
-        _combine_via_openpyxl(kept, output_path)
+        _combine_via_openpyxl(kept, output_path, theme)
 
     if delete_sources:
         for _skill, path in kept:
@@ -263,12 +321,28 @@ def _relink_cross_tab_com(combined, skill_to_tab: dict[str, str]) -> None:
 
 
 def _open_workbook(excel, path: Path, *, read_only: bool):
-    """Open a workbook, working around pywin32 occasionally returning None on
-    `Workbooks.Open` even though the workbook did open (grab the latest one)."""
-    wb = excel.Workbooks.Open(str(path), ReadOnly=read_only, UpdateLinks=0)
-    if wb is None:
-        wb = excel.Workbooks(excel.Workbooks.Count)
-    return wb
+    """Open a workbook robustly under COM.
+
+    Works around two pywin32 quirks: `Workbooks.Open` sometimes returns None even
+    though the workbook opened (grab the latest one — but only when the open count
+    actually rose, so a genuine failure raises instead of silently handing back
+    the wrong workbook), and a transient file-lock/COM race can fail the first
+    open (one short retry absorbs it). Raises RuntimeError on real failure so the
+    caller falls back to the openpyxl backend."""
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        before = excel.Workbooks.Count
+        try:
+            wb = excel.Workbooks.Open(str(path), ReadOnly=read_only, UpdateLinks=0)
+        except Exception as exc:  # COM error — retry once, then surface
+            last_exc = exc
+            wb = None
+        if wb is None and excel.Workbooks.Count > before:
+            wb = excel.Workbooks(excel.Workbooks.Count)
+        if wb is not None:
+            return wb
+        time.sleep(0.4 * (attempt + 1))
+    raise RuntimeError(f"Excel failed to open workbook: {path} ({last_exc})")
 
 
 def _rename_and_clean_base(combined, skill: str, used_names: set, skill_to_tab: dict) -> None:
@@ -290,7 +364,9 @@ def _rename_and_clean_base(combined, skill: str, used_names: set, skill_to_tab: 
         sheet.Delete()
 
 
-def _combine_via_com(sources: list[tuple[str, Path]], output_path: Path) -> None:
+def _combine_via_com(
+    sources: list[tuple[str, Path]], output_path: Path, theme_path: Path | None = None
+) -> None:
     """Merge with Excel COM, preserving formulas, links, charts, and formatting.
 
     When a `captable` source is present it is opened as the BASE workbook (and
@@ -299,7 +375,8 @@ def _combine_via_com(sources: list[tuple[str, Path]], output_path: Path) -> None
     in after it. Without a cap table, a blank workbook is the base (legacy
     behaviour). After the merge, a best-effort cross-tab relink wires the cap
     table's LTM cells to the ltm-metrics tab and the ownership denominator to the
-    cap table.
+    cap table, and (when `theme_path` is given) the INFOR brand theme is stamped
+    on so a blank-base merge doesn't ship the default Office theme.
     """
     try:
         import pythoncom
@@ -334,11 +411,17 @@ def _combine_via_com(sources: list[tuple[str, Path]], output_path: Path) -> None
             # Sheets present in the blank workbook; deleted once real sheets land.
             seed_sheets = [combined.Sheets(i + 1).Name for i in range(combined.Sheets.Count)]
 
-        # Copy each source's content sheets into `combined`, one sheet at a time.
-        # The destination MUST be the active workbook or Excel copies the sheet
-        # into a NEW workbook instead of appending here (a silent no-op for us),
-        # so re-activate `combined` before every copy. CapIQ `__snl*` helper
-        # sheets are skipped at the source so they never surface as a tab.
+        # Copy each source's content sheets into `combined`. All of a source's
+        # sheets are copied in ONE operation so any intra-workbook cross-sheet
+        # references survive as internal references (copying sheet-by-sheet turns
+        # them into external links to the soon-deleted source -> #REF; this is the
+        # ownership `Ownership` -> `Bloomberg Output` case). The destination MUST
+        # be the active workbook or Excel copies into a NEW workbook instead of
+        # appending here, so re-activate `combined` first; and the destination is
+        # passed POSITIONALLY (Before=None, After=<last sheet>) because the named
+        # `After=` form is silently dropped by some Excel builds, which then copy
+        # into a stray new workbook (a no-op append). CapIQ `__snl*` helper sheets
+        # are skipped at the source so they never surface as a tab.
         for skill, path in rest:
             src = _open_workbook(excel, path, read_only=True)
             try:
@@ -347,23 +430,29 @@ def _combine_via_com(sources: list[tuple[str, Path]], output_path: Path) -> None
                     for i in range(src.Worksheets.Count)
                     if not _is_capiq_helper_sheet(src.Worksheets(i + 1).Name)
                 ]
-                for sheet_name in content:
-                    before = combined.Sheets.Count
-                    combined.Activate()
-                    src.Worksheets(sheet_name).Copy(
-                        After=combined.Sheets(combined.Sheets.Count)
+                if not content:
+                    continue
+                before = combined.Sheets.Count
+                combined.Activate()
+                selector = content[0] if len(content) == 1 else content
+                src.Worksheets(selector).Copy(None, combined.Sheets(combined.Sheets.Count))
+                added = combined.Sheets.Count - before
+                if added < len(content):
+                    # Excel copied to a stray workbook instead of appending; bail
+                    # to the openpyxl fallback rather than ship a partial file.
+                    raise RuntimeError(
+                        f"Excel did not append {len(content)} sheet(s) from {skill!r}"
                     )
-                    if combined.Sheets.Count <= before:
-                        # Excel copied to a stray workbook instead of appending;
-                        # bail to the openpyxl fallback rather than ship a partial file.
-                        raise RuntimeError(
-                            f"Excel did not append sheet {sheet_name!r} from {skill!r}"
-                        )
-                    added = combined.Sheets(combined.Sheets.Count)
-                    added.Name = _unique_sheet_name(
-                        _tab_name(skill, sheet_name, len(content)), used_names
+                # Name each freshly-appended sheet from its OWN identity (not by
+                # position), so source/destination sheet ordering can't misassign.
+                for i in range(added):
+                    sheet = combined.Sheets(before + i + 1)
+                    new_name = _unique_sheet_name(
+                        _tab_name(skill, sheet.Name, len(content)), used_names
                     )
-                    skill_to_tab.setdefault(skill, added.Name)
+                    if sheet.Name != new_name:
+                        sheet.Name = new_name
+                    skill_to_tab.setdefault(skill, sheet.Name)
             finally:
                 src.Close(SaveChanges=False)
 
@@ -375,6 +464,15 @@ def _combine_via_com(sources: list[tuple[str, Path]], output_path: Path) -> None
         # Wire the combined workbook's cross-tab links (best-effort).
         _relink_cross_tab_com(combined, skill_to_tab)
 
+        # Stamp the INFOR brand theme so the combined workbook keeps INFOR
+        # colours/fonts even when the base is a blank workbook (no cap table).
+        # Best-effort: a theme failure must never lose the merged workbook.
+        if theme_path is not None:
+            try:
+                combined.ApplyTheme(str(theme_path))
+            except Exception:
+                pass
+
         if output_path.exists():
             output_path.unlink()
         combined.SaveAs(str(output_path), FileFormat=_XL_OPEN_XML_WORKBOOK)
@@ -385,7 +483,9 @@ def _combine_via_com(sources: list[tuple[str, Path]], output_path: Path) -> None
         pythoncom.CoUninitialize()
 
 
-def _combine_via_openpyxl(sources: list[tuple[str, Path]], output_path: Path) -> None:
+def _combine_via_openpyxl(
+    sources: list[tuple[str, Path]], output_path: Path, theme_path: Path | None = None
+) -> None:
     """Best-effort merge with openpyxl. CapIQ links and charts do NOT survive."""
     from openpyxl import Workbook, load_workbook
 
@@ -409,6 +509,15 @@ def _combine_via_openpyxl(sources: list[tuple[str, Path]], output_path: Path) ->
     if not combined.sheetnames:
         combined.create_sheet(title="Sheet")
     _relink_cross_tab_openpyxl(combined, skill_to_tab)
+
+    # Stamp the INFOR brand theme (a fresh openpyxl Workbook carries the default
+    # Office theme, so copied cells' theme-colour refs would otherwise resolve
+    # against Office colours). Best-effort: skip silently if the theme is missing.
+    if theme_path is not None:
+        theme_xml = _extract_theme_xml(Path(theme_path))
+        if theme_xml is not None:
+            combined.loaded_theme = theme_xml
+
     combined.save(output_path)
 
 

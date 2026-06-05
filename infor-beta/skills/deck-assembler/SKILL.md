@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.9
+version: 0.5.10
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -64,7 +64,7 @@ When invoked by the conductor, read:
 - Slide 10: concise risks/mitigants + tagline.
 - Slide 11: comps takeaway; chart placeholder stays unless insertion replaces it later.
 - Slide 12: key investment highlights (filled when content supplies them).
-- Slides 13+: potential market-entry targets — the fixed 12-row comparison table (Overview / HQ / Year Founded → 7 industry metrics → Scale KPIs / Strategic Rationale), **two targets per slide**. The assembler clones the library's market-entry slide to `ceil(len(market_entry_targets) / 2)` slides, titles them `(N of M)`, writes the label column white at 11 pt and target values at 10 pt, and blanks the unused column + logo on an odd final slide. Disclaimer/contact follow.
+- Slides 13+: potential market-entry targets — the fixed 12-row comparison table (Overview / HQ / Year Founded → 7 industry metrics → Scale KPIs / Strategic Rationale), **two targets per slide**. The assembler clones the library's market-entry slide to `ceil(len(market_entry_targets) / 2)` slides, titles them `(N of M)`, writes the label column white at 11 pt and target values at 10 pt, blanks the unused column + logo on an odd final slide, and — after the cells are filled — clamps each table to a fixed **5.71"** total height (frame + proportional row heights) so long content can't run the table off the slide. Disclaimer/contact follow.
 
 ## Overflow QA (mandatory)
 

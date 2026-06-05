@@ -2,6 +2,25 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.10] — 2026-06-05
+
+Three analyst-reported fixes to the pitch / workbook pipeline.
+
+### Fixed
+- **Combined workbook keeps its INFOR theme, clean tab names, and cross-sheet links.** The workbook aggregator's COM merge was silently failing and falling back to the openpyxl backend — which starts from a blank (default-Office-theme) workbook — so the combined `pitch-<deal>.xlsx` lost the INFOR colour scheme, named the ownership tabs `ownership-Ownership` / `ownership-Bloomberg Output`, and broke the `Ownership` sheet's `='Bloomberg Output'!…` lookups (`#REF`). Root cause: the cross-workbook `Worksheet.Copy(After=…)` **named** argument is silently dropped by this Excel build, so the copy lands in a stray new workbook instead of appending — the v0.5.9 "activate before copy" change didn't address it, because activation was never the problem. Fixes (all in `scripts/workbook_aggregator.py`):
+  - The copy destination is passed **positionally** (`Copy(None, <last sheet>)`), so sheets append to the base workbook and the COM path no longer falls back.
+  - Each source's content sheets are copied **as a group** in one operation, so a source's intra-workbook cross-sheet references stay internal instead of becoming external links to the soon-deleted source — the ownership `Ownership` → `Bloomberg Output` references survive (they were `#REF` before).
+  - **Multi-sheet sources keep their original sheet names** (`Ownership`, `Bloomberg Output`) instead of the `<skill>-<sheet>` prefix; the prefix both cluttered the self-describing names and (by renaming) broke the cross-sheet references. Single-sheet sources are still named after the producing skill.
+  - The combined workbook is **stamped with the INFOR brand theme** (`templates/INFORFG.thmx`) on both backends — `ApplyTheme` under COM, `loaded_theme` under openpyxl — so it carries INFOR colours/fonts even on a blank base or the openpyxl fallback. Best-effort: a missing/invalid theme never loses the merged workbook.
+  - `Workbooks.Open` is hardened: a `None` return is only treated as success when the open count actually rose (else it raises and the caller falls back), with one short retry for transient COM / file-lock races. (`workbook-aggregator` SKILL.md updated; tab-naming test rewritten, cross-sheet-ref-preservation and theme tests added)
+- **Market-entry (acquisition-target) tables are clamped to 5.71".** After the cells are filled, each market-entry table is resized to a fixed 5.71" total — graphic-frame extent plus proportionally scaled row heights, mirroring dragging the table's resize handle in PowerPoint — so analyst content longer than the template placeholders can't run the table off the slide. Applied to every market-entry slide, after content (not before). (`scripts/pitch_deck_assembler.py`, `deck-assembler` SKILL.md; test added)
+
+### Added
+- **`templates/INFORFG.thmx`** — the INFOR brand theme, shipped so the workbook aggregator can stamp it on the combined workbook.
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.10`.
+
 ## [0.5.9] — 2026-06-05
 
 Pitch-deck and cap-table refinements requested by the analyst, plus a fix for an earnings-update regression introduced in 0.5.8.

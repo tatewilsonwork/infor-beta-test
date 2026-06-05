@@ -1,11 +1,13 @@
 """Unit tests for the workbook aggregator helper.
 
 These exercise the platform-independent pieces — filename normalization,
-Excel-safe sheet naming, and the openpyxl merge backend — so they run on
-any platform without Microsoft Excel. The COM backend is covered only on
-Windows-with-Excel runtimes and is not unit-tested here.
+Excel-safe sheet naming, theme resolution, and the openpyxl merge backend — so
+they run on any platform without Microsoft Excel. The COM backend is covered
+only on Windows-with-Excel runtimes and is not unit-tested here.
 """
 
+import re
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,9 @@ from openpyxl import Workbook, load_workbook
 
 from workbook_aggregator import (
     _combine_via_openpyxl,
+    _default_theme_path,
     _excel_safe_sheet_name,
+    _extract_theme_xml,
     _unique_sheet_name,
     combine_workbooks,
     combined_filename,
@@ -74,12 +78,29 @@ def test_single_sheet_source_tab_named_after_skill(tmp_path: Path):
     assert wb.sheetnames == ["ltm-metrics"]
 
 
-def test_multi_sheet_source_tabs_prefixed_with_skill(tmp_path: Path):
-    a = _make_workbook(tmp_path / "a.xlsx", {"Cap with Links": [["a"]], "Inputs": [["b"]]})
+def test_multi_sheet_source_keeps_original_sheet_names(tmp_path: Path):
+    # A multi-sheet source keeps its (self-describing) sheet names unprefixed —
+    # the skill prefix is only used to label a single-sheet source.
+    a = _make_workbook(tmp_path / "a.xlsx", {"Ownership": [["a"]], "Bloomberg Output": [["b"]]})
     out = tmp_path / "out.xlsx"
-    _combine_via_openpyxl([("captable", a)], out)
+    _combine_via_openpyxl([("ownership", a)], out)
     wb = load_workbook(out)
-    assert wb.sheetnames == ["captable-Cap with Links", "captable-Inputs"]
+    assert wb.sheetnames == ["Ownership", "Bloomberg Output"]
+
+
+def test_multi_sheet_source_preserves_cross_sheet_refs(tmp_path: Path):
+    # Because multi-sheet tabs keep their original names, a sheet's formula that
+    # references a sibling sheet by name stays valid (no rename -> no #REF). This
+    # is the ownership `Ownership` -> `Bloomberg Output` case in miniature.
+    a = _make_workbook(
+        tmp_path / "a.xlsx",
+        {"Ownership": [["=+'Bloomberg Output'!C14"]], "Bloomberg Output": [["x"]]},
+    )
+    out = tmp_path / "out.xlsx"
+    _combine_via_openpyxl([("ownership", a)], out)
+    wb = load_workbook(out)
+    assert "Bloomberg Output" in wb.sheetnames
+    assert wb["Ownership"]["A1"].value == "=+'Bloomberg Output'!C14"
 
 
 def test_capiq_helper_sheet_is_dropped(tmp_path: Path):
@@ -231,3 +252,60 @@ def test_relink_is_noop_without_ltm_bridge_labels(tmp_path: Path, monkeypatch):
     wb = load_workbook(out)
     assert wb["captable"]["D47"].value is None
     assert wb["captable"]["D48"].value is None
+
+
+# --- brand theme -------------------------------------------------------------
+
+_INFOR_ACCENT1 = "0E213F"  # INFOR (New) accent1 — distinguishes it from Office's 4F81BD
+
+
+def test_infor_theme_is_shipped():
+    # The aggregator stamps templates/INFORFG.thmx on the combined workbook, so
+    # the file must ship and parse to the INFOR colour scheme.
+    theme = _default_theme_path()
+    assert theme.exists(), f"shipped theme missing: {theme}"
+    xml = _extract_theme_xml(theme)
+    assert xml is not None
+    assert _INFOR_ACCENT1.encode() in xml
+
+
+def test_extract_theme_xml_returns_none_for_bad_file(tmp_path: Path):
+    bad = tmp_path / "not-a-theme.thmx"
+    bad.write_text("not a zip")
+    assert _extract_theme_xml(bad) is None
+    assert _extract_theme_xml(tmp_path / "missing.thmx") is None
+
+
+def test_combined_workbook_carries_infor_theme(tmp_path: Path, monkeypatch):
+    # End-to-end (openpyxl backend): a fresh openpyxl workbook would carry the
+    # default Office theme; the aggregator must inject the INFOR theme instead.
+    monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
+    a = _make_workbook(tmp_path / "cap.xlsx", {"Cap with Links": [["a"]]})
+    out = combine_workbooks(
+        sources={"captable": a},
+        output_dir=tmp_path,
+        deliverable_type="pitch",
+        deal_name="Atlas",
+    )
+    with zipfile.ZipFile(out) as z:
+        theme_xml = z.read("xl/theme/theme1.xml").decode("utf-8", "replace")
+    accent1 = re.search(r"<a:accent1>\s*<a:srgbClr val=\"([0-9A-Fa-f]{6})\"", theme_xml)
+    assert accent1 is not None and accent1.group(1).upper() == _INFOR_ACCENT1
+
+
+def test_theme_override_can_be_disabled(tmp_path: Path, monkeypatch):
+    # Passing a non-existent theme path leaves the default Office theme in place
+    # (no INFOR injection) — proving the stamp is driven by theme_path.
+    monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
+    a = _make_workbook(tmp_path / "cap.xlsx", {"Cap with Links": [["a"]]})
+    out = combine_workbooks(
+        sources={"captable": a},
+        output_dir=tmp_path,
+        deliverable_type="pitch",
+        deal_name="Atlas",
+        theme_path=tmp_path / "does-not-exist.thmx",
+    )
+    with zipfile.ZipFile(out) as z:
+        theme_xml = z.read("xl/theme/theme1.xml").decode("utf-8", "replace")
+    accent1 = re.search(r"<a:accent1>\s*<a:srgbClr val=\"([0-9A-Fa-f]{6})\"", theme_xml)
+    assert accent1 is not None and accent1.group(1).upper() != _INFOR_ACCENT1

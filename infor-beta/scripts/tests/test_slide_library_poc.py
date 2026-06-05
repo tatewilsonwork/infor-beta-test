@@ -6,7 +6,7 @@ import yaml
 from openpyxl import Workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.util import Pt
+from pptx.util import Inches, Pt
 from pydantic import ValidationError
 import pytest
 
@@ -471,6 +471,22 @@ def test_market_entry_expands_two_targets_per_slide(tmp_path: Path):
     tail = _all_slides_text(prs)
     assert "These materials are confidential and proprietary" in tail
     assert "Neil Selfe, Managing Principal" in tail
+
+
+def test_market_entry_tables_clamped_to_fixed_height(tmp_path: Path):
+    # After the cells are filled, every market-entry (acquisition-target) table is
+    # clamped to 5.71" so long content can't run it off the slide — the graphic
+    # frame and the row heights both land on the target.
+    deck_path = _assemble(tmp_path, _content_with_targets(8))  # 4 market-entry slides
+    prs = Presentation(deck_path)
+    target = Inches(5.71)
+    for j in range(4):
+        table_shape = next(
+            s for s in prs.slides[12 + j].shapes if getattr(s, "has_table", False)
+        )
+        assert table_shape.height == target, f"slide {12 + j} frame height not clamped"
+        row_total = sum(r.height for r in table_shape.table.rows)
+        assert row_total == target, f"slide {12 + j} row heights must sum to the target"
 
 
 def test_market_entry_table_formatting_no_blank_rows(tmp_path: Path):
