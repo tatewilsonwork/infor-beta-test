@@ -1,7 +1,7 @@
 ---
 name: pitch-content
 description: Drafts the broad typed content bundle for the 14-slide INFOR slide-library POC deck from analyst notes and optional supporting sources.
-version: 0.5.8
+version: 0.5.9
 allowed-tools:
   - Read
   - Write
@@ -36,10 +36,10 @@ Scope:
 - Executive Summary bullets: flexible count; choose main/sub-bullets.
 - Public-company overview bullets: concise description of who the company is and what it does.
 - Financial Summary metric labels: exactly four, **metric NAMES only** — e.g. `Revenue`, `Adjusted EBITDA`, `Combined Loan Balances`, `Adjusted Return on Equity`. Do **not** put the amount, currency, units, or YoY delta in the label (no `FY2025 Revenue: US$589.8MM (+31% YoY)`); the value is shown by the (placeholder) chart, not the tile. The schema rejects digits, `$`/`%`, and colons in these labels.
-- Acquirer risks/mitigants: concise rows, exactly three short mitigants each.
+- Acquirer risks/mitigants: concise rows, exactly three mitigants each. Each mitigant should be **one very short sentence** (roughly one line, up to ~160 chars) — not a terse fragment, but not a paragraph either.
 - Comps takeaway: one sentence.
 - Key investment highlights: up to 4 numbered quadrants, each a short header + 1–3 concise bullets, plus an optional one-line tagline. Optional — omit to leave the slide's placeholders.
-- Market-entry targets: optional `market_entry_market` (fills the title), `market_entry_row_labels`, and up to **8** target columns. Each target carries an optional `name` (the company name) plus `cells` that align 1:1 with the labels. Set `name` from the target's heading in the analyst notes — it labels the slide's logo box as `[<name> Logo]` (e.g. `[Kueski Logo]`) so the analyst knows which logo to drop in; omit it only when the company is unnamed (it then falls back to a generic `[Company Name Logo]`). The deck lays targets out **two per slide** (`ceil(N/2)` market-entry slides, titled `Potential <Market> Market Entry Targets (N of M)`).
+- Market-entry targets: optional `market_entry_market` (fills the title), `market_entry_row_labels`, and the target columns. **When the analyst does not specify how many acquisition targets they want, draft 8** (filling 4 slides, two targets per slide); otherwise draft the number requested, up to a maximum of **8**. Each target carries an optional `name` (the company name) plus `cells` that align 1:1 with the labels. Set `name` from the target's heading in the analyst notes — it labels the slide's logo box as `[<name> Logo]` (e.g. `[Kueski Logo]`) so the analyst knows which logo to drop in; omit it only when the company is unnamed (it then falls back to a generic `[Company Name Logo]`). The deck lays targets out **two per slide** (`ceil(N/2)` market-entry slides, titled `Potential <Market> Market Entry Targets (N of M)`).
   - `market_entry_row_labels` is a **fixed 12-row structure**, in this exact order:
     1. `Overview` — very short description of who the target is
     2. `Headquarters` — City, Country

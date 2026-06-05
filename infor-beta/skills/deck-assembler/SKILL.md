@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.8
+version: 0.5.9
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -60,11 +60,11 @@ When invoked by the conductor, read:
 - Slide 6: section divider labels.
 - Slide 7: company overview bullets; the cap table is pasted into the `Rectangle 3` placeholder when `captable_workbook_path` is supplied (`slide_index=6`, range `B15:F40`), and the `[x]$MM` footnote token is set to the cap table's output currency (`US` / `C`, read from `F5`). The LTM revenue pie stays a deferred placeholder.
 - Slide 8: financial metric **NAME** labels only; charts stay placeholders.
-- Slide 9: concise risks/mitigants + tagline.
-- Slide 10: comps takeaway; chart placeholder stays unless insertion replaces it later.
-- Slide 11: key investment highlights (filled when content supplies them).
-- Slides 12+: potential market-entry targets — the fixed 12-row comparison table (Overview / HQ / Year Founded → 7 industry metrics → Scale KPIs / Strategic Rationale), **two targets per slide**. The assembler clones the library's market-entry slide to `ceil(len(market_entry_targets) / 2)` slides, titles them `(N of M)`, writes the label column white at 11 pt and target values at 10 pt, and blanks the unused column + logo on an odd final slide.
-- Ownership slide (Canadian public targets, follows the last market-entry slide): when `ownership_workbook_path` is supplied, the left **"Insiders"** placeholder (`Rectangle 1`) is replaced by a picture of the ownership workbook's Select-Insiders block (sheet `Ownership`, range `B4:G17`, `slide_index = _MARKET_ENTRY_SLIDE_INDEX + n_market_entry`). The right **"Institutions"** side stays a Bloomberg-sourced placeholder. Disclaimer/contact follow.
+- Slide 9: ownership slide (Canadian public targets) — **follows the Financial Summary slide**. When `ownership_workbook_path` is supplied, the left **"Insiders"** placeholder (`Rectangle 1`) is replaced by a picture of the ownership workbook's Select-Insiders block (sheet `Ownership`, range `B4:G17`, fixed `slide_index = _OWNERSHIP_SLIDE_INDEX = 8`). The right **"Institutions"** side stays a Bloomberg-sourced placeholder.
+- Slide 10: concise risks/mitigants + tagline.
+- Slide 11: comps takeaway; chart placeholder stays unless insertion replaces it later.
+- Slide 12: key investment highlights (filled when content supplies them).
+- Slides 13+: potential market-entry targets — the fixed 12-row comparison table (Overview / HQ / Year Founded → 7 industry metrics → Scale KPIs / Strategic Rationale), **two targets per slide**. The assembler clones the library's market-entry slide to `ceil(len(market_entry_targets) / 2)` slides, titles them `(N of M)`, writes the label column white at 11 pt and target values at 10 pt, and blanks the unused column + logo on an odd final slide. Disclaimer/contact follow.
 
 ## Overflow QA (mandatory)
 
@@ -86,9 +86,9 @@ stage is incomplete without it:
   - Both slides — confirm no figure reads as `US,…` / `C,…` (a dropped `$` and
     digit from a regex-substitution bug upstream); every dollar figure must
     start with a plain `$`.
-- **Pitch**: render slides 2, 7, 9 (executive summary, company overview,
-  risks/mitigants), every market-entry slide (12+), and the ownership slide. On
-  slide 2 confirm the body text is the template dark colour with square/dash
+- **Pitch**: render slides 2, 7, 10 (executive summary, company overview,
+  risks/mitigants), the ownership slide (9), and every market-entry slide (13+).
+  On slide 2 confirm the body text is the template dark colour with square/dash
   bullets (not blue); on slide 7 confirm the cap-table picture landed and the
   footnote currency is correct; on the market-entry slides confirm no row label
   or value clips and no data row is blank; on the ownership slide confirm the

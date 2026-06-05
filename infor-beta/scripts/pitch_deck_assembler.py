@@ -1,10 +1,12 @@
 """Assembler for the INFOR slide-library pitch deck.
 
-The blank library is 15 slides (incl. the insider-ownership slide); the
-market-entry section grows across multiple slides — two targets per slide — by
-cloning the library's market-entry slide, so an assembled deck has
-``15 + (market_entry_slides - 1)`` slides (e.g. 8 targets → 4 market-entry
-slides → 18-slide deck, ownership/disclaimer/contact at 16/17/18).
+The blank library is 15 slides (incl. the insider-ownership slide, which
+follows the Financial Summary slide); the market-entry section grows across
+multiple slides — two targets per slide — by cloning the library's market-entry
+slide, so an assembled deck has ``15 + (market_entry_slides - 1)`` slides (e.g.
+8 targets → 4 market-entry slides → 18-slide deck). The insider-ownership slide
+sits at a fixed deck index (after Financial Summary, before the Considerations /
+Mitigants slide); disclaimer/contact remain the last two slides.
 """
 
 from __future__ import annotations
@@ -28,18 +30,18 @@ from pptx_helpers import (
 from schemas import PitchDeckContent, SlidePlan
 
 # Zero-based index of the earnings-summary entry inserted into the shared
-# 15-slide library. The pitch deck does not use it, so it is dropped on open,
-# restoring the original 14-slide ordering this assembler's indices assume.
+# 16-slide library. The pitch deck does not use it, so it is dropped on open,
+# restoring the 15-slide pitch ordering this assembler's indices assume.
 _EARNINGS_LIBRARY_SLIDE_INDEX = 7
 
-# Market-entry slide index in the raw 15-slide library (before the earnings
+# Market-entry slide index in the raw 16-slide library (before the earnings
 # slide is dropped). Market-entry slides are cloned here BEFORE the delete so
 # python-pptx allocates fresh, non-colliding slide part names.
-_LIBRARY_MARKET_ENTRY_INDEX = 12
+_LIBRARY_MARKET_ENTRY_INDEX = 13
 
-# Deck indices after the earnings slide is dropped (final 14-slide ordering).
+# Deck indices after the earnings slide is dropped (final 15-slide pitch order).
 _OVERVIEW_SLIDE_INDEX = 6          # slide 7 — public-company overview
-_MARKET_ENTRY_SLIDE_INDEX = 11     # slide 12 — first market-entry slide
+_MARKET_ENTRY_SLIDE_INDEX = 12     # slide 13 — first market-entry slide
 
 # Slide 7 cap-table placeholder; the picture covers the capitalization summary
 # plus the Financial/Valuation metric rows (same range as the earnings overview).
@@ -50,8 +52,9 @@ _CAP_TABLE_RANGE = "B15:F40"
 # Insider-ownership slide. The left "Insiders" placeholder ('Rectangle 1') is
 # replaced by a picture of the ownership workbook's Select-Insiders block; the
 # right "Institutions" side ('Rectangle 3' / 'Picture 9') stays a Bloomberg
-# placeholder. The slide follows the last market-entry slide, so its deck index
-# is _MARKET_ENTRY_SLIDE_INDEX + n_market_entry (after the earnings-slide drop).
+# placeholder. The slide follows the Financial Summary slide, so its deck index
+# is fixed (independent of the market-entry slide count) after the earnings drop.
+_OWNERSHIP_SLIDE_INDEX = 8         # slide 9 — insider ownership
 _OWNERSHIP_PLACEHOLDER = "Rectangle 1"
 _OWNERSHIP_SHEET = "Ownership"
 _OWNERSHIP_RANGE = "B4:G17"
@@ -372,10 +375,10 @@ def assemble_pitch_deck(
     for shape_name, label in zip(metric_shapes, content.financial_metric_labels, strict=True):
         set_text(find_shape(slide8, shape_name), [label])
 
-    # Slide 9 — concise acquirer risks and mitigants + tagline.
-    slide9 = prs.slides[8]
-    set_text(find_shape(slide9, "Text Placeholder 6"), [content.risks_tagline])
-    table = _table_shape(slide9).table
+    # Slide 10 — concise acquirer risks and mitigants + tagline.
+    slide10 = prs.slides[9]
+    set_text(find_shape(slide10, "Text Placeholder 6"), [content.risks_tagline])
+    table = _table_shape(slide10).table
     set_cell_text(table.cell(0, 0), "Considerations", size_pt=_RISK_HEADER_SIZE)
     set_cell_text(table.cell(0, 1), "Mitigants", size_pt=_RISK_HEADER_SIZE)
     max_rows = min(len(content.risk_mitigants), len(table.rows) - 1)
@@ -387,15 +390,15 @@ def assemble_pitch_deck(
         set_cell_text(table.cell(idx, 0), "", size_pt=_RISK_BODY_SIZE)
         set_cell_text(table.cell(idx, 1), "", size_pt=_RISK_BODY_SIZE)
 
-    # Slide 10 — comps takeaway; chart placeholder remains unless insertion later replaces it.
-    slide10 = prs.slides[9]
-    set_text(find_shape(slide10, "Text Placeholder 5"), [content.comps_takeaway])
-
-    # Slide 11 — key investment highlights; placeholders remain unless content supplies them.
+    # Slide 11 — comps takeaway; chart placeholder remains unless insertion later replaces it.
     slide11 = prs.slides[10]
-    _fill_investment_highlights(slide11, content)
+    set_text(find_shape(slide11, "Text Placeholder 5"), [content.comps_takeaway])
+
+    # Slide 12 — key investment highlights; placeholders remain unless content supplies them.
+    slide12 = prs.slides[11]
+    _fill_investment_highlights(slide12, content)
     if currency_letter is not None:
-        _fill_footnote_currency(find_shape(slide11, "Text Placeholder 13"), currency_letter)
+        _fill_footnote_currency(find_shape(slide12, "Text Placeholder 13"), currency_letter)
 
     # Slides 12+ — potential market-entry targets, two per slide. The section was
     # grown above; fill each slide with its pair and title it '(N of M)'.
@@ -431,14 +434,14 @@ def assemble_pitch_deck(
 
     # Paste the insider-ownership table into the ownership slide's left
     # "Insiders" placeholder (mirrors the cap-table insertion). The ownership
-    # slide follows the last market-entry slide; the institutional/right side is
-    # left as a Bloomberg placeholder.
+    # slide follows the Financial Summary slide at a fixed deck index; the
+    # institutional/right side is left as a Bloomberg placeholder.
     if ownership_workbook_path is not None:
         insert_excel_into_placeholder(
             deck_path=output_path,
             workbook_path=ownership_workbook_path,
             output_path=output_path,
-            slide_index=_MARKET_ENTRY_SLIDE_INDEX + n_market_entry,
+            slide_index=_OWNERSHIP_SLIDE_INDEX,
             placeholder_name=_OWNERSHIP_PLACEHOLDER,
             sheet_name=_OWNERSHIP_SHEET,
             source_range=_OWNERSHIP_RANGE,

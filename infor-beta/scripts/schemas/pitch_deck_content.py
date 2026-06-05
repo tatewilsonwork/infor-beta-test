@@ -32,7 +32,7 @@ class PitchBullet(BaseModel):
 
 
 class RiskMitigantRow(BaseModel):
-    """One acquirer risk with exactly three concise mitigants."""
+    """One acquirer risk with exactly three mitigants, each ~1 short sentence."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -45,8 +45,10 @@ class RiskMitigantRow(BaseModel):
         for value in values:
             if not value.strip():
                 raise ValueError("mitigants cannot be blank")
-            if len(value) > 90:
-                raise ValueError("mitigants must stay concise to avoid PowerPoint overflow")
+            # One very short sentence per mitigant; the cap stops paragraph-length
+            # entries from overflowing the slide-9 table cell, not short sentences.
+            if len(value) > 160:
+                raise ValueError("each mitigant must stay to ~1 short sentence (<= 160 chars) to avoid PowerPoint overflow")
         return values
 
 

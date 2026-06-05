@@ -36,6 +36,10 @@ plan_inputs:
     type: str
     required: false
     description: Optional current section label to mark dark blue on divider slide.
+  - name: market_entry_target_count
+    type: int
+    required: false
+    description: Optional number of market-entry (acquisition) targets. When the analyst does not specify a count, the plugin defaults to 8 (4 slides, two targets per slide).
   - name: cim_path
     type: Path
     required: false
@@ -61,6 +65,7 @@ stages:
       client_name: $plan_inputs.client_name
       section_labels: $plan_inputs.section_labels
       current_section: $plan_inputs.current_section
+      market_entry_target_count: $plan_inputs.market_entry_target_count
     outputs:
       - name: slide_plan_path
         type: Path

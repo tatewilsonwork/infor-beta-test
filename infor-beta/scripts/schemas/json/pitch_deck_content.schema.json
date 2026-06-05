@@ -111,7 +111,7 @@
     },
     "RiskMitigantRow": {
       "additionalProperties": false,
-      "description": "One acquirer risk with exactly three concise mitigants.",
+      "description": "One acquirer risk with exactly three mitigants, each ~1 short sentence.",
       "properties": {
         "mitigants": {
           "items": {

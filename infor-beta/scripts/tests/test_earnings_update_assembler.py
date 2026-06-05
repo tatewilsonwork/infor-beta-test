@@ -135,6 +135,27 @@ def test_assemble_earnings_update_deck_clones_five_library_slides(tmp_path: Path
     for token in ("[Company]", "[Quarter]", "[Date]", "[Name]", "[Role]"):
         assert token not in overview_text + summary_text
 
+    # Regression guard: the v0.5.8 ownership-slide insertion shifted the library's
+    # disclaimer/contact closers, and the pre-0.5.9 keep-indices (0,6,7,13,14)
+    # dropped the Contact slide and kept a stray Ownership slide. The earnings deck
+    # must end cover → overview → earnings summary → disclaimer → contact.
+    def _deep_text(slide) -> str:
+        parts: list[str] = []
+
+        def walk(shapes):
+            for sh in shapes:
+                if getattr(sh, "has_text_frame", False):
+                    parts.append(sh.text)
+                if sh.shape_type == MSO_SHAPE_TYPE.GROUP:
+                    walk(sh.shapes)
+
+        walk(slide.shapes)
+        return "\n".join(parts)
+
+    all_text = "\n".join(_deep_text(s) for s in prs.slides)
+    assert "Contact" in _deep_text(prs.slides[4]), "Contact must be the last slide (dropped pre-0.5.9)"
+    assert "[Placeholder for Insider Ownership]" not in all_text, "no stray Ownership slide in the earnings deck"
+
 
 def test_period_label_lives_in_bar_not_metric_boxes(tmp_path: Path):
     deck_path = _assemble_sample_deck(tmp_path)

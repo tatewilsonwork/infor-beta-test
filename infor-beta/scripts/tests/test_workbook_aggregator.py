@@ -169,3 +169,65 @@ def test_combine_raises_when_no_valid_sources(tmp_path: Path, monkeypatch):
             deliverable_type="pitch",
             deal_name="Atlas",
         )
+
+
+# --- cross-tab relink --------------------------------------------------------
+
+
+def test_relink_wires_cross_tab_formulas(tmp_path: Path, monkeypatch):
+    """In the combined workbook, the cap table's LTM cells link to the ltm-metrics
+    bridge totals (found by label, since their rows are dynamic) and the ownership
+    denominator links to the cap table's basic shares (millions -> full units)."""
+    monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
+    cap = _make_workbook(tmp_path / "cap.xlsx", {"Cap with Links": [["cap"]]})
+    ltm = _make_workbook(
+        tmp_path / "ltm.xlsx",
+        {
+            "LTM Metrics": [
+                ["LTM Revenue Overview", None],
+                ["Segment A", 100],
+                ["Total", 100],
+                [None, None],
+                ["LTM Revenue Bridge", None],
+                ["Component", "Amount"],
+                ["(+) FY", 90],
+                ["(+) YTD", 30],
+                ["(−) Prior YTD", 20],
+                ["(=) LTM Revenue", "=B7+B8-B9"],      # row 10
+                [None, None],
+                ["LTM Adj. EBITDA Bridge", None],
+                ["Component", "Amount"],
+                ["(+) FY EBITDA", 40],
+                ["(=) LTM Adj. EBITDA", "=B14"],        # row 15
+            ]
+        },
+    )
+    own = _make_workbook(tmp_path / "own.xlsx", {"Ownership": [["own"]]})
+
+    out = combine_workbooks(
+        sources={"captable": cap, "ltm-metrics": ltm, "ownership": own},
+        output_dir=tmp_path,
+        deliverable_type="pitch",
+        deal_name="Atlas",
+    )
+    wb = load_workbook(out)
+    assert wb["captable"]["D47"].value == "='ltm-metrics'!B10*F7"
+    assert wb["captable"]["D48"].value == "='ltm-metrics'!B15*F7"
+    assert wb["ownership"]["F35"].value == "='captable'!F17*1000000"
+
+
+def test_relink_is_noop_without_ltm_bridge_labels(tmp_path: Path, monkeypatch):
+    # No "(=) LTM ..." labels in the ltm tab -> the cap table's D47/D48 are left
+    # alone (the captable skill's own scalar/CapIQ values stand).
+    monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
+    cap = _make_workbook(tmp_path / "cap.xlsx", {"Cap with Links": [["cap"]]})
+    ltm = _make_workbook(tmp_path / "ltm.xlsx", {"LTM Metrics": [["Total", 100]]})
+    out = combine_workbooks(
+        sources={"captable": cap, "ltm-metrics": ltm},
+        output_dir=tmp_path,
+        deliverable_type="pitch",
+        deal_name="Atlas",
+    )
+    wb = load_workbook(out)
+    assert wb["captable"]["D47"].value is None
+    assert wb["captable"]["D48"].value is None

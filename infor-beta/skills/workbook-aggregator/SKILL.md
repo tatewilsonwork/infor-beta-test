@@ -8,7 +8,7 @@ description: >
   pitch-Project Atlas.xlsx. Activates as the plan stage `workbook-aggregation`. Preserves formulas,
   CapIQ links, charts, and formatting via Excel COM on Windows; falls back to a best-effort openpyxl
   merge off-Windows. The individual source workbooks are replaced by the combined file.
-version: 0.5.8
+version: 0.5.9
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -40,6 +40,17 @@ The combined workbook is `<deliverable>-<deal name>.xlsx`, where the deliverable
 
 - `earningsupdate-Project Atlas.xlsx`
 - `pitch-Project Atlas.xlsx`
+
+## Merge base + cross-tab links
+
+When a `captable` workbook is among the sources, the COM backend opens **it** as the base workbook (and saves it as the combined file), then copies the other skills' sheets in after it. This preserves the cap table's theme, CapIQ links, and formatting — the previous blank-base merge shifted colours and could drop CapIQ links, which made the combined file hard to format and link. (Without a cap table, a blank base is used, as before.)
+
+Once every workbook is one file, a **relink** pass rewrites the skills' standalone scalar handoffs into live cross-tab formulas, so the analyst's combined workbook stays internally linked:
+
+- Cap table `D47` / `D48` (LTM Revenue / Adj. EBITDA) → `='ltm-metrics'!B<row>*F7`, where `<row>` is found by the `(=) LTM Revenue` / `(=) LTM Adj. EBITDA` bridge-total label (the bridge rows are dynamic). Units already match (millions); `*F7` keeps the existing FX conversion.
+- Ownership `F35` (% denominator) → `='captable'!F17*1000000` (the cap table is in millions; ownership share counts are full units).
+
+The relink is best-effort and only fires when the relevant tabs are present; it is a no-op otherwise. On the openpyxl fallback the formulas are still written, but CapIQ links are already lost on that path.
 
 ## Workflow
 

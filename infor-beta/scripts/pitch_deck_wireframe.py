@@ -62,19 +62,21 @@ def build_pitch_deck_slide_plan(
 ) -> SlidePlan:
     """Return the canonical pitch plan for the slide-library deck.
 
-    The blank library is 15 slides (incl. the insider-ownership slide). The
-    market-entry section expands to ``ceil(market_entry_target_count / 2)``
-    slides (two targets per slide). When
-    the count is unknown at wireframe time — the live pipeline drafts targets
-    later, in pitch-content — it defaults to a single market-entry slide; the
-    deck-assembler clones to the true count from the content bundle regardless.
+    The blank library is 15 slides (incl. the insider-ownership slide, which
+    follows Financial Summary). The market-entry section expands to
+    ``ceil(market_entry_target_count / 2)`` slides (two targets per slide). When
+    the count is unspecified — the analyst didn't ask for a particular number —
+    it **defaults to 8 targets (4 market-entry slides)**, the standard pitch
+    layout; the deck-assembler still clones to the true count from the content
+    bundle regardless.
     """
     name = _company_name(company)
     labels = section_labels or ["Overview", "Financial Summary", "Valuation", "Process"]
     current = current_section or labels[0]
-    n_market_entry = (
-        max(1, math.ceil(market_entry_target_count / 2)) if market_entry_target_count else 1
-    )
+    # Default to 8 market-entry targets (4 slides, two per slide) when the analyst
+    # doesn't specify a count.
+    target_count = market_entry_target_count if market_entry_target_count else 8
+    n_market_entry = max(1, math.ceil(target_count / 2))
 
     slides: list[SlideEntry] = []
     order = 0
@@ -110,11 +112,11 @@ def _section_for(entry_id: str) -> str:
         return "Executive Summary"
     if entry_id.startswith("infor-"):
         return "INFOR Credentials"
-    if entry_id in {"section-divider", "public-company-overview", "financial-summary"}:
+    if entry_id in {"section-divider", "public-company-overview", "financial-summary", "insider-ownership"}:
         return "Overview"
     if entry_id in {"acquirer-considerations-mitigants", "comparable-companies"}:
         return "Valuation"
-    if entry_id in {"key-investment-highlights", "market-entry-targets", "insider-ownership"}:
+    if entry_id in {"key-investment-highlights", "market-entry-targets"}:
         return "Appendix"
     return "Appendix"
 
