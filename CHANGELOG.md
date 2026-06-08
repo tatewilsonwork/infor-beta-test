@@ -2,6 +2,23 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.11] — 2026-06-08
+
+Adds the public-comparables (trading comps) skill to the pitch pipeline.
+
+### Added
+- **`comps` skill + `scripts/comps_workbook.py`.** Builds the INFOR public-comparables table: finds three verticals (peer groups) relevant to the target and, per vertical, writes six public companies as Capital IQ `Exchange:Ticker` identifiers (`B10:B15` / `B20:B25` / `B30:B35`), the vertical label (`D9` / `D19` / `D29`), and a ≤50-char description each (`AA10:AA15` / `AA20:AA25` / `AA30:AA35`). Every market-data / multiple / statistic column is a Capital IQ array formula keyed off column B, so the skill writes only the inputs CapIQ can't supply and leaves the formulas **un-evaluated** — this environment has no CapIQ connector, so the analyst opens the workbook in Excel with the add-in active and refreshes. Activates on `/comps` and as the pitch plan `comps` stage. The ticker format and peer-selection rules carry over from the production `infor-workflows` `comps-infor` skill. (`infor-beta/skills/comps/SKILL.md`, `scripts/comps_workbook.py`; tests added)
+- **`templates/INFOR Comps Template.xlsx`.** The analyst's comps template, shipped so `comps` can clone it. Unlike the ownership template it round-trips cleanly through openpyxl (CapIQ array formulas preserved, output stays openable in Excel and re-openable via Excel COM for the aggregator), so it ships as-is — no defined-name / external-link pre-cleaning needed.
+
+### Changed
+- **Pitch plan runs `comps`.** A new `comps` stage runs after `ownership` and before `deck`; the `deck` and `workbook-aggregation` stages now consume `$stages.comps.workbook_path` instead of the manual `comps_workbook_path` plan input, which is removed. The comps workbook folds into the combined `pitch-<deal>.xlsx` as the `comps` tab (the CapIQ `__snloffice` helper sheet is dropped automatically). The deck's comps slide stays a placeholder — no Excel→PowerPoint step while Capital IQ can't be refreshed here. (`infor-beta/plans/pitch.yaml`)
+
+### Fixed
+- **Template resolution no longer breaks on Windows.** `scripts/find_template.sh` printed an absolute path via `pwd`, which under Git Bash is a MinGW path (`/c/Users/…`). Captured as a string in Python (no shell arg-conversion), `pathlib` mis-resolved it to a drive-relative `\c\Users\…` and the builder raised `FileNotFoundError`. The helper now emits a **native** path — `pwd -W` on Windows/Git Bash (`C:/Users/…`), falling back to `pwd` on macOS/Linux (`/Users/…`) — which both `cp` and `pathlib` consume everywhere. The `ownership` skill, which fed the helper's output straight into `build_ownership_workbook(template_path=…)`, now resolves the template **in Python** via `CLAUDE_PLUGIN_ROOT / "templates" / …` (matching `deck-assembler` / `comps`), removing the fragile bash→Python handoff. `captable` was not affected — it copies the template with bash `cp` and opens the relative output copy, so the MinGW path never reached Python; the helper hardening makes its path native regardless. (`scripts/find_template.sh`, `ownership` SKILL.md; regression test added to `test_shell_helpers.py`)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.11`.
+
 ## [0.5.10] — 2026-06-05
 
 Three analyst-reported fixes to the pitch / workbook pipeline.

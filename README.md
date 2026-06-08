@@ -2,7 +2,7 @@
 
 INFOR Financial Group's next-generation analyst workflow platform — a Claude Code plugin that orchestrates investment-banking deliverables (earnings updates, pitches, and — soon — overview decks) through a conductor meta-skill, specialised sub-skills, a typed I/O contract, and a shared slide library.
 
-**Status: Phase 3 (proof-of-concept), plugin v0.5.10.** The conductor, the decomposed earnings-update plan, and the 15-slide pitch slide-library plan (including the insider-ownership slide) all run end-to-end. The production plugin today is still the existing `infor-workflows` repo; this repo is a clean-break rebuild and will supersede it when ready.
+**Status: Phase 3 (proof-of-concept), plugin v0.5.11.** The conductor, the decomposed earnings-update plan, and the 15-slide pitch slide-library plan (including the insider-ownership slide and a public-comparables companion workbook) all run end-to-end. The production plugin today is still the existing `infor-workflows` repo; this repo is a clean-break rebuild and will supersede it when ready.
 
 ## Vision
 
@@ -39,9 +39,9 @@ The conductor runs one plan per deliverable, resolved as `plans/<deliverable>.ya
 
 ## Skills
 
-**Implemented:** `conductor`, `earningsupdate-wireframe`, `earningsupdate-content`, `pitch-wireframe`, `pitch-content`, `captable`, `ltm-metrics`, `excel-to-powerpoint`, `deck-assembler`, `workbook-aggregator`.
+**Implemented:** `conductor`, `earningsupdate-wireframe`, `earningsupdate-content`, `pitch-wireframe`, `pitch-content`, `captable`, `ltm-metrics`, `comps`, `ownership`, `excel-to-powerpoint`, `deck-assembler`, `workbook-aggregator`.
 
-**Roadmap (not yet built):** `comps`, `precedents`, `buyerslist`, `lbo-model`, `deck-writing`, `deckcheck` (QA), `brand-guidelines` (library), `valuation` (football field), company / industry profiles.
+**Roadmap (not yet built):** `precedents`, `buyerslist`, `lbo-model`, `deck-writing`, `deckcheck` (QA), `brand-guidelines` (library), `valuation` (football field), company / industry profiles.
 
 **Removed from scope:** management presentations, diligence support, research pipelines.
 

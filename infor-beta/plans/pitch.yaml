@@ -52,10 +52,6 @@ plan_inputs:
     type: str
     required: false
     description: Optional analyst risk notes to steer acquirer risks and mitigants.
-  - name: comps_workbook_path
-    type: Path
-    required: false
-    description: Optional existing comps workbook/chart artefact for insertion.
 
 stages:
   - id: wireframe
@@ -143,6 +139,23 @@ stages:
         description: Absolute path to the ownership companion .xlsx (Select-Insiders block + F35); null when the target is not a Canadian issuer or no SEDI PDF was attached.
     checkpoint: informational
 
+  # Public comparables (trading comps). Independent of the ltm/captable/ownership
+  # chain — it only needs the target's facts to pick the three verticals and
+  # their public peers — so it runs after `ownership`, before `deck`. Capital IQ
+  # cannot be refreshed in this environment, so the workbook ships with its CapIQ
+  # array formulas un-evaluated (the analyst refreshes them in Excel) and the
+  # deck's comps slide stays a placeholder.
+  - id: comps
+    skill: comps
+    inputs:
+      company: $deal.subject_company
+      ticker: $deal.subject_company.ticker
+    outputs:
+      - name: workbook_path
+        type: Path
+        description: Absolute path to the companion comps .xlsx (3 verticals × 6 CapIQ tickers + descriptions; metric columns are CapIQ array formulas, un-evaluated until refreshed).
+    checkpoint: informational
+
   - id: deck
     skill: deck-assembler
     inputs:
@@ -150,7 +163,7 @@ stages:
       content_bundle_path: $stages.content.content_bundle_path
       captable_workbook_path: $stages.captable.workbook_path
       ownership_workbook_path: $stages.ownership.workbook_path
-      comps_workbook_path: $plan_inputs.comps_workbook_path
+      comps_workbook_path: $stages.comps.workbook_path
       template_name: INFOR Slide Library.pptx
       output_dir: $deal.deal_dir
     outputs:
@@ -162,8 +175,9 @@ stages:
   # Final consolidation: merge every companion workbook into one file named
   # pitch-<codename>.xlsx (one tab per producing skill) and delete the
   # individual sources. Runs last so the deck stage can still read the
-  # standalone cap-table workbook before it is folded in. The optional comps
-  # workbook is included when supplied; the aggregator skips it when absent.
+  # standalone cap-table workbook before it is folded in. The comps workbook
+  # joins as the `comps` tab (its CapIQ helper sheet is dropped automatically);
+  # the aggregator skips any source whose path is null/missing.
   - id: workbook-aggregation
     skill: workbook-aggregator
     inputs:
@@ -171,7 +185,7 @@ stages:
         captable: $stages.captable.workbook_path
         ltm-metrics: $stages.ltm-metrics.workbook_path
         ownership: $stages.ownership.workbook_path
-        comps: $plan_inputs.comps_workbook_path
+        comps: $stages.comps.workbook_path
       deliverable_type: $deal.deliverable_type
       deal_name: $deal.codename
       output_dir: $deal.deal_dir

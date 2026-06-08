@@ -35,8 +35,13 @@ CANDIDATES+=(
 
 for dir in "${CANDIDATES[@]}"; do
   if [ -f "$dir/$TEMPLATE_NAME" ]; then
-    # Resolve to absolute path for downstream cp robustness.
-    (cd "$dir" && printf '%s/%s\n' "$(pwd)" "$TEMPLATE_NAME")
+    # Resolve to an absolute path. On Windows/Git Bash use `pwd -W` so the path is
+    # native (`C:/Users/...`) rather than MinGW (`/c/Users/...`): a MinGW path fed
+    # to Python's pathlib mis-resolves to a drive-relative `\c\Users\...` and the
+    # file isn't found. `pwd -W` is unsupported on macOS/Linux, where it errors and
+    # the `|| pwd` fallback yields the already-native `/Users/...` form. Forward
+    # slashes are accepted by both `cp` and pathlib on every platform.
+    (cd "$dir" && printf '%s/%s\n' "$(pwd -W 2>/dev/null || pwd)" "$TEMPLATE_NAME")
     exit 0
   fi
 done

@@ -67,6 +67,37 @@ class TestFindTemplate(unittest.TestCase):
             is_absolute = returned.startswith("/") or (len(returned) > 1 and returned[1] == ":")
             self.assertTrue(is_absolute, f"expected an absolute path, got {returned!r}")
 
+    def test_returned_path_is_consumable_by_pathlib(self):
+        """The returned path must resolve via Python's pathlib on the SAME
+        platform — i.e. a string captured from stdout (no shell arg-conversion)
+        must point at the real file. On Windows/Git Bash the helper uses `pwd -W`
+        so it emits a native `C:/...` path; the un-hardened `/c/...` form
+        mis-resolved to a drive-relative `\\c\\...` and `is_file()` was False. This
+        guards exactly that regression — the path that `ownership` / `captable`
+        feed to their builders."""
+        with tempfile.TemporaryDirectory() as tmp:
+            plugin_root = Path(tmp)
+            (plugin_root / "templates").mkdir()
+            fake = plugin_root / "templates" / "INFOR Comps Template.xlsx"
+            fake.write_bytes(b"")
+
+            result = _run(
+                FIND_TEMPLATE,
+                "INFOR Comps Template.xlsx",
+                env={"CLAUDE_PLUGIN_ROOT": str(plugin_root)},
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            returned = result.stdout.strip()
+            # Must NOT be a MinGW `/c/...` path (pathlib mis-reads it on Windows).
+            self.assertFalse(
+                returned[:3].lower() == "/c/",
+                f"helper emitted a MinGW path pathlib can't consume: {returned!r}",
+            )
+            self.assertTrue(
+                Path(returned).is_file(),
+                f"returned path is not consumable by pathlib: {returned!r}",
+            )
+
     def test_missing_template_exits_nonzero(self):
         result = _run(FIND_TEMPLATE, "Nonexistent Template.xlsx")
         self.assertNotEqual(result.returncode, 0)
