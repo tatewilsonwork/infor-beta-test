@@ -282,6 +282,7 @@ def test_pitch_library_poc_plan_stage_order():
         "ltm-metrics",
         "captable",
         "ownership",
+        "comps",
         "deck",
         "workbook-aggregation",
     ]
@@ -290,24 +291,31 @@ def test_pitch_library_poc_plan_stage_order():
     assert plan.stages[2].skill == "ltm-metrics"
     assert plan.stages[3].skill == "captable"
     assert plan.stages[4].skill == "ownership"
-    assert plan.stages[5].skill == "deck-assembler"
-    assert plan.stages[6].skill == "workbook-aggregator"
+    assert plan.stages[5].skill == "comps"
+    assert plan.stages[6].skill == "deck-assembler"
+    assert plan.stages[7].skill == "workbook-aggregator"
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
     assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
     assert deck_stage.inputs["ownership_workbook_path"] == "$stages.ownership.workbook_path"
+    assert deck_stage.inputs["comps_workbook_path"] == "$stages.comps.workbook_path"
     # Ownership runs after captable so F35 can be sourced from the cap table's basic shares.
     ownership_stage = next(s for s in plan.stages if s.id == "ownership")
     assert ownership_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
+    # Comps only needs the target's facts; it generates its own companion workbook.
+    comps_stage = next(s for s in plan.stages if s.id == "comps")
+    assert comps_stage.inputs["company"] == "$deal.subject_company"
+    assert [o.name for o in comps_stage.outputs] == ["workbook_path"]
     # LTM metrics feed the cap table's LTM valuation column (mirrors earnings update).
     captable_stage = next(s for s in plan.stages if s.id == "captable")
     assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
-    # The LTM and ownership workbooks are folded into the combined pitch workbook.
+    # The LTM, ownership and comps workbooks are folded into the combined pitch workbook.
     agg_stage = next(s for s in plan.stages if s.id == "workbook-aggregation")
     assert agg_stage.inputs["workbooks"]["ltm-metrics"] == "$stages.ltm-metrics.workbook_path"
     assert agg_stage.inputs["workbooks"]["ownership"] == "$stages.ownership.workbook_path"
+    assert agg_stage.inputs["workbooks"]["comps"] == "$stages.comps.workbook_path"
 
 
 # ─── Helpers for the post-review fixes ───────────────────────────────────────

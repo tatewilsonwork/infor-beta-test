@@ -8,7 +8,7 @@ description: >
   pitch-Project Atlas.xlsx. Activates as the plan stage `workbook-aggregation`. Preserves formulas,
   CapIQ links, charts, and formatting via Excel COM on Windows; falls back to a best-effort openpyxl
   merge off-Windows. The individual source workbooks are replaced by the combined file.
-version: 0.5.10
+version: 0.5.11
 allowed-tools: [Read, Write, Bash]
 ---
 

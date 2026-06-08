@@ -5,7 +5,7 @@ description: >
   "Insider Information by Issuer" report. Activates on /ownership and as the pitch plan `ownership`
   stage. Parses the analyst-attached SEDI PDF, keeps only current insiders, sums each one's common
   shares, looks up roles, and writes the INFOR ownership workbook (companion to the ownership slide).
-version: 0.5.10
+version: 0.5.11
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -67,11 +67,17 @@ analyst the ownership slide does not apply for direct invocation).
 You need the analyst-downloaded **"Insider Information by Issuer – View Results"** PDF for this
 issuer. If it is not attached, ask for it (cite the manual download path in the note above) and wait.
 
-### Step 3 — Locate and copy the template
+### Step 3 — Locate the template and set the output path
+
+The template is resolved **in Python** in Step 9 as
+`Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta")) / "templates" / "INFOR Ownership Template.xlsx"`
+— the same primary location `find_template.sh` searches. (Resolving it in Python, rather than via
+`TEMPLATE=$(bash find_template.sh …)`, avoids the Git-Bash `/c/…` path that `pathlib` mis-reads on
+Windows; this matches the `deck-assembler` / `comps` skills.) Set the sanitized ticker for the
+output filename:
 
 ```bash
 SANITIZED_TICKER=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/sanitize_name.sh" "$TICKER")
-TEMPLATE=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/find_template.sh" "INFOR Ownership Template.xlsx")
 OUTPUT="./$SANITIZED_TICKER - Ownership.xlsx"   # or $DEAL_DIR/artefacts/... under the conductor
 ```
 
@@ -126,8 +132,13 @@ F35 comes from the cap table, this stage must run **after** `captable`.
 
 ```python
 import os, sys
-sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
+from pathlib import Path
+
+plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
+sys.path.insert(0, str(plugin_root / "scripts"))
 from ownership_workbook import build_ownership_workbook, InsiderHolding
+
+template = plugin_root / "templates" / "INFOR Ownership Template.xlsx"   # native path (no /c/… )
 
 insiders = [
     InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),
@@ -135,7 +146,7 @@ insiders = [
     # ... one InsiderHolding per current insider ...
 ]
 build_ownership_workbook(
-    template_path=TEMPLATE,
+    template_path=template,
     insiders=insiders,
     total_shares_outstanding=total,   # full units, or None
     output_path=OUTPUT,
