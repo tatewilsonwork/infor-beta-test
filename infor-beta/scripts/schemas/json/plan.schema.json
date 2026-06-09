@@ -159,7 +159,7 @@
       "type": "array"
     },
     "stages": {
-      "description": "Stages, in execution order. Phase 2 executes them sequentially.",
+      "description": "Stages in declaration order. The conductor derives a concurrent wave schedule from their `$stages.*` references (plan_schedule.compute_waves) rather than running them strictly top-to-bottom; declaration order only breaks ties within a wave.",
       "items": {
         "$ref": "#/$defs/Stage"
       },

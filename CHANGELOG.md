@@ -2,6 +2,19 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.13] — 2026-06-09
+
+The conductor now runs independent stages in parallel.
+
+### Added
+- **`scripts/plan_schedule.py` (`compute_waves` / `stage_dependencies`).** Derives the plan's dependency DAG from the `$stages.<id>.<name>` references already present in each stage's inputs (walking nested dicts/lists, so the aggregator's `workbooks:` map is covered) and topologically sorts the stages into ordered **waves** of mutually-independent stages. The `workbook-aggregator` stage is forced to depend on *every* other stage — a hardcoded final-barrier rule, because it merges and **deletes** the individual companion workbooks and the deck-assembler reads one of them (the standalone cap table) before it is folded in; that ordering is a filesystem side-effect, not a value reference, so it is invisible to the auto-derived data edges. No `depends_on` field is added to the schema — the references *are* the DAG. Cycles raise `PlanCycleError`. (`scripts/plan_schedule.py`; `scripts/tests/test_plan_schedule.py` added — asserts the wave structure of both shipped plans plus barrier / cycle / nested-reference / unknown-reference edge cases)
+
+### Changed
+- **Conductor dispatches stages wave-by-wave instead of one at a time.** Step 6 now calls `compute_waves(plan)` and issues one `Task` (Agent) call per stage in a wave **in a single message** so they run concurrently, waits at the wave boundary, then collects each stage's outputs / log / checkpoint before starting the next wave. The pitch plan collapses from 9 sequential stages to **5 waves** — wave 1 overlaps the four research-heavy roots `wireframe` / `ltm-metrics` / `comps` / `precedents` — and earnings-update goes from 6 stages to **4 waves**. `required` checkpoints are now evaluated at the wave boundary, with a documented caveat: a `required` gate stops *downstream* waves, not its own wave-mates (every shipped plan uses `informational`, so behaviour is unchanged). This supersedes the v1 "sequential, no parallel" decision (Obsidian note 12 H1) per analyst direction. (`infor-beta/skills/conductor/SKILL.md`, `references/plan-schema.md`, `scripts/schemas/plan.py` docstrings; `CLAUDE.md` phase status + helper-import list)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.13`.
+
 ## [0.5.12] — 2026-06-09
 
 Adds the precedent-transactions skill to the pitch pipeline.
