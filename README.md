@@ -34,12 +34,12 @@ The full design lives in Obsidian at `Hermes-L1/INFOR Platform Architecture/`. N
 The conductor runs one plan per deliverable, resolved as `plans/<deliverable>.yaml`:
 
 - **`earnings-update.yaml`** — decomposed quarterly earnings update: `wireframe → content → ltm-metrics → captable → deck → workbook-aggregation`. Clones the shared slide library and emits a companion cap table.
-- **`pitch.yaml`** — the 14-slide INFOR Slide Library pitch deck: `wireframe → content → captable → deck → workbook-aggregation`.
+- **`pitch.yaml`** — the 15-slide INFOR Slide Library pitch deck: `wireframe → content → ltm-metrics → captable → ownership → comps → deck → workbook-aggregation`. Clones the shared library; emits companion cap-table, LTM-metrics, ownership (Canadian targets), and comps workbooks.
 - **`overview.yaml`** — stub; the overview deck is registered as a deliverable but not yet implemented.
 
 ## Skills
 
-**Implemented:** `conductor`, `earningsupdate-wireframe`, `earningsupdate-content`, `pitch-wireframe`, `pitch-content`, `captable`, `ltm-metrics`, `comps`, `ownership`, `excel-to-powerpoint`, `deck-assembler`, `workbook-aggregator`.
+**Implemented:** `conductor`, `earningsupdate-wireframe`, `earningsupdate-content`, `pitch-wireframe`, `pitch-content`, `captable`, `ltm-metrics`, `comps`, `ownership`, `deck-assembler`, `workbook-aggregator`.
 
 **Roadmap (not yet built):** `precedents`, `buyerslist`, `lbo-model`, `deck-writing`, `deckcheck` (QA), `brand-guidelines` (library), `valuation` (football field), company / industry profiles.
 

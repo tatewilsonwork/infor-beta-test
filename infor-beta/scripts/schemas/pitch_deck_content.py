@@ -1,4 +1,4 @@
-"""Typed content handoff for the 14-slide INFOR slide-library POC deck."""
+"""Typed content handoff for the 15-slide INFOR slide-library POC deck."""
 
 from __future__ import annotations
 

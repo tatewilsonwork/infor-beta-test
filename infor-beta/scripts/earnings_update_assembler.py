@@ -13,20 +13,23 @@ import re
 from pathlib import Path
 
 from pptx import Presentation
-from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu, Inches, Pt
 
 from excel_to_powerpoint import insert_excel_into_placeholder
+from naming import safe_filename
 from pptx_helpers import (
     COLOR_DOWN,
     COLOR_UP,
     delete_slide,
     enable_normal_autofit,
+    fill_footnote_token,
     find_shape,
     find_shape_in_group,
+    find_table_shape,
+    iter_all_shapes,
     set_cell_text,
     set_text,
-    write_bulleted_shape,
+    write_bullets_or_plain,
 )
 from schemas import EarningsUpdateContent, SlidePlan
 
@@ -42,12 +45,6 @@ _KEEP_LIBRARY_INDICES = (0, 6, 7, 14, 15)
 # Earnings-summary slide cap-table placeholder (library slide 7 / deck index 1).
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
 _CAP_TABLE_RANGE = "B15:F40"
-
-
-def _safe_name(value: str) -> str:
-    safe = re.sub(r"[/\\:*?\"<>|]+", "-", value).strip()
-    safe = re.sub(r"\s+", " ", safe)
-    return safe or "Company"
 
 
 def _bullet_tuple(bullet) -> tuple[str, int]:
@@ -107,26 +104,20 @@ def _currency_letter(currency: str) -> str:
 
 
 def _fill_footnote(shape, currency: str) -> None:
-    """Substitute the '[x]$MM' currency-letter token in the library footnote.
+    """Swap the '[x]$MM' currency-letter token in the library footnote.
 
-    The shared library footnote ships a standardized source line plus a
-    'Note: All figures in [x]$MM, ...' line, where '[x]' is the currency
-    letter. We preserve the library copy verbatim and only swap '[x]' for
-    the deal's currency letter, rather than re-hardcoding the source string.
+    Derives the currency letter from the deck's currency scope, then defers the
+    in-place token swap to the shared `fill_footnote_token` helper so the rest of
+    the standardized source/note lines are preserved verbatim.
     """
-    letter = _currency_letter(currency)
-    lines = [p.text.replace("[x]", letter) for p in shape.text_frame.paragraphs]
-    set_text(shape, lines)
+    fill_footnote_token(shape, _currency_letter(currency))
 
 
 def _write_flexible_bullets(shape, bullets, items=None) -> None:
-    """Write bullets, falling back to plain paragraphs if the shape lacks a glyph template."""
+    """Write bullets (with shrink-on-overflow autofit), falling back to plain
+    paragraphs if the shape lacks a glyph template."""
     tuples = items if items is not None else [_bullet_tuple(b) for b in bullets]
-    try:
-        write_bulleted_shape(shape, tuples)
-    except RuntimeError:
-        set_text(shape, [t[0] for t in tuples])
-    enable_normal_autofit(shape)
+    write_bullets_or_plain(shape, tuples, autofit=True)
 
 
 # Empirical layout constants for the overview bullets (Palatino ~10.5 pt, the
@@ -198,13 +189,6 @@ def _set_metric_box(box, value_str: str, name: str) -> None:
             run.font.size = Pt(size)
 
 
-def _table_shape(slide):
-    for shape in slide.shapes:
-        if getattr(shape, "has_table", False):
-            return shape
-    raise KeyError("broker table not found on earnings summary slide")
-
-
 def _set_cover(slide, content: EarningsUpdateContent) -> None:
     title = find_shape(slide, "Title 1")
     set_text(title, [content.company_name, f"{content.reporting_quarter} Earnings Update"])
@@ -266,7 +250,7 @@ def _set_earnings_summary(slide, content: EarningsUpdateContent) -> None:
         set_text(find_shape_in_group(group, var_box), [kpi.delta_str], size_pt=10, color_hex=color)
 
     # Broker estimates vs actuals — $ on reported / estimate / variance.
-    tbl = _table_shape(slide).table
+    tbl = find_table_shape(slide).table
     set_cell_text(tbl.cell(0, 0), f"Figures in {content.currency_short}", size_pt=9)
     set_cell_text(tbl.cell(0, 1), "Reported", size_pt=9)
     set_cell_text(tbl.cell(0, 2), "Bloomberg Estimate", size_pt=9)
@@ -311,7 +295,7 @@ def assemble_earnings_update_deck(
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    output_path = out_dir / f"Earnings Update - {_safe_name(content.company_name)}.pptx"
+    output_path = out_dir / f"Earnings Update - {safe_filename(content.company_name, default='Company')}.pptx"
 
     prs = Presentation(template)
 
@@ -346,7 +330,7 @@ def assemble_earnings_update_deck(
 
 def _slide_text(slide) -> str:
     parts: list[str] = []
-    for shape in _iter_all_shapes(slide.shapes):
+    for shape in iter_all_shapes(slide.shapes):
         if getattr(shape, "has_text_frame", False):
             parts.append(shape.text)
         if getattr(shape, "has_table", False):
@@ -354,13 +338,6 @@ def _slide_text(slide) -> str:
                 for cell in row.cells:
                     parts.append(cell.text)
     return "\n".join(parts)
-
-
-def _iter_all_shapes(shapes):
-    for shape in shapes:
-        yield shape
-        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            yield from _iter_all_shapes(shape.shapes)
 
 
 def _verify_output(path: Path, *, cap_table_inserted: bool = False) -> None:

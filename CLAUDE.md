@@ -93,7 +93,7 @@ These are the load-bearing decisions made before any code is written. The full r
 ## Conventions
 
 ### Skill naming
-Skill directory names carry no trailing `-infor` suffix. A skill that is specific to one deliverable is prefixed by that deliverable: `pitch-*` for pitch-deck skills (`pitch-wireframe`, `pitch-content`), `earningsupdate-*` for earnings-update skills (`earningsupdate-wireframe`, `earningsupdate-content`). General-purpose skills reused across deliverables take a plain name (`captable`, `ltm-metrics`, `excel-to-powerpoint`, `deck-assembler`, `workbook-aggregator`, `conductor`). The `name:` frontmatter must equal the directory name.
+Skill directory names carry no trailing `-infor` suffix. A skill that is specific to one deliverable is prefixed by that deliverable: `pitch-*` for pitch-deck skills (`pitch-wireframe`, `pitch-content`), `earningsupdate-*` for earnings-update skills (`earningsupdate-wireframe`, `earningsupdate-content`). General-purpose skills reused across deliverables take a plain name (`captable`, `ltm-metrics`, `deck-assembler`, `workbook-aggregator`, `conductor`). The `name:` frontmatter must equal the directory name.
 
 ### Versioning — single plugin version, all skills tied to it
 One version for the entire plugin. Any skill change bumps the plugin version, and every skill's `version:` frontmatter equals the plugin version. No per-skill drift. Revisit at 20+ skills.

@@ -29,6 +29,7 @@ from copy import deepcopy
 
 from lxml import etree
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
 from pptx.util import Pt
 
@@ -400,3 +401,56 @@ def clone_slide_after(prs, index):
     sldIdLst.remove(new_sldId)
     sldIdLst.insert(index + 1, new_sldId)
     return new_slide
+
+
+# ─── Shape traversal / lookup shared by the deck assemblers ──────────────────
+
+def iter_all_shapes(shapes):
+    """Yield every shape in `shapes`, recursing into groups depth-first."""
+    for shape in shapes:
+        yield shape
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            yield from iter_all_shapes(shape.shapes)
+
+
+def find_table_shape(slide):
+    """Return the first shape on `slide` that holds a table; raise KeyError if none."""
+    for shape in slide.shapes:
+        if getattr(shape, "has_table", False):
+            return shape
+    raise KeyError("no table shape found on slide")
+
+
+# ─── Footnote currency token ─────────────────────────────────────────────────
+
+def fill_footnote_token(shape, letter, *, token="[x]"):
+    """Substitute the currency-letter token in a library footnote, in place.
+
+    The shared INFOR library footnotes ship a 'All figures in [x]$MM' line where
+    `[x]` is the currency letter ('US' / 'C'). Replace the token across every
+    paragraph and rewrite via `set_text`, so the rest of the standardized
+    source/note lines (and their formatting) are preserved rather than
+    re-hardcoded.
+    """
+    lines = [p.text.replace(token, letter) for p in shape.text_frame.paragraphs]
+    set_text(shape, lines)
+
+
+# ─── Bullet writer with plain-text fallback ──────────────────────────────────
+
+def write_bullets_or_plain(shape, items, *, autofit=False):
+    """Write bullets, falling back to plain paragraphs when the shape has no
+    bullet-glyph template to harvest.
+
+    `items` is the tuple list `write_bulleted_shape` expects — `(text, level)` or
+    `(prefix_bold, rest, level)`. If the template ships no seed bullet (so
+    `write_bulleted_shape` raises RuntimeError), degrade to a flat `set_text` of
+    each item's text. Pass `autofit=True` to also enable shrink-on-overflow
+    autofit, for variable-length blocks (overview bullets, business updates).
+    """
+    try:
+        write_bulleted_shape(shape, items)
+    except RuntimeError:
+        set_text(shape, [item[0] for item in items])
+    if autofit:
+        enable_normal_autofit(shape)
