@@ -1,4 +1,4 @@
-"""TDD tests for the 14-slide INFOR slide-library POC."""
+"""TDD tests for the 15-slide INFOR slide-library POC."""
 
 from pathlib import Path
 
@@ -299,7 +299,6 @@ def test_pitch_library_poc_plan_stage_order():
     assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
     assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
     assert deck_stage.inputs["ownership_workbook_path"] == "$stages.ownership.workbook_path"
-    assert deck_stage.inputs["comps_workbook_path"] == "$stages.comps.workbook_path"
     # Ownership runs after captable so F35 can be sourced from the cap table's basic shares.
     ownership_stage = next(s for s in plan.stages if s.id == "ownership")
     assert ownership_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"

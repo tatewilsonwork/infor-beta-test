@@ -31,7 +31,7 @@ This stage assembles typed slide/content handoffs into PowerPoint decks.
 
 When invoked by the conductor, read:
 
-- `$STAGE_INPUTS` — JSON with `slide_plan_path`, `content_bundle_path`, `template_name`, and `output_dir`; may also include `captable_workbook_path`, `comps_workbook_path`, and `ownership_workbook_path`
+- `$STAGE_INPUTS` — JSON with `slide_plan_path`, `content_bundle_path`, `template_name`, and `output_dir`; may also include `captable_workbook_path` and `ownership_workbook_path`
 - `$STAGE_OUTPUTS` — path where this stage must write its structured handoff
 - `$DEAL_DIR` — deal directory root
 
@@ -147,7 +147,6 @@ elif slide_plan.deliverable_type == "pitch":
         template_path=template_path,
         output_dir=output_dir,
         captable_workbook_path=inputs.get("captable_workbook_path"),
-        comps_workbook_path=inputs.get("comps_workbook_path"),
         ownership_workbook_path=inputs.get("ownership_workbook_path"),
     )
 else:

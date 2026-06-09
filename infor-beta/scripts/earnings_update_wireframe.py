@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from schemas import Company, SlideEntry, SlidePlan
-
-
-def _company_name(company: Company | dict[str, Any]) -> str:
-    if isinstance(company, dict):
-        return str(company.get("legal_name") or company.get("name") or "Company")
-    return company.legal_name
+from wireframe_common import company_display_name as _company_name, write_slide_plan
 
 
 def build_earnings_update_slide_plan(
@@ -83,11 +77,3 @@ def build_earnings_update_slide_plan(
         slides=slides,
         notes="Phase 3 POC fixed structure cloned from INFOR Slide Library.pptx (library slides 1, 7, 8, 14, 15).",
     )
-
-
-def write_slide_plan(plan: SlidePlan, path: Path | str) -> Path:
-    """Write a SlidePlan JSON artefact and return its path."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(plan.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    return target

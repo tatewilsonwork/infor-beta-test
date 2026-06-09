@@ -58,6 +58,8 @@ import zipfile
 from pathlib import Path
 from typing import Mapping
 
+from naming import safe_filename
+
 # xlOpenXMLWorkbook — the .xlsx SaveAs file format for Excel COM.
 _XL_OPEN_XML_WORKBOOK = 51
 _EXCEL_SHEET_NAME_MAX = 31
@@ -102,12 +104,6 @@ def _extract_theme_xml(theme_path: Path) -> bytes | None:
         return None
 
 
-def _safe_file_stem(value: str) -> str:
-    safe = re.sub(r"[/\\:*?\"<>|]+", "-", value).strip()
-    safe = re.sub(r"\s+", " ", safe)
-    return safe or "Deal"
-
-
 def combined_filename(deliverable_type: str, deal_name: str) -> str:
     """Return `<deliverable>-<deal name>.xlsx`.
 
@@ -116,7 +112,7 @@ def combined_filename(deliverable_type: str, deal_name: str) -> str:
     stays `pitch`.
     """
     prefix = deliverable_type.replace("-", "").strip() or "deliverable"
-    return f"{prefix}-{_safe_file_stem(deal_name)}.xlsx"
+    return f"{prefix}-{safe_filename(deal_name, default='Deal')}.xlsx"
 
 
 def _excel_safe_sheet_name(name: str) -> str:

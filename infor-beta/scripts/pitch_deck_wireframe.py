@@ -3,17 +3,11 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 from typing import Any
 
 from schemas import Company, SlideEntry, SlidePlan
 from slide_library_registry import load_slide_library_registry
-
-
-def _company_name(company: Company | dict[str, Any]) -> str:
-    if isinstance(company, dict):
-        return str(company.get("legal_name") or company.get("name") or "Company")
-    return company.legal_name
+from wireframe_common import company_display_name as _company_name, write_slide_plan
 
 
 def _content_block(entry, *, labels: list[str], current: str) -> dict[str, Any]:
@@ -119,10 +113,3 @@ def _section_for(entry_id: str) -> str:
     if entry_id in {"key-investment-highlights", "market-entry-targets"}:
         return "Appendix"
     return "Appendix"
-
-
-def write_slide_plan(plan: SlidePlan, path: Path | str) -> Path:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(plan.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    return target

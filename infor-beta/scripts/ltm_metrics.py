@@ -16,13 +16,14 @@ so the workbook stays analyst-auditable, matching the cap-table convention.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
+
+from naming import safe_filename
 
 # INFOR mid-blue header fill / Palatino body, mirroring the deck brand.
 _HEADER_FILL = PatternFill("solid", fgColor="1F3864")
@@ -54,12 +55,6 @@ class BridgeComponent:
     name: str
     value: float
     subtract: bool = False
-
-
-def _safe_name(value: str) -> str:
-    safe = re.sub(r"[/\\:*?\"<>|]+", "-", value).strip()
-    safe = re.sub(r"\s+", " ", safe)
-    return safe or "Company"
 
 
 def _coerce_segments(
@@ -191,7 +186,7 @@ def build_ltm_metrics_workbook(
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = file_stem or f"{_safe_name(company_name)} - LTM Metrics"
+    stem = file_stem or f"{safe_filename(company_name, default='Company')} - LTM Metrics"
     output_path = out_dir / f"{stem}.xlsx"
 
     wb = Workbook()

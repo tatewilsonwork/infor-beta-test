@@ -1,11 +1,11 @@
-# Pitch plan — 14-slide INFOR slide-library deck
+# Pitch plan — 15-slide INFOR slide-library deck
 #
-# Fills the canonical 14-slide INFOR Slide Library template end-to-end while
+# Fills the canonical 15-slide INFOR Slide Library template end-to-end while
 # preserving static credential/disclaimer/contact slides and deferring complex
 # chart generation.
 
 deliverable_type: pitch
-description: 14-slide INFOR slide-library pitch deck.
+description: 15-slide INFOR slide-library pitch deck.
 
 plan_inputs:
   - name: client_name
@@ -163,13 +163,12 @@ stages:
       content_bundle_path: $stages.content.content_bundle_path
       captable_workbook_path: $stages.captable.workbook_path
       ownership_workbook_path: $stages.ownership.workbook_path
-      comps_workbook_path: $stages.comps.workbook_path
       template_name: INFOR Slide Library.pptx
       output_dir: $deal.deal_dir
     outputs:
       - name: deck_path
         type: Path
-        description: Absolute path to the generated 14-slide POC .pptx deck.
+        description: Absolute path to the generated 15-slide POC .pptx deck.
     checkpoint: informational
 
   # Final consolidation: merge every companion workbook into one file named

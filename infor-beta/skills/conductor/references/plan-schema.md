@@ -63,6 +63,6 @@ Unknown prefix or unresolvable field raises an error and halts the conductor —
 ## What plans should NOT contain (v1 — Phase 2)
 
 - `depends_on` / `parallel_with` — v1 executes stages sequentially in declaration order. Add this in Phase 3+ if a plan genuinely needs DAG semantics.
-- `cost_class`, `expected_duration`, `gate_mode_default`, `idempotent` — these belong on the **skill manifest**, not the plan, and are deferred to Phase 2+ in the manifest itself.
+- `cost_class`, `expected_duration`, `gate_mode_default`, `idempotent` — per-skill operational metadata, not a plan concern. Deferred to a future phase (the prototyped typed skill manifest was removed in 0.5.6; revisit when per-skill metadata is actually needed).
 - Anything that re-asks a G7 question — those are owned by deal-init.
 - Free-form prompt text for the sub-agent. Each stage gets the standardised envelope from `stage-envelope.md`.

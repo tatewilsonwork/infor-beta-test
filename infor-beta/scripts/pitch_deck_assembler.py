@@ -12,7 +12,6 @@ Mitigants slide); disclaimer/contact remain the last two slides.
 from __future__ import annotations
 
 import math
-import re
 from pathlib import Path
 
 from pptx import Presentation
@@ -20,13 +19,17 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Inches
 
 from excel_to_powerpoint import insert_excel_into_placeholder
+from naming import safe_filename
 from pptx_helpers import (
     clone_slide_after,
     delete_slide,
+    fill_footnote_token,
     find_shape,
+    find_table_shape,
+    iter_all_shapes,
     set_cell_text,
     set_text,
-    write_bulleted_shape,
+    write_bullets_or_plain,
 )
 from schemas import PitchDeckContent, SlidePlan
 
@@ -61,12 +64,6 @@ _OWNERSHIP_SHEET = "Ownership"
 _OWNERSHIP_RANGE = "B4:G17"
 
 
-def _safe_name(value: str) -> str:
-    safe = re.sub(r"[/\\:*?\"<>|]+", "-", value).strip()
-    safe = re.sub(r"\s+", " ", safe)
-    return safe or "Client"
-
-
 def _bullet_tuple(bullet) -> tuple[str, int]:
     return (bullet.text, bullet.level)
 
@@ -99,13 +96,6 @@ def _rounded_rectangles(slide):
     return [shape for shape in slide.shapes if shape.name == "Rounded Rectangle 19"]
 
 
-def _table_shape(slide):
-    for shape in slide.shapes:
-        if getattr(shape, "has_table", False):
-            return shape
-    raise KeyError("table shape not found")
-
-
 def _set_table_height(table_frame, total_height: int) -> None:
     """Resize a table to an exact total height by scaling its row heights.
 
@@ -133,18 +123,7 @@ def _set_table_height(table_frame, total_height: int) -> None:
 
 def _write_flexible_bullets(shape, bullets) -> None:
     """Write bullets, falling back to plain paragraphs if a library shape has no bullet glyph template."""
-    items = [_bullet_tuple(bullet) for bullet in bullets]
-    try:
-        write_bulleted_shape(shape, items)
-    except RuntimeError:
-        set_text(shape, [bullet.text for bullet in bullets])
-
-
-def _iter_all_shapes(shapes):
-    for shape in shapes:
-        yield shape
-        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            yield from _iter_all_shapes(shape.shapes)
+    write_bullets_or_plain(shape, [_bullet_tuple(bullet) for bullet in bullets])
 
 
 def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
@@ -156,7 +135,7 @@ def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
         if group.shape_type != MSO_SHAPE_TYPE.GROUP or not group.name.startswith("Group"):
             continue
         number = header_shape = body_shape = None
-        for sub in _iter_all_shapes(group.shapes):
+        for sub in iter_all_shapes(group.shapes):
             if sub.name.startswith("Oval") and getattr(sub, "has_text_frame", False) and sub.text.strip().isdigit():
                 number = int(sub.text.strip())
             elif sub.name.startswith("Arrow: Pentagon"):
@@ -224,13 +203,6 @@ def _output_currency_letter(workbook_path) -> str:
     return "C"
 
 
-def _fill_footnote_currency(shape, letter: str) -> None:
-    """Swap the ``[x]$MM`` currency-letter token in a library footnote, keeping
-    the rest of the standardized source/note lines (and their formatting)."""
-    lines = [p.text.replace("[x]", letter) for p in shape.text_frame.paragraphs]
-    set_text(shape, lines)
-
-
 def _fill_market_entry_targets(
     slide,
     *,
@@ -264,12 +236,12 @@ def _fill_market_entry_targets(
             None,
         )
         if footnote is not None:
-            _fill_footnote_currency(footnote, currency_letter)
+            fill_footnote_token(footnote, currency_letter)
 
     if not targets:
         return
 
-    table_frame = _table_shape(slide)
+    table_frame = find_table_shape(slide)
     table = table_frame.table
     n_cols = len(table.columns)  # label column + target columns (3 in the library)
     # Table row 0 is the blank logo/header row; data labels start at row 1. With
@@ -316,7 +288,6 @@ def assemble_pitch_deck(
     template_path: Path | str,
     output_dir: Path | str,
     captable_workbook_path: Path | str | None = None,
-    comps_workbook_path: Path | str | None = None,
     ownership_workbook_path: Path | str | None = None,
 ) -> Path:
     """Fill the INFOR slide-library pitch deck.
@@ -325,9 +296,9 @@ def assemble_pitch_deck(
     multiple slides (two targets per slide) based on
     ``content.market_entry_targets``. The cap table is pasted into slide 7 when
     ``captable_workbook_path`` is supplied, and the insider-ownership table into
-    the ownership slide when ``ownership_workbook_path`` is supplied (both via
-    `excel-to-powerpoint`); other chart/table insertions remain deferred
-    placeholders.
+    the ownership slide when ``ownership_workbook_path`` is supplied (both via the
+    ``excel_to_powerpoint`` insertion helper); other chart/table insertions remain
+    deferred placeholders.
     """
     slide_plan = SlidePlan.model_validate_json(Path(slide_plan_path).read_text(encoding="utf-8"))
     content = PitchDeckContent.model_validate_json(Path(content_path).read_text(encoding="utf-8"))
@@ -342,7 +313,7 @@ def assemble_pitch_deck(
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    output_path = out_dir / f"Pitch Deck - {_safe_name(content.client_name)}.pptx"
+    output_path = out_dir / f"Pitch Deck - {safe_filename(content.client_name, default='Client')}.pptx"
 
     # Footnote currency letter for the slide-7 + market-entry '[x]$MM' tokens,
     # derived from the cap table's output currency (None when no workbook).
@@ -405,7 +376,7 @@ def assemble_pitch_deck(
         content.company_overview_bullets,
     )
     if currency_letter is not None:
-        _fill_footnote_currency(find_shape(slide7, "Text Placeholder 1"), currency_letter)
+        fill_footnote_token(find_shape(slide7, "Text Placeholder 1"), currency_letter)
 
     # Slide 8 — financial metric labels only; charts remain placeholders.
     slide8 = prs.slides[7]
@@ -416,7 +387,7 @@ def assemble_pitch_deck(
     # Slide 10 — concise acquirer risks and mitigants + tagline.
     slide10 = prs.slides[9]
     set_text(find_shape(slide10, "Text Placeholder 6"), [content.risks_tagline])
-    table = _table_shape(slide10).table
+    table = find_table_shape(slide10).table
     set_cell_text(table.cell(0, 0), "Considerations", size_pt=_RISK_HEADER_SIZE)
     set_cell_text(table.cell(0, 1), "Mitigants", size_pt=_RISK_HEADER_SIZE)
     max_rows = min(len(content.risk_mitigants), len(table.rows) - 1)
@@ -436,7 +407,7 @@ def assemble_pitch_deck(
     slide12 = prs.slides[11]
     _fill_investment_highlights(slide12, content)
     if currency_letter is not None:
-        _fill_footnote_currency(find_shape(slide12, "Text Placeholder 13"), currency_letter)
+        fill_footnote_token(find_shape(slide12, "Text Placeholder 13"), currency_letter)
 
     # Slides 12+ — potential market-entry targets, two per slide. The section was
     # grown above; fill each slide with its pair and title it '(N of M)'.
