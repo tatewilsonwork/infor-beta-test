@@ -2,6 +2,27 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.14] — 2026-06-09
+
+Adds a precedent-transactions slide to the pitch deck and fixes a batch of companion-workbook and deck issues surfaced by a live pitch run.
+
+### Added
+- **Precedent-transactions slide in the shared slide library.** `INFOR Slide Library.pptx` gains a `Precedent Transactions Analysis` slide immediately after the (renamed) `Comparable Companies Analysis` slide — a chart-placeholder slide like comps, carrying a one-line takeaway. The library grows 16 → 17 physical slides and the pitch deck's base order 15 → 16. Wired through every layer: `slide_library_registry.py` (new `precedent-transactions` entry at slide 12, closers renumbered), `pitch_deck_wireframe.py` (`_content_block` + `_section_for`), `pitch_deck_assembler.py` (fills the takeaway; hardcoded post-delete indices bumped for everything after comps; `[Placeholder for Precedents Chart]` added to the verifier), and a new required `precedents_takeaway` field on `PitchDeckContent` (drafted by `pitch-content`). The slide stays a chart placeholder — no Excel→PowerPoint step while Capital IQ can't be refreshed here.
+
+### Fixed
+- **Workbook aggregator dropped the precedents source hyperlinks (openpyxl path).** `_copy_sheet` copied values + styles but never `cell.hyperlink`, so the precedents `AB`–`AG` source links vanished from the combined workbook on the openpyxl backend (Cowork/Linux/macOS, or Windows without Excel). It now copies the hyperlink alongside the value/style; the COM backend already preserved them. (`scripts/workbook_aggregator.py`)
+- **`Font(color="0000FF")` reset cells to Calibri 11.** A bare openpyxl `Font(color=...)` carries no typeface, so it dropped the template's Palatino and rendered Calibri 11. Fixed the reported cells and their siblings: the cap table's web-sourced `F7`/`F16` and the LTM `D47`/`D48` now use `Font(name="Palatino Linotype", size=9, color="0000FF")` (`skills/captable/SKILL.md`); the ownership insider data cells re-emit the template font blue and `F35` is left at the template's Palatino — no font write, the aggregator relinks it — via a font-preserving helper (`scripts/ownership_workbook.py`); and the precedents target/acquiror (`F`/`G`) are written Palatino 9 explicitly, since the shipped template's name cells were themselves a stray Calibri 11 (`scripts/precedents_workbook.py`).
+- **Pitch slide 10 left a blank fifth Considerations/Mitigants row.** `pitch-content` now drafts **five** consideration/mitigant rows (the slide-10 table has five body rows; the schema already allowed up to five). (`skills/pitch-content/SKILL.md`)
+- **Market-entry tables (slides 13–16) rendered ~6.3" tall instead of the 5.71" clamp.** The generator writes a 5.71" frame + row heights, but PowerPoint grows a row to fit its text (a stored row height is only a minimum), so the long Overview / Strategic Rationale copy at 10 pt re-expanded the table on open. The value font drops 10 → 9 pt so that copy fits the clamped rows, and `pitch-content` now asks for concise wordy cells. (`scripts/pitch_deck_assembler.py`, `skills/pitch-content/SKILL.md`)
+- **Earnings-update assembler kept the wrong closers after the library grew.** The precedents-slide insertion shifted disclaimer/contact from raw indices 14/15 → 15/16; `_KEEP_LIBRARY_INDICES` is updated `(0,6,7,14,15)` → `(0,6,7,15,16)` so the earnings deck still ends with Disclaimer + Contact. (`scripts/earnings_update_assembler.py`)
+
+### Changed
+- **Precedents now requires a multiple per deal and targets six deals per group.** The builder rejects a deal that carries only a TEV (no metric and no disclosed multiple → it would just add an empty row), and the skill is directed to find six **valuable** deals per group (12 total), dropping and replacing any deal it can't value. (`scripts/precedents_workbook.py`, `skills/precedents/SKILL.md` + `references/sourcing-criteria.md`)
+- **Comps `F3` and precedents `C2` relink to the cap table's output currency.** The aggregator's cross-tab relink pass now points both currency cells at `captable!F5` (restyled Palatino 9) so the combined workbook shows one consistent output currency instead of each skill's standalone literal. (`scripts/workbook_aggregator.py`)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.14`.
+
 ## [0.5.13] — 2026-06-09
 
 The conductor now runs independent stages in parallel.

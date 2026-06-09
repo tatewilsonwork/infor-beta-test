@@ -34,13 +34,14 @@ from pptx_helpers import (
 from schemas import EarningsUpdateContent, SlidePlan
 
 # Zero-based library indices the earnings deck keeps, in final deck order:
-# cover (0), public-company overview (6), earnings summary (7), disclaimer (14),
-# contact (15). The 16-slide library carries the insider-ownership slide at
-# index 9 (pitch-only) and the earnings-summary slide at index 7; the
-# disclaimer/contact closers sit at 14/15. (Pre-0.5.9 this was (0,6,7,13,14),
-# which — after the v0.5.8 ownership-slide insertion shifted the closers — kept
-# Ownership + Disclaimer and dropped Contact.)
-_KEEP_LIBRARY_INDICES = (0, 6, 7, 14, 15)
+# cover (0), public-company overview (6), earnings summary (7), disclaimer (15),
+# contact (16). The 17-slide library carries the insider-ownership slide at
+# index 9 and the precedent-transactions slide at index 12 (both pitch-only) plus
+# the earnings-summary slide at index 7; the disclaimer/contact closers sit at
+# 15/16. (Pre-0.5.9 this was (0,6,7,13,14); the v0.5.8 ownership-slide insertion
+# shifted the closers to 14/15, and the v0.5.14 precedents-slide insertion shifted
+# them again to 15/16 — each insertion before the closers bumps these by one.)
+_KEEP_LIBRARY_INDICES = (0, 6, 7, 15, 16)
 
 # Earnings-summary slide cap-table placeholder (library slide 7 / deck index 1).
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
@@ -299,7 +300,7 @@ def assemble_earnings_update_deck(
 
     prs = Presentation(template)
 
-    # Reduce the 16-slide library to the five earnings entries (delete from the
+    # Reduce the 17-slide library to the five earnings entries (delete from the
     # tail so earlier indices stay valid).
     keep = set(_KEEP_LIBRARY_INDICES)
     for idx in range(len(prs.slides) - 1, -1, -1):

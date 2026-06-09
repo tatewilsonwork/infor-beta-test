@@ -31,6 +31,9 @@ def _content_block(entry, *, labels: list[str], current: str) -> dict[str, Any]:
     elif entry.library_entry_id == "comparable-companies":
         block["requires"] = ["comps_takeaway"]
         block["optional"] = ["comps_chart_or_table"]
+    elif entry.library_entry_id == "precedent-transactions":
+        block["requires"] = ["precedents_takeaway"]
+        block["optional"] = ["precedents_chart_or_table"]
     elif entry.library_entry_id == "key-investment-highlights":
         block["requires"] = ["investment_highlights"]
         block["optional"] = ["investment_highlights_tagline"]
@@ -56,7 +59,7 @@ def build_pitch_deck_slide_plan(
 ) -> SlidePlan:
     """Return the canonical pitch plan for the slide-library deck.
 
-    The blank library is 15 slides (incl. the insider-ownership slide, which
+    The blank library is 16 slides (incl. the insider-ownership slide, which
     follows Financial Summary). The market-entry section expands to
     ``ceil(market_entry_target_count / 2)`` slides (two targets per slide). When
     the count is unspecified — the analyst didn't ask for a particular number —
@@ -108,7 +111,7 @@ def _section_for(entry_id: str) -> str:
         return "INFOR Credentials"
     if entry_id in {"section-divider", "public-company-overview", "financial-summary", "insider-ownership"}:
         return "Overview"
-    if entry_id in {"acquirer-considerations-mitigants", "comparable-companies"}:
+    if entry_id in {"acquirer-considerations-mitigants", "comparable-companies", "precedent-transactions"}:
         return "Valuation"
     if entry_id in {"key-investment-highlights", "market-entry-targets"}:
         return "Appendix"

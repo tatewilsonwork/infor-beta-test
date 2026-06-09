@@ -245,6 +245,12 @@
       "title": "Market Entry Targets",
       "type": "array"
     },
+    "precedents_takeaway": {
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Precedents Takeaway",
+      "type": "string"
+    },
     "presentation_date": {
       "description": "Fully spelled-out month plus four-digit year, e.g. 'April 2026'.",
       "title": "Presentation Date",
@@ -292,7 +298,8 @@
     "financial_metric_labels",
     "risk_mitigants",
     "risks_tagline",
-    "comps_takeaway"
+    "comps_takeaway",
+    "precedents_takeaway"
   ],
   "title": "PitchDeckContent",
   "type": "object"

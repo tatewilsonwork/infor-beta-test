@@ -1,4 +1,4 @@
-"""TDD tests for the 15-slide INFOR slide-library POC."""
+"""TDD tests for the 16-slide INFOR slide-library POC."""
 
 from pathlib import Path
 
@@ -67,6 +67,7 @@ def _sample_content() -> PitchDeckContent:
         ],
         risks_tagline="INFOR will help proactively frame key diligence topics to support a constructive acquiror dialogue.",
         comps_takeaway="SampleCo trades at a discount to higher-growth peers, creating a clear valuation framing opportunity.",
+        precedents_takeaway="Recent precedent transactions in the sector cleared at premium multiples, supporting an attractive valuation case.",
         investment_highlights=[
             {"header": "Durable Recurring Revenue", "bullets": ["High retention across multi-year contracts", "Predictable cash conversion through cycles"]},
             {"header": "Fragmented, Underpenetrated Market", "bullets": ["Few scaled competitors", "Clear whitespace for consolidation"]},
@@ -132,10 +133,10 @@ def test_risk_mitigant_length_allows_short_sentence_rejects_paragraph():
         PitchDeckContent.model_validate(bad)
 
 
-def test_registry_loads_15_blank_slide_library_entries():
+def test_registry_loads_16_blank_slide_library_entries():
     entries = load_slide_library_registry()
 
-    assert len(entries) == 15
+    assert len(entries) == 16
     assert entries[0].library_entry_id == "pitch-cover"
     assert entries[6].library_entry_id == "public-company-overview"
     assert entries[7].library_entry_id == "financial-summary"
@@ -143,19 +144,23 @@ def test_registry_loads_15_blank_slide_library_entries():
     assert entries[8].library_entry_id == "insider-ownership"
     assert entries[8].static is False
     assert entries[9].library_entry_id == "acquirer-considerations-mitigants"
-    assert entries[11].library_entry_id == "key-investment-highlights"
-    assert entries[12].library_entry_id == "market-entry-targets"
+    assert entries[10].library_entry_id == "comparable-companies"
+    # Precedent-transactions slide follows comparable-companies.
+    assert entries[11].library_entry_id == "precedent-transactions"
     assert entries[11].static is False
+    assert entries[12].library_entry_id == "key-investment-highlights"
+    assert entries[13].library_entry_id == "market-entry-targets"
     assert entries[12].static is False
-    assert entries[13].library_entry_id == "disclaimer"
-    assert entries[13].static is True
-    assert entries[14].library_entry_id == "contact"
+    assert entries[13].static is False
+    assert entries[14].library_entry_id == "disclaimer"
     assert entries[14].static is True
+    assert entries[15].library_entry_id == "contact"
+    assert entries[15].static is True
 
 
 def test_pitch_deck_wireframe_uses_blank_library_order():
     # Pin to one market-entry slide (2 targets) so this stays a focused check of
-    # the 15-entry blank-library order; the default-8 behaviour is covered by
+    # the 16-entry blank-library order; the default-8 behaviour is covered by
     # test_pitch_wireframe_expands_market_entry_slides.
     plan = build_pitch_deck_slide_plan(
         company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),
@@ -164,16 +169,20 @@ def test_pitch_deck_wireframe_uses_blank_library_order():
     )
 
     assert plan.deliverable_type == "pitch"
-    assert len(plan.slides) == 15
+    assert len(plan.slides) == 16
     # Insider-ownership now follows Financial Summary (index 8).
     assert plan.slides[8].library_entry_id == "insider-ownership"
     assert plan.slides[8].content_block["requires"] == ["ownership_table"]
-    assert [slide.library_entry_id for slide in plan.slides[11:13]] == [
+    # Precedent-transactions follows comparable-companies (index 11).
+    assert [slide.library_entry_id for slide in plan.slides[10:14]] == [
+        "comparable-companies",
+        "precedent-transactions",
         "key-investment-highlights",
         "market-entry-targets",
     ]
-    assert plan.slides[11].content_block["requires"] == ["investment_highlights"]
-    assert plan.slides[12].content_block["requires"] == ["market_entry_row_labels", "market_entry_targets"]
+    assert plan.slides[11].content_block["requires"] == ["precedents_takeaway"]
+    assert plan.slides[12].content_block["requires"] == ["investment_highlights"]
+    assert plan.slides[13].content_block["requires"] == ["market_entry_row_labels", "market_entry_targets"]
     assert [slide.library_entry_id for slide in plan.slides[:8]] == [
         "pitch-cover",
         "executive-summary",
@@ -207,7 +216,7 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
 
     assert deck_path.exists()
     prs = Presentation(deck_path)
-    assert len(prs.slides) == 15
+    assert len(prs.slides) == 16
     text_parts = []
 
     def _collect(shapes):
@@ -231,6 +240,10 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
     assert "[Cap Table Placeholder]" in all_text  # insertion skill fills this later
     assert "[Pie Chart Placeholder]" in all_text  # intentionally deferred
     assert "[Placeholder for Metric #1 Chart]" in all_text  # intentionally deferred
+    assert "[Placeholder for Comps Chart]" in all_text  # comps slide stays a placeholder
+    # Precedent-transactions slide: takeaway filled, chart stays a placeholder.
+    assert "Recent precedent transactions in the sector cleared at premium multiples" in all_text
+    assert "[Placeholder for Precedents Chart]" in all_text
     assert "Neil Selfe, Managing Principal" in all_text
     # Ownership slide present; both sides are placeholders when no ownership workbook is supplied.
     assert "[Placeholder for Insider Ownership]" in all_text
@@ -472,9 +485,9 @@ def test_market_entry_row_labels_enforce_fixed_12_row_structure():
 def test_market_entry_expands_two_targets_per_slide(tmp_path: Path):
     deck_path = _assemble(tmp_path, _content_with_targets(8))
     prs = Presentation(deck_path)
-    # 15 base - 1 market-entry + 4 market-entry = 18 slides.
-    assert len(prs.slides) == 18
-    titles = [find_shape(prs.slides[12 + j], "Title 1").text for j in range(4)]
+    # 16 base - 1 market-entry + 4 market-entry = 19 slides.
+    assert len(prs.slides) == 19
+    titles = [find_shape(prs.slides[13 + j], "Title 1").text for j in range(4)]
     assert titles == [
         "Potential Canada Market Entry Targets (1 of 4)",
         "Potential Canada Market Entry Targets (2 of 4)",
@@ -496,19 +509,19 @@ def test_market_entry_tables_clamped_to_fixed_height(tmp_path: Path):
     target = Inches(5.71)
     for j in range(4):
         table_shape = next(
-            s for s in prs.slides[12 + j].shapes if getattr(s, "has_table", False)
+            s for s in prs.slides[13 + j].shapes if getattr(s, "has_table", False)
         )
-        assert table_shape.height == target, f"slide {12 + j} frame height not clamped"
+        assert table_shape.height == target, f"slide {13 + j} frame height not clamped"
         row_total = sum(r.height for r in table_shape.table.rows)
-        assert row_total == target, f"slide {12 + j} row heights must sum to the target"
+        assert row_total == target, f"slide {13 + j} row heights must sum to the target"
 
 
 def test_market_entry_table_formatting_no_blank_rows(tmp_path: Path):
     deck_path = _assemble(tmp_path, _sample_content())  # 2 targets -> 1 slide
     table = next(
-        s for s in Presentation(deck_path).slides[12].shapes if getattr(s, "has_table", False)
+        s for s in Presentation(deck_path).slides[13].shapes if getattr(s, "has_table", False)
     ).table
-    # 12 data rows (rows 1-12); every one populated, label white@11, values @10.
+    # 12 data rows (rows 1-12); every one populated, label white@11, values @9.
     for row in range(1, 13):
         label_run = table.cell(row, 0).text_frame.paragraphs[0].runs[0]
         assert label_run.font.size == Pt(11), "label column must be 11 pt"
@@ -516,14 +529,14 @@ def test_market_entry_table_formatting_no_blank_rows(tmp_path: Path):
         for col in (1, 2):
             cell = table.cell(row, col)
             assert cell.text.strip(), f"data cell ({row},{col}) must be populated"
-            assert cell.text_frame.paragraphs[0].runs[0].font.size == Pt(10), "values must be 10 pt"
+            assert cell.text_frame.paragraphs[0].runs[0].font.size == Pt(9), "values must be 9 pt"
 
 
 def test_market_entry_odd_count_blanks_unused_column_and_logo(tmp_path: Path):
     deck_path = _assemble(tmp_path, _content_with_targets(3))  # -> 2 slides
     prs = Presentation(deck_path)
-    assert len(prs.slides) == 16  # 15 base - 1 + 2 market-entry
-    last_me = prs.slides[13]  # the second (final) market-entry slide
+    assert len(prs.slides) == 17  # 16 base - 1 + 2 market-entry
+    last_me = prs.slides[14]  # the second (final) market-entry slide
     table = next(s for s in last_me.shapes if getattr(s, "has_table", False)).table
     assert table.cell(1, 1).text.strip(), "the single target fills the first target column"
     assert table.cell(1, 2).text.strip() == "", "the unused target column is blanked"
@@ -540,7 +553,7 @@ def test_market_entry_logo_box_names_each_target(tmp_path: Path):
         {"name": "Nubank", "cells": base["market_entry_targets"][1]["cells"]},
     ]
     deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(base))  # 2 targets -> 1 slide
-    boxes = _logo_boxes(Presentation(deck_path).slides[12])
+    boxes = _logo_boxes(Presentation(deck_path).slides[13])
     assert [b.text.strip() for b in boxes] == ["[Kueski Logo]", "[Nubank Logo]"]
 
 
@@ -570,13 +583,13 @@ def test_pitch_wireframe_expands_market_entry_slides():
     )
     me = [s for s in plan.slides if s.library_entry_id == "market-entry-targets"]
     assert len(me) == 4
-    assert len(plan.slides) == 18
+    assert len(plan.slides) == 19
     assert me[0].title.endswith("(1 of 4)")
     assert me[3].title.endswith("(4 of 4)")
-    # Count unspecified -> default 8 targets (4 market-entry slides, 18-slide plan).
+    # Count unspecified -> default 8 targets (4 market-entry slides, 19-slide plan).
     default_plan = build_pitch_deck_slide_plan(company=Company(legal_name="X Co", ticker="T:X"))
     assert sum(1 for s in default_plan.slides if s.library_entry_id == "market-entry-targets") == 4
-    assert len(default_plan.slides) == 18
+    assert len(default_plan.slides) == 19
 
 
 # ─── Fix 2: cap table pasted onto slide 7 + footnote currency ────────────────
@@ -595,7 +608,7 @@ def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
     note = find_shape(slide7, "Text Placeholder 1").text
     assert "US$MM" in note and "[x]" not in note, "footnote currency derived from the cap table (USD)"
     # The figure-footnote currency token is resolved on the highlights slide too (no stray [x]).
-    note_hl = find_shape(prs.slides[11], "Text Placeholder 13").text
+    note_hl = find_shape(prs.slides[12], "Text Placeholder 13").text
     assert "US$MM" in note_hl and "[x]" not in note_hl, "highlights-slide footnote currency derived from the cap table"
 
 

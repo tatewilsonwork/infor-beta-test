@@ -7,7 +7,7 @@ description: >
   + EV/EBITDA for operating companies, or P/E + P/B + P/TBV for financial institutions — and
   fills the INFOR Precedents Template, hyperlinking each figure's source. The companion workbook
   behind the deck's precedent-transactions slide.
-version: 0.5.13
+version: 0.5.14
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -76,10 +76,21 @@ Fill **only** the chosen family's input columns; leave the other family's column
 ### Step 2 — Research the precedent transactions
 
 Search for relevant M&A deals where the **target** is comparable to the input company (sector,
-business model, client segment, scale). Required: a **disclosed TEV** — never include a deal
-with no deal value. Prefer deals announced in the last ~6–8 years. Organise them into **up to
-two peer groups of six** (e.g. by sub-sector or deal type); each group gets a short label
-(`E7` / `E16`). A single group is fine — leave the second as its `[Group #2]` placeholder.
+business model, client segment, scale). Two hard requirements for every deal:
+
+1. A **disclosed TEV** — never include a deal with no deal value.
+2. **At least one multiple you can show** from the chosen family — either a multiple disclosed
+   in the deal PR, or a disclosed $ metric (Revenue / EBITDA, or Net Income / Book Value for
+   the financial family) the template's ratio formula turns into one. **Do not include a deal
+   you can only give a TEV for** — it just adds an empty row. The builder enforces this and will
+   reject a metric-less deal.
+
+Prefer deals announced in the last ~6–8 years. Organise them into **two peer groups, and aim to
+fill all six rows in each** (12 deals total, e.g. by sub-sector or deal type); each group gets a
+short label (`E7` / `E16`). Cast a wide enough net that you can find six **valuable** deals per
+group — don't stop at the first handful. A single group is acceptable only when a credible
+second peer group genuinely doesn't exist; otherwise fill both. Leave an unused group as its
+`[Group #2]` placeholder.
 
 See [`references/sourcing-criteria.md`](references/sourcing-criteria.md) for the full
 selection criteria.
@@ -95,7 +106,9 @@ For each deal, source the family's figures top-down — stop at the first that's
    the template's ratio formula computes the multiple on refresh. When a clean LTM/NTM figure
    isn't disclosed, **use the most recent reported figure as the LTM/NTM proxy** — do *not*
    reconstruct LTM by stitching multiple filings together.
-3. Otherwise leave the cell blank.
+3. Otherwise leave that individual figure's cell blank — but a deal must end up with **at least
+   one** multiple or $ metric across the family (see Step 2); if you can't source any, drop the
+   deal and find another, rather than shipping a TEV-only row.
 
 **Hyperlink every figure's source** onto its link cell (AB–AG), one per metric concept. Use
 reputable primary sources (deal PR, filings, major financial news) — see the reputable-source
@@ -233,8 +246,9 @@ Two groups: rows **8–13** (label `E7`) and **17–22** (label `E16`). Write pe
 
 ### Boundary
 
-- Write **only** the inputs above. Never fabricate a figure — if neither a multiple nor a
-  usable $ metric is disclosed from a reputable source, leave the cell blank.
+- Write **only** the inputs above. Never fabricate a figure — leave an individual unsourced
+  figure's cell blank. But every **deal** must carry at least one multiple or $ metric (Step 2);
+  the builder rejects a deal with only a TEV, so drop and replace any deal you can't value.
 - Pick **one** metric family per table; do not fill both families' columns.
 - Do **not** build the precedents chart or edit the deck. The slide stays a placeholder until
   Capital IQ refresh is available.

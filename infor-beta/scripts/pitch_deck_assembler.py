@@ -1,12 +1,13 @@
 """Assembler for the INFOR slide-library pitch deck.
 
-The blank library is 15 slides (incl. the insider-ownership slide, which
-follows the Financial Summary slide); the market-entry section grows across
-multiple slides — two targets per slide — by cloning the library's market-entry
-slide, so an assembled deck has ``15 + (market_entry_slides - 1)`` slides (e.g.
-8 targets → 4 market-entry slides → 18-slide deck). The insider-ownership slide
-sits at a fixed deck index (after Financial Summary, before the Considerations /
-Mitigants slide); disclaimer/contact remain the last two slides.
+The blank library is 16 slides (incl. the insider-ownership slide, which
+follows the Financial Summary slide, and the precedent-transactions slide,
+which follows the comparable-companies slide); the market-entry section grows
+across multiple slides — two targets per slide — by cloning the library's
+market-entry slide, so an assembled deck has ``16 + (market_entry_slides - 1)``
+slides (e.g. 8 targets → 4 market-entry slides → 19-slide deck). The
+insider-ownership and precedent-transactions slides sit at fixed deck indices;
+disclaimer/contact remain the last two slides.
 """
 
 from __future__ import annotations
@@ -34,18 +35,19 @@ from pptx_helpers import (
 from schemas import PitchDeckContent, SlidePlan
 
 # Zero-based index of the earnings-summary entry inserted into the shared
-# 16-slide library. The pitch deck does not use it, so it is dropped on open,
-# restoring the 15-slide pitch ordering this assembler's indices assume.
+# 17-slide library. The pitch deck does not use it, so it is dropped on open,
+# restoring the 16-slide pitch ordering this assembler's indices assume.
 _EARNINGS_LIBRARY_SLIDE_INDEX = 7
 
-# Market-entry slide index in the raw 16-slide library (before the earnings
+# Market-entry slide index in the raw 17-slide library (before the earnings
 # slide is dropped). Market-entry slides are cloned here BEFORE the delete so
 # python-pptx allocates fresh, non-colliding slide part names.
-_LIBRARY_MARKET_ENTRY_INDEX = 13
+_LIBRARY_MARKET_ENTRY_INDEX = 14
 
-# Deck indices after the earnings slide is dropped (final 15-slide pitch order).
+# Deck indices after the earnings slide is dropped (final 16-slide pitch order).
 _OVERVIEW_SLIDE_INDEX = 6          # slide 7 — public-company overview
-_MARKET_ENTRY_SLIDE_INDEX = 12     # slide 13 — first market-entry slide
+_PRECEDENTS_SLIDE_INDEX = 11       # slide 12 — precedent transactions (follows comps)
+_MARKET_ENTRY_SLIDE_INDEX = 13     # slide 14 — first market-entry slide
 
 # Slide 7 cap-table placeholder; the picture covers the capitalization summary
 # plus the Financial/Valuation metric rows (same range as the earnings overview).
@@ -159,11 +161,16 @@ def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
                 set_text(shape, [content.investment_highlights_tagline])
 
 
-# Market-entry cell sizing: the library ships the label column white at 11 pt
-# and the target value columns at 10 pt. The old code hardcoded a single 8 pt,
-# which rendered the labels black and everything too small.
+# Market-entry cell sizing: the label column is white at 11 pt; the target value
+# columns are 9 pt. The value cells carry the long Overview / Strategic Rationale
+# copy, and PowerPoint grows a table row to fit its text (a stored row height is
+# only a MINIMUM). At 10 pt the real per-target copy wrapped tall enough that
+# PowerPoint re-expanded the whole table to ~6.3" on open — past the 5.71" clamp
+# `_set_table_height` writes. 9 pt keeps that copy inside the clamped rows so the
+# rendered table stays at 5.71"; pair it with concise Overview / Strategic
+# Rationale cells (see pitch-content) for headroom.
 _ME_LABEL_SIZE = 11
-_ME_VALUE_SIZE = 10
+_ME_VALUE_SIZE = 9
 _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
 
 # Target total height for a filled market-entry (acquisition-target) table.
@@ -292,7 +299,7 @@ def assemble_pitch_deck(
 ) -> Path:
     """Fill the INFOR slide-library pitch deck.
 
-    The blank library is 15 slides; the market-entry section expands across
+    The blank library is 16 slides; the market-entry section expands across
     multiple slides (two targets per slide) based on
     ``content.market_entry_targets``. The cap table is pasted into slide 7 when
     ``captable_workbook_path`` is supplied, and the insider-ownership table into
@@ -304,8 +311,8 @@ def assemble_pitch_deck(
     content = PitchDeckContent.model_validate_json(Path(content_path).read_text(encoding="utf-8"))
     if slide_plan.deliverable_type != "pitch":
         raise ValueError("pitch deck assembler only supports pitch SlidePlan objects")
-    if len(slide_plan.slides) < 14:
-        raise ValueError("pitch deck expects at least the 14 base INFOR Slide Library entries")
+    if len(slide_plan.slides) < 15:
+        raise ValueError("pitch deck expects at least the base INFOR Slide Library entries (incl. precedent transactions)")
 
     template = Path(template_path)
     if not template.exists():
@@ -403,13 +410,18 @@ def assemble_pitch_deck(
     slide11 = prs.slides[10]
     set_text(find_shape(slide11, "Text Placeholder 5"), [content.comps_takeaway])
 
-    # Slide 12 — key investment highlights; placeholders remain unless content supplies them.
-    slide12 = prs.slides[11]
-    _fill_investment_highlights(slide12, content)
-    if currency_letter is not None:
-        fill_footnote_token(find_shape(slide12, "Text Placeholder 13"), currency_letter)
+    # Slide 12 — precedent-transactions takeaway; chart placeholder remains (no
+    # Excel→PowerPoint while Capital IQ can't be refreshed), mirroring comps.
+    slide_prec = prs.slides[_PRECEDENTS_SLIDE_INDEX]
+    set_text(find_shape(slide_prec, "Text Placeholder 5"), [content.precedents_takeaway])
 
-    # Slides 12+ — potential market-entry targets, two per slide. The section was
+    # Slide 13 — key investment highlights; placeholders remain unless content supplies them.
+    slide13 = prs.slides[12]
+    _fill_investment_highlights(slide13, content)
+    if currency_letter is not None:
+        fill_footnote_token(find_shape(slide13, "Text Placeholder 13"), currency_letter)
+
+    # Slides 14+ — potential market-entry targets, two per slide. The section was
     # grown above; fill each slide with its pair and title it '(N of M)'.
     for j in range(n_market_entry):
         pair = content.market_entry_targets[2 * j : 2 * j + 2]
@@ -477,6 +489,9 @@ def _verify_pitch_output(
         "[Pie Chart Placeholder]",
         "[Placeholder for Metric #1 Chart]",
         "[Placeholder for Comps Chart]",
+        # The precedent-transactions slide stays a chart placeholder, like comps
+        # (no Excel→PowerPoint while Capital IQ can't be refreshed here).
+        "[Placeholder for Precedents Chart]",
         # The ownership slide's institutional side is always a Bloomberg
         # placeholder (the SEDI pipeline fills only the insider side).
         "[Placeholder for Institutional Ownership]",
