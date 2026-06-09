@@ -5,7 +5,7 @@ description: >
   statements to populate a capitalization table. Activates on /captable and on tasks involving
   shares outstanding, debt schedules, lease obligations, options/RSU/warrant tables, convertible
   debentures, cash balances, preferred shares, or non-controlling interest sourced from company filings.
-version: 0.5.13
+version: 0.5.14
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -104,7 +104,7 @@ The template no longer carries live CapIQ formulas in F7 and F16; you supply a c
 - **F16 — Share Price.** The price of one common share, expressed in the **Output currency (F5)**. Read F5 first (default `CAD`). If the share trades in a different currency, convert the quoted price into F5 using the same FX rate you write to F7. Write a numeric value (e.g. `42.18`), not a string.
 - **F7 — FX Rate.** Defined by the template math as **Output-currency units per 1 unit of the filing's reporting (Input) currency**: downstream cells convert filing-currency figures to the output currency by *multiplying* by F7 (e.g. `F24 = F122*F7`), and Section II/III strike comparisons assume `strike_output = strike_filing * F7`. So if the filing reports in USD and F5 is `CAD`, F7 is **CAD per USD** (e.g. `1.37`). If the filing currency equals F5, write `1.0`.
 
-Determine the filing's reporting currency from the attached documents. Write both values with blue font `Font(color="0000FF")` (they are hardcoded), and leave their CapIQ-formula comments untouched. Note the source and as-of date for each in the Step 8 summary (not as a cell comment — the comment slot is reserved for the CapIQ formula).
+Determine the filing's reporting currency from the attached documents. Write both values with the Palatino-9 blue input font `Font(name="Palatino Linotype", size=9, color="0000FF")` (they are hardcoded — a bare `Font(color=...)` would reset them to Calibri 11), and leave their CapIQ-formula comments untouched. Note the source and as-of date for each in the Step 8 summary (not as a cell comment — the comment slot is reserved for the CapIQ formula).
 
 ---
 
@@ -169,7 +169,13 @@ Using openpyxl (write mode, preserve formulas — do NOT use data_only=True):
 
 Write each section into the correct rows and columns per the Template Row Map below. Use Python `datetime.date` objects for date cells and numeric values (not strings) for amount cells.
 
-**Color coding:** Apply blue text `Font(color="0000FF")` to every hardcoded value cell you write. Do NOT recolor formula cells.
+**Color coding:** Mark every hardcoded value cell you write with the blue input font `Font(name="Palatino Linotype", size=9, color="0000FF")`. Do NOT use a bare `Font(color="0000FF")` — it carries no typeface, so it resets the cell to the Calibri 11 default and drops the template's Palatino 9. Define it once and reuse it:
+```python
+from openpyxl.styles import Font
+BLUE = Font(name="Palatino Linotype", size=9, color="0000FF")  # hardcoded-input font
+# usage: ws["F16"].value = 21.20; ws["F16"].font = BLUE
+```
+Do NOT recolor formula cells.
 
 **Cell comments:** Attach a single openpyxl `Comment` to the **first cell in each row** (col B). One comment per row only:
 ```python
@@ -193,9 +199,9 @@ The Financial Metrics block reads its **LTM** column from `D47` (Revenue) and `D
 
 ```python
 if ltm_revenue is not None:
-    c = ws["D47"]; c.value = f"={ltm_revenue}*F7"; c.font = Font(color="0000FF")
+    c = ws["D47"]; c.value = f"={ltm_revenue}*F7"; c.font = BLUE  # Palatino-9 blue (see Color coding)
 if ltm_adj_ebitda is not None:
-    c = ws["D48"]; c.value = f"={ltm_adj_ebitda}*F7"; c.font = Font(color="0000FF")
+    c = ws["D48"]; c.value = f"={ltm_adj_ebitda}*F7"; c.font = BLUE
 ```
 
 **Case B — no LTM values (direct invocation / no `ltm-metrics` stage).** Restore the CapIQ LTM formulas so the cap table still auto-populates in Excel with the CapIQ add-in. Do **not** color these blue (they are formula cells):

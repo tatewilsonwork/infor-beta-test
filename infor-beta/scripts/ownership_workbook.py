@@ -36,12 +36,23 @@ _DATA_LAST_ROW = 65  # rows 39-65 -> 27 insider slots
 _MAX_INSIDERS = _DATA_LAST_ROW - _DATA_FIRST_ROW + 1
 _TOTAL_SHARES_CELL = "F35"
 _DATE_FORMAT = "yyyy-mm-dd"  # SEDI reports dates as ISO 'YYYY-MM-DD'
-_BLUE = Font(color="0000FF")  # hardcoded-value convention (matches captable)
 
 _COL_SEDI_NAME = "B"
 _COL_BASIC = "F"
 _COL_DATE = "G"
 _COL_ADJ_NAME = "J"
+
+
+def _blue(cell) -> Font:
+    """Blue font for a hardcoded input cell, preserving the template's typeface.
+
+    The hardcoded-value convention is blue text (matches the cap table), but a
+    bare ``Font(color="0000FF")`` carries no name/size, so it resets the cell to
+    PowerPoint/Excel's Calibri 11 default and drops the template's Palatino. Read
+    the cell's existing font and re-emit it blue so name/size/weight survive.
+    """
+    f = cell.font
+    return Font(name=f.name, size=f.size, bold=f.bold, italic=f.italic, color="0000FF")
 
 
 @dataclass
@@ -167,27 +178,29 @@ def build_ownership_workbook(
         row = _DATA_FIRST_ROW + offset
         name_cell = ws[f"{_COL_SEDI_NAME}{row}"]
         name_cell.value = insider.sedi_name
-        name_cell.font = _BLUE
+        name_cell.font = _blue(name_cell)
 
         basic_cell = ws[f"{_COL_BASIC}{row}"]
         basic_cell.value = _basic_shares_cell_value(insider.common_shares)
-        basic_cell.font = _BLUE
+        basic_cell.font = _blue(basic_cell)
 
         date_cell = ws[f"{_COL_DATE}{row}"]
         coerced = _coerce_date(insider.most_recent_date)
         if coerced is not None:
             date_cell.value = coerced
             date_cell.number_format = _DATE_FORMAT
-            date_cell.font = _BLUE
+            date_cell.font = _blue(date_cell)
 
         adj_cell = ws[f"{_COL_ADJ_NAME}{row}"]
         adj_cell.value = insider.adjusted_name
-        adj_cell.font = _BLUE
+        adj_cell.font = _blue(adj_cell)
 
     if total_shares_outstanding is not None:
         total_cell = ws[_TOTAL_SHARES_CELL]
         total_cell.value = int(total_shares_outstanding)
-        total_cell.font = _BLUE
+        # Leave F35's font untouched — the template ships it Palatino (bold), and
+        # the aggregator later relinks it to the cap table's basic shares. Setting
+        # a bare Font here would reset it to Calibri 11.
         total_cell.comment = Comment(
             "Total basic shares outstanding (full units) - from the companion cap table.",
             "INFOR",

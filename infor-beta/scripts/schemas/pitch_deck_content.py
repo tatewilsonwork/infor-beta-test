@@ -1,4 +1,4 @@
-"""Typed content handoff for the 15-slide INFOR slide-library POC deck."""
+"""Typed content handoff for the 16-slide INFOR slide-library POC deck."""
 
 from __future__ import annotations
 
@@ -131,6 +131,7 @@ class PitchDeckContent(BaseModel):
     risk_mitigants: list[RiskMitigantRow] = Field(..., min_length=1, max_length=5)
     risks_tagline: str = Field(..., min_length=1, max_length=180)
     comps_takeaway: str = Field(..., min_length=1, max_length=180)
+    precedents_takeaway: str = Field(..., min_length=1, max_length=180)
     investment_highlights: list[InvestmentHighlight] = Field(default_factory=list, max_length=4)
     investment_highlights_tagline: str | None = Field(default=None, max_length=240)
     market_entry_market: str | None = Field(default=None, max_length=60)

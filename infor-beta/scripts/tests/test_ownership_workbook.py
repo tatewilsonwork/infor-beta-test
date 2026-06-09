@@ -95,6 +95,17 @@ def test_template_and_output_carry_no_external_links_or_defined_names(tmp_path: 
     assert len(cleaned.defined_names) == 0
 
 
+def test_f35_keeps_template_palatino_font(tmp_path: Path):
+    """F35 keeps the template's Palatino typeface — a bare Font() would reset it to
+    Calibri 11. The aggregator later relinks F35 to the cap table, preserving font."""
+    out = _build(tmp_path, [InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 500, "2025-01-01")])
+    f35 = load_workbook(out)["Ownership"]["F35"].font
+    assert f35.name == "Palatino Linotype", "F35 must keep the template's Palatino font"
+    # The hardcoded insider data cells stay blue but also keep Palatino (not Calibri 11).
+    f39 = load_workbook(out)["Ownership"]["F39"].font
+    assert f39.name == "Palatino Linotype", "insider data cells must keep Palatino"
+
+
 def test_total_shares_none_leaves_f35_blank(tmp_path: Path):
     out = build_ownership_workbook(
         template_path=TEMPLATE,

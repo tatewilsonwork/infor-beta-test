@@ -228,6 +228,36 @@ def test_bad_link_raises(tmp_path: Path):
         _build(tmp_path, [PrecedentGroup("G", [_operating_tx(tev_link="sec.gov/x")])])
 
 
+def test_tev_only_deal_raises(tmp_path: Path):
+    """A deal with a TEV but no metric or multiple is rejected — it would add an
+    empty row, and every kept deal must yield at least one multiple."""
+    bare = PrecedentTransaction(
+        input_currency="USD", announce_date=date(2025, 1, 1),
+        target="No-Metric Co", acquiror="Buyer LP", tev=900.0, hq_country="USA",
+    )
+    with pytest.raises(ValueError, match="at least one disclosed multiple"):
+        _build(tmp_path, [PrecedentGroup("G", [bare])])
+
+
+def test_deal_with_only_a_disclosed_multiple_is_allowed(tmp_path: Path):
+    """A disclosed multiple alone (no $ metric) satisfies the value requirement."""
+    tx = PrecedentTransaction(
+        input_currency="USD", announce_date=date(2025, 1, 1),
+        target="Multiple-Only Co", acquiror="Buyer LP", tev=900.0, hq_country="USA",
+        ev_ebitda_ltm=11.0,
+    )
+    ws = load_workbook(_build(tmp_path, [PrecedentGroup("G", [tx])]))["Precedents"]
+    assert ws["U8"].value == 11.0
+
+
+def test_target_and_acquiror_use_palatino_9(tmp_path: Path):
+    """Target / acquiror are written Palatino 9, not the template's stray Calibri 11."""
+    ws = load_workbook(_build(tmp_path))["Precedents"]
+    for ref in ("F8", "G8"):
+        assert ws[ref].font.name == "Palatino Linotype", f"{ref} must be Palatino"
+        assert ws[ref].font.size == 9, f"{ref} must be 9 pt"
+
+
 def test_unknown_dict_field_raises(tmp_path: Path):
     with pytest.raises(ValueError, match="unknown transaction field"):
         build_precedents_workbook(

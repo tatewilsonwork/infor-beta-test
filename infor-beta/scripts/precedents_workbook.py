@@ -26,8 +26,10 @@ Sourcing preference per figure: a multiple disclosed in the deal PR (write it
 straight into the S–Z cell) beats a disclosed $ metric (write the source-FX
 value and let the ratio formula compute). When a clean LTM/NTM figure isn't
 disclosed, use the most recent reported figure as the LTM/NTM proxy — do NOT
-reconstruct LTM from multiple filings. If neither a multiple nor a usable $
-figure is disclosed, leave the cell blank.
+reconstruct LTM from multiple filings. **Every included deal must yield at least
+one multiple** — a disclosed multiple, or a $ metric the ratio formula turns
+into one; the builder rejects a deal that carries only a TEV (it would just add
+an empty row). Don't include precedents you can't value.
 
 The shipped template was pre-stripped of ~58.7k legacy CapIQ defined names and
 174 vestigial external-workbook links (6 MB -> ~10 KB) so the openpyxl output
@@ -45,11 +47,17 @@ from datetime import date, datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.styles import Font
 
 _SHEET = "Precedents"
 _MAX_GROUPS = 2
 _TX_PER_GROUP = 6
 _OUTPUT_CCY_CELL = "C2"
+
+# The shipped template's target/acquiror cells (F/G) are Calibri 11, inconsistent
+# with the Palatino 9 the rest of the table uses; set it explicitly so the names
+# match the template's intended body font instead of inheriting the stray default.
+_NAME_FONT = Font(name="Palatino Linotype", size=9)
 
 # Per-group anchors: (label cell, first data row). Each block's six rows are
 # contiguous: first_row .. first_row + 5.
@@ -227,6 +235,15 @@ def _validate_transaction(tx: PrecedentTransaction, where: str) -> None:
         v = getattr(tx, attr)
         if v is not None and (not isinstance(v, (int, float)) or isinstance(v, bool)):
             raise ValueError(f"{attr} must be a number or None, got {v!r} ({where})")
+    # Every included deal must yield at least one multiple — either a disclosed
+    # multiple (S–Z) or a disclosed $ metric (K–R) the ratio formula turns into
+    # one. A deal with only a TEV adds an empty row to the table, so reject it:
+    # only precedents you can actually value belong here.
+    if not any(getattr(tx, attr) is not None for attr in _VALUE_ATTRS + _MULTIPLE_ATTRS):
+        raise ValueError(
+            f"deal must carry at least one disclosed multiple or $ metric so a "
+            f"multiple can be shown — drop deals you can't value ({where})"
+        )
     for attr in _LINK_ATTRS:
         url = getattr(tx, attr)
         if url is not None and not _URL_RE.match(str(url).strip()):
@@ -290,8 +307,12 @@ def build_precedents_workbook(
             row = first_row + offset
             ws[f"{_COL_CURRENCY}{row}"] = _check_code(tx.input_currency, "input_currency", "")
             ws[f"{_COL_DATE}{row}"] = tx.announce_date
-            ws[f"{_COL_TARGET}{row}"] = str(tx.target).strip()
-            ws[f"{_COL_ACQUIROR}{row}"] = str(tx.acquiror).strip()
+            target_cell = ws[f"{_COL_TARGET}{row}"]
+            target_cell.value = str(tx.target).strip()
+            target_cell.font = _NAME_FONT
+            acquiror_cell = ws[f"{_COL_ACQUIROR}{row}"]
+            acquiror_cell.value = str(tx.acquiror).strip()
+            acquiror_cell.font = _NAME_FONT
             ws[f"{_COL_TEV}{row}"] = tx.tev
             ws[f"{_COL_HQ}{row}"] = _check_code(tx.hq_country, "hq_country", "")
 

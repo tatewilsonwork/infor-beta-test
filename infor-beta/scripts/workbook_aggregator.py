@@ -40,8 +40,14 @@ Cross-tab links: once every workbook is one file, a relink pass rewrites the
 skills' standalone scalar handoffs into live cross-tab formulas, so the
 analyst's combined workbook stays internally linked — the cap table's LTM
 Revenue / Adj. EBITDA cells (`D47`/`D48`) point at the `ltm-metrics` bridge
-totals, and the ownership % denominator (`F35`) points at the cap table's basic
-shares. See `_relink_cross_tab_openpyxl` / `_relink_cross_tab_com`.
+totals, the ownership % denominator (`F35`) points at the cap table's basic
+shares, and the comps (`F3`) / precedents (`C2`) output-currency cells point at
+the cap table's output currency (`F5`) so the whole workbook shows one currency.
+See `_relink_cross_tab_openpyxl` / `_relink_cross_tab_com`.
+
+Hyperlinks: the openpyxl merge copies each cell's hyperlink alongside its value
+and style (`_copy_sheet`), so the precedents source links on `AB`–`AG` survive
+the off-Windows merge; the COM backend preserves them natively via Excel's copy.
 
 Tab naming: a single-sheet source becomes one tab named after the skill
 (`captable`, `ltm-metrics`); a multi-sheet source contributes one tab per
@@ -233,6 +239,15 @@ _CAP_BASIC_SHARES_CELL = "F17"  # cap table basic shares outstanding (millions)
 _OWN_DENOM_CELL = "F35"         # ownership % denominator (full units)
 _OWN_SHARES_SCALE = 1_000_000   # cap table is in millions; ownership is full units
 
+# Output-currency cells that should mirror the cap table's output currency (F5)
+# rather than each skill's standalone literal, so the combined workbook shows one
+# consistent currency (and updating F5 flows through). Maps producing-skill -> the
+# cell on that skill's tab. They are restyled to match the cap table's F5
+# (Palatino 9, blue) since the bare comps template cell is Calibri 11.
+_CAP_OUTPUT_CCY_CELL = "F5"
+_OUTPUT_CCY_LINKS = {"comps": "F3", "precedents": "C2"}
+_OUTPUT_CCY_LINK_FONT = ("Palatino Linotype", 9.0, "0000FF")  # name, size, aRGB-less hex
+
 
 def _quote_sheet(name: str) -> str:
     """Single-quote a sheet name for use in a formula (handles spaces/hyphens)."""
@@ -274,6 +289,16 @@ def _relink_cross_tab_openpyxl(combined, skill_to_tab: dict[str, str]) -> None:
         combined[own][_OWN_DENOM_CELL] = (
             f"={_quote_sheet(cap)}!{_CAP_BASIC_SHARES_CELL}*{_OWN_SHARES_SCALE}"
         )
+    if cap in names:
+        from openpyxl.styles import Font
+
+        name, size, color = _OUTPUT_CCY_LINK_FONT
+        for skill, cell_ref in _OUTPUT_CCY_LINKS.items():
+            tab = skill_to_tab.get(skill)
+            if tab in names:
+                cell = combined[tab][cell_ref]
+                cell.value = f"={_quote_sheet(cap)}!{_CAP_OUTPUT_CCY_CELL}"
+                cell.font = Font(name=name, size=size, color=color)
 
 
 def _find_label_row_com(ws, prefixes) -> int | None:
@@ -312,6 +337,18 @@ def _relink_cross_tab_com(combined, skill_to_tab: dict[str, str]) -> None:
             combined.Worksheets(own).Range(_OWN_DENOM_CELL).Formula = (
                 f"={_quote_sheet(cap)}!{_CAP_BASIC_SHARES_CELL}*{_OWN_SHARES_SCALE}"
             )
+        if cap in names:
+            name, size, hex_color = _OUTPUT_CCY_LINK_FONT
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            bgr = r + (g << 8) + (b << 16)  # Excel Font.Color is a BGR-packed long
+            for skill, cell_ref in _OUTPUT_CCY_LINKS.items():
+                tab = skill_to_tab.get(skill)
+                if tab in names:
+                    rng = combined.Worksheets(tab).Range(cell_ref)
+                    rng.Formula = f"={_quote_sheet(cap)}!{_CAP_OUTPUT_CCY_CELL}"
+                    rng.Font.Name = name
+                    rng.Font.Size = size
+                    rng.Font.Color = bgr
     except Exception:
         pass
 
@@ -531,6 +568,11 @@ def _copy_sheet(src_ws, dst_ws) -> None:
                 dst.alignment = copy(cell.alignment)
                 dst.number_format = cell.number_format
                 dst.protection = copy(cell.protection)
+            # Carry the cell's hyperlink across — openpyxl does not copy it with
+            # the style, so without this the precedents AB–AG source links (and
+            # any other linked cell) are silently dropped on the openpyxl merge.
+            if cell.hyperlink is not None:
+                dst.hyperlink = copy(cell.hyperlink)
 
     for merged_range in src_ws.merged_cells.ranges:
         dst_ws.merge_cells(str(merged_range))

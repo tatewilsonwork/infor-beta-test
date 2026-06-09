@@ -1,8 +1,9 @@
 """Simple registry for the INFOR slide-library deck.
 
-The blank library is 15 entries: the original 14 plus an insider-ownership
-slide, which follows the Financial Summary slide (before the Considerations /
-Mitigants slide).
+The blank library is 16 entries: the original 14 plus an insider-ownership
+slide (which follows the Financial Summary slide, before the Considerations /
+Mitigants slide) and a precedent-transactions slide (which follows the
+comparable-companies slide, before Key Investment Highlights).
 """
 
 from __future__ import annotations
@@ -33,13 +34,17 @@ _ENTRIES: tuple[SlideLibraryEntry, ...] = (
     # Bloomberg-sourced placeholder.
     SlideLibraryEntry("insider-ownership", 9, "Ownership"),
     SlideLibraryEntry("acquirer-considerations-mitigants", 10, "Potential Perceived Acquiror Considerations and Mitigants"),
-    SlideLibraryEntry("comparable-companies", 11, "Comparable Companies Financial Analysis"),
-    SlideLibraryEntry("key-investment-highlights", 12, "Key Investment Highlights"),
+    SlideLibraryEntry("comparable-companies", 11, "Comparable Companies Analysis"),
+    # Precedent-transactions slide follows the comparable-companies slide; like
+    # comps it stays a chart placeholder (no Excel→PowerPoint while Capital IQ
+    # can't be refreshed) and carries a one-line takeaway.
+    SlideLibraryEntry("precedent-transactions", 12, "Precedent Transactions Analysis"),
+    SlideLibraryEntry("key-investment-highlights", 13, "Key Investment Highlights"),
     # One physical library slide; the wireframe/assembler repeat it two targets
     # per slide when a deal has more than two market-entry targets.
-    SlideLibraryEntry("market-entry-targets", 13, "Potential [Market] Market Entry Targets"),
-    SlideLibraryEntry("disclaimer", 14, "Disclaimer", static=True),
-    SlideLibraryEntry("contact", 15, "Contact", static=True),
+    SlideLibraryEntry("market-entry-targets", 14, "Potential [Market] Market Entry Targets"),
+    SlideLibraryEntry("disclaimer", 15, "Disclaimer", static=True),
+    SlideLibraryEntry("contact", 16, "Contact", static=True),
 )
 
 

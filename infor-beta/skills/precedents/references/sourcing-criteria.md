@@ -95,11 +95,14 @@ I) is also entered in source currency; column J (`=+I*C`) converts it.
 - **Disclosed TEV — required.** Never include a deal with no deal value; the row is unusable
   for multiple analysis without it.
 - **Recency** — prefer deals announced/closed in the last ~6–8 years.
-- **At least one metric** — each kept deal should yield at least one of the family's multiples
-  (from a disclosed multiple or a disclosed $ figure); a TEV-only row with no metric adds
-  little.
-- Organise into up to two peer groups of six (e.g. by sub-sector or deal type). A single group
-  is fine; leave the unused group as its `[Group #N]` placeholder.
+- **At least one metric — required.** Each kept deal **must** yield at least one of the family's
+  multiples (from a disclosed multiple or a disclosed $ figure); a TEV-only row with no metric is
+  rejected by the builder. Drop and replace a deal you can't value rather than shipping an empty
+  row.
+- Organise into two peer groups and **aim to fill all six rows in each** (12 deals total, e.g. by
+  sub-sector or deal type). A single group is acceptable only when a credible second peer group
+  genuinely doesn't exist; otherwise fill both. Leave an unused group as its `[Group #N]`
+  placeholder.
 
 ## Reputable sources — hyperlink targets
 
