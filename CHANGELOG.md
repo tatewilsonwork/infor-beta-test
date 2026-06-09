@@ -2,6 +2,20 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.12] — 2026-06-09
+
+Adds the precedent-transactions skill to the pitch pipeline.
+
+### Added
+- **`precedents` skill + `scripts/precedents_workbook.py`.** Builds the INFOR precedent-transactions table: researches up to 12 M&A deals (two peer groups of six, labels `E7` / `E16`) and writes each deal's identity (input currency `B`, announce date `E`, target `F`, acquiror `G`, source-FX TEV `I`, 3-letter HQ code `AI` — column `H` left empty), the source-FX $ metric inputs for the **one metric family** the agent picks by the target's industry — operating companies → Revenue (`K`/`L`) + Adj. EBITDA (`O`/`P`) → EV/Revenue + EV/EBITDA; financial institutions → Net Income (`M`/`N`) + Book Value (`Q`) + Tangible Book Value (`R`) → P/E + P/B + P/TBV — and a source hyperlink per metric on the `AB`–`AG` "Link" cells. A **multiple disclosed in the deal PR** is preferred and is written as a literal straight over the template's ratio formula in `S`–`Z`; otherwise the disclosed $ figure is written (using the most recent reported figure as the LTM/NTM proxy — the old multi-filing LTM stub calc is dropped). The column-`C` CapIQ FX rate, the `=+I*C` TEV conversion (`J`), the ratio formulas (`S`–`Z`), and the group/global statistic rows are template-owned and stay un-evaluated until the analyst refreshes Capital IQ in Excel. Activates on `/precedents` and as the pitch plan `precedents` stage. Sourcing criteria carry over from the production `infor-workflows` `precedents-infor` skill. (`infor-beta/skills/precedents/SKILL.md` + `references/sourcing-criteria.md`, `scripts/precedents_workbook.py`; tests added)
+- **`templates/INFOR Precedents Template.xlsx`.** The analyst's precedents template, shipped so `precedents` can clone it. Like the ownership template (and unlike comps) it carried heavy cruft — ~58.7k legacy CapIQ defined names + 174 vestigial external-workbook links (6 MB) plus leftover example hyperlinks in the `AB`–`AG` cells — none of which any live formula references; all were stripped so the openpyxl output stays Excel-openable (→ ~9 KB, FX / ratio / statistic formulas intact). Two template edits were applied during prep: `AG4` relabelled `P /E ` → `P / TBV` (AG is the Tangible Book Value source-link column) and `C2` defaulted to `USD` (the output-currency cell the FX formula keys off).
+
+### Changed
+- **Pitch plan runs `precedents`.** A new `precedents` stage runs after `comps` and before `deck`; it depends on nothing upstream (only the target's facts). The precedents workbook folds into the combined `pitch-<deal>.xlsx` as the `precedents` tab. The deck's precedents slide stays a placeholder — no Excel→PowerPoint step while Capital IQ can't be refreshed here. (`infor-beta/plans/pitch.yaml`)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.12`.
+
 ## [0.5.11] — 2026-06-08
 
 Adds the public-comparables (trading comps) skill to the pitch pipeline.

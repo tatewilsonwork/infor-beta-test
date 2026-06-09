@@ -283,6 +283,7 @@ def test_pitch_library_poc_plan_stage_order():
         "captable",
         "ownership",
         "comps",
+        "precedents",
         "deck",
         "workbook-aggregation",
     ]
@@ -292,8 +293,9 @@ def test_pitch_library_poc_plan_stage_order():
     assert plan.stages[3].skill == "captable"
     assert plan.stages[4].skill == "ownership"
     assert plan.stages[5].skill == "comps"
-    assert plan.stages[6].skill == "deck-assembler"
-    assert plan.stages[7].skill == "workbook-aggregator"
+    assert plan.stages[6].skill == "precedents"
+    assert plan.stages[7].skill == "deck-assembler"
+    assert plan.stages[8].skill == "workbook-aggregator"
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
@@ -306,15 +308,20 @@ def test_pitch_library_poc_plan_stage_order():
     comps_stage = next(s for s in plan.stages if s.id == "comps")
     assert comps_stage.inputs["company"] == "$deal.subject_company"
     assert [o.name for o in comps_stage.outputs] == ["workbook_path"]
+    # Precedents, like comps, only needs the target's facts; own companion workbook.
+    precedents_stage = next(s for s in plan.stages if s.id == "precedents")
+    assert precedents_stage.inputs["company"] == "$deal.subject_company"
+    assert [o.name for o in precedents_stage.outputs] == ["workbook_path"]
     # LTM metrics feed the cap table's LTM valuation column (mirrors earnings update).
     captable_stage = next(s for s in plan.stages if s.id == "captable")
     assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
-    # The LTM, ownership and comps workbooks are folded into the combined pitch workbook.
+    # The LTM, ownership, comps and precedents workbooks fold into the combined pitch workbook.
     agg_stage = next(s for s in plan.stages if s.id == "workbook-aggregation")
     assert agg_stage.inputs["workbooks"]["ltm-metrics"] == "$stages.ltm-metrics.workbook_path"
     assert agg_stage.inputs["workbooks"]["ownership"] == "$stages.ownership.workbook_path"
     assert agg_stage.inputs["workbooks"]["comps"] == "$stages.comps.workbook_path"
+    assert agg_stage.inputs["workbooks"]["precedents"] == "$stages.precedents.workbook_path"
 
 
 # ─── Helpers for the post-review fixes ───────────────────────────────────────
