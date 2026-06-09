@@ -1,8 +1,12 @@
-"""Plan + Stage schemas — Phase 2.
+"""Plan + Stage schemas.
 
-Per Obsidian note 12, H1: start minimal. v1 conductor executes stages
-**sequentially in declaration order**. No parallel execution, no DAG
-`depends_on` / `parallel_with`, no expression language inside reference strings.
+Per Obsidian note 12, H1: start minimal. There is no DAG `depends_on` /
+`parallel_with` field and no expression language inside reference strings —
+a stage declares its dependencies implicitly, by referencing an earlier
+stage's output (`$stages.<id>.<name>`). The conductor derives an execution
+schedule from those references and dispatches independent stages in concurrent
+waves (see `plan_schedule.compute_waves`); the `workbook-aggregator` stage is
+pinned to the final wave.
 
 Reference resolution is a pure string-templating pass over `Stage.inputs`:
 
@@ -112,7 +116,12 @@ class Plan(BaseModel):
     stages: list[Stage] = Field(
         ...,
         min_length=1,
-        description="Stages, in execution order. Phase 2 executes them sequentially.",
+        description=(
+            "Stages in declaration order. The conductor derives a concurrent wave "
+            "schedule from their `$stages.*` references (plan_schedule.compute_waves) "
+            "rather than running them strictly top-to-bottom; declaration order only "
+            "breaks ties within a wave."
+        ),
     )
 
     @field_validator("stages")

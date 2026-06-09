@@ -10,7 +10,7 @@ description: >
   plan-specific inputs, dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.12
+version: 0.5.13
 allowed-tools: [Read, Write, Bash, Glob, Task]
 ---
 
@@ -35,6 +35,7 @@ from schemas import Plan, Stage, DealContext, InputSpec
 from codename import resolve, find_existing, disambiguate
 from deal_init import render_init_prompt, load_or_locate_deal, save_deal_context, load_deal_context
 from plan_refs import resolve_refs
+from plan_schedule import compute_waves
 from run_log import (
     make_run_id, create_run_dir, write_plan_snapshot,
     write_stage_inputs, read_stage_outputs, write_stage_log, write_summary,
@@ -87,18 +88,35 @@ write_plan_snapshot(run_dir, plan_yaml_text)  # frozen snapshot of the plan
 
 Tell the analyst the run id and its path. Subsequent log files all land under that directory.
 
-### Step 6 — Dispatch each stage in order
+### Step 6 — Dispatch stages wave-by-wave
 
-Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage id. For each stage in `plan.stages` (declaration order — sequential, no parallel in v1):
+Stages run in **dependency waves**, not one at a time. Compute the schedule once:
 
-1. **Resolve inputs.** Call `resolve_refs(stage.inputs, plan_inputs=..., deal_context=ctx, stage_outputs=stage_outputs)`.
+```python
+waves = compute_waves(plan)   # list[list[stage_id]] in execution order
+```
+
+Each wave is a list of stage ids with **no dependency between them**, so the whole wave is dispatched **concurrently** and the conductor waits for it to finish before starting the next. Dependencies are auto-derived from the `$stages.<id>.<name>` references already in each stage's inputs — the references *are* the DAG, there is no `depends_on` field. The `workbook-aggregator` stage is always scheduled alone in the final wave (it consolidates and deletes the individual workbooks, so nothing may run alongside it). Tell the analyst the wave plan up front, e.g.:
+
+> 5 waves: [1] `wireframe`, `ltm-metrics`, `comps`, `precedents` (parallel) → [2] `content`, `captable` → [3] `ownership` → [4] `deck` → [5] `workbook-aggregation`.
+
+Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage id. For each wave, in order:
+
+**6a — Prepare every stage in the wave.** For each stage id in the wave, look up its `Stage` and:
+1. **Resolve inputs.** `resolve_refs(stage.inputs, plan_inputs=..., deal_context=ctx, stage_outputs=stage_outputs)`. Every `$stages.*` reference a wave member needs is already in `stage_outputs` — the scheduler guarantees its producer ran in an earlier wave.
 2. **Persist inputs.** `write_stage_inputs(run_dir, stage.id, resolved_inputs)`.
 3. **Render envelope.** Load `references/stage-envelope.md`, substitute its placeholders, prepare the prompt for the Agent tool.
-4. **Dispatch via `Task`** (the Agent tool). Pass it the rendered envelope. Set environment variables `STAGE_INPUTS` and `STAGE_OUTPUTS` (absolute paths to `inputs.json` and `outputs.json`), and `DEAL_DIR` (absolute path to the deal directory). Wait for the sub-agent to finish.
-5. **Read outputs.** `outputs = read_stage_outputs(run_dir, stage.id)`. This raises `FileNotFoundError` if the sub-skill failed to write outputs.json — in that case, surface the failure to the analyst and stop. Do not proceed past a stage that didn't write structured outputs.
-6. **Capture log.** Take the sub-agent's reply transcript and persist it via `write_stage_log(run_dir, stage.id, transcript)`.
-7. **Update state.** `stage_outputs[stage.id] = outputs`.
-8. **Checkpoint.** Run the checkpoint behaviour for `stage.checkpoint` per `references/checkpoint-behaviour.md` (`required` halts, `informational` summarises and continues, `silent` does nothing).
+
+**6b — Dispatch the whole wave concurrently.** Issue one `Task` (Agent) call per stage **in a single message** so they run in parallel. On each call set the env vars `STAGE_INPUTS` and `STAGE_OUTPUTS` (absolute paths to *that stage's* `inputs.json` / `outputs.json`) and `DEAL_DIR` (absolute path to the deal directory). Wait for every sub-agent in the wave to finish before continuing. (A single-stage wave is just one `Task` call — same as the old sequential behaviour.)
+
+**6c — Collect the wave.** After all of the wave's sub-agents return, for each stage id in the wave (in listed order):
+4. **Read outputs.** `outputs = read_stage_outputs(run_dir, stage.id)`. This raises `FileNotFoundError` if the sub-skill failed to write outputs.json — surface the failure to the analyst and stop. Do not start the next wave if any stage in this one produced no structured outputs.
+5. **Capture log.** Persist the sub-agent's reply transcript via `write_stage_log(run_dir, stage.id, transcript)`.
+6. **Update state.** `stage_outputs[stage.id] = outputs`.
+
+**6d — Checkpoint the wave.** Once the wave's state is updated, run the checkpoint behaviour (`references/checkpoint-behaviour.md`) for each stage in the wave, in listed order — `informational` summarises (batch the wave's outputs into one surface), `silent` does nothing, `required` halts. If the analyst rejects any `required` checkpoint, halt before dispatching the next wave.
+
+> **`required` checkpoints and parallelism.** A `required` gate is evaluated at its **wave boundary**, after every stage in that wave has already run — so it cannot stop its own wave-mates, only the downstream waves. Today every shipped plan's checkpoints are `informational`, so behaviour is unchanged. If a future plan needs a gate to stop work *before* an expensive stage starts, give that stage a dependency so it lands in a later wave (the scheduler will serialise it behind the gate).
 
 ### Step 7 — Emit summary
 
@@ -131,5 +149,5 @@ Never silently skip a stage. Never proceed past a missing output. Never overwrit
 
 - Produce slides, models, or copy. That is each sub-skill's job.
 - Make banking decisions. Voice, brand, and source-trust rules live in each stage skill's own SKILL.md / references and its allow-list — not in the conductor.
-- Parallelise stages. v1 is sequential. Parallel + DAG dependencies arrive when Phase 3's deck-assembler + slide library justify the complexity.
+- Invent or infer dependencies beyond the references. The wave schedule comes purely from the `$stages.*` references in each stage's inputs plus the fixed `workbook-aggregator`-last barrier (`plan_schedule.compute_waves`). The conductor will not add edges, reorder, or parallelise beyond what those imply — and it never dispatches a stage before everything it references has produced outputs.
 - Emit telemetry beyond per-stage transcripts. `meta.json` (model, tokens, latency) is Phase 5.

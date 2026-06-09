@@ -60,9 +60,11 @@ Mid-string interpolation is **not** supported (no `"hello $deal.codename"`). Eac
 
 Unknown prefix or unresolvable field raises an error and halts the conductor — the partial run on disk is preserved.
 
-## What plans should NOT contain (v1 — Phase 2)
+**References also determine execution order.** A `$stages.<id>.<name>` reference is both a value lookup *and* a dependency edge: the conductor groups stages into ordered **waves** (`plan_schedule.compute_waves`) so every referenced stage runs in an earlier wave, and dispatches the stages within a wave concurrently. Stages that reference none of each other run in parallel. To force stage B to wait for stage A, have B reference one of A's outputs.
 
-- `depends_on` / `parallel_with` — v1 executes stages sequentially in declaration order. Add this in Phase 3+ if a plan genuinely needs DAG semantics.
+## What plans should NOT contain
+
+- `depends_on` / `parallel_with` — there is deliberately **no** dependency field. The conductor derives the execution DAG from the `$stages.<id>.<name>` references in each stage's inputs and dispatches independent stages in concurrent waves (`plan_schedule.compute_waves`). To make stage B wait for stage A, reference one of A's outputs in B's inputs. The one non-reference edge — `workbook-aggregator` running strictly last (it merges and deletes the individual workbooks) — is hardcoded in the scheduler, not declared per-plan.
 - `cost_class`, `expected_duration`, `gate_mode_default`, `idempotent` — per-skill operational metadata, not a plan concern. Deferred to a future phase (the prototyped typed skill manifest was removed in 0.5.6; revisit when per-skill metadata is actually needed).
 - Anything that re-asks a G7 question — those are owned by deal-init.
 - Free-form prompt text for the sub-agent. Each stage gets the standardised envelope from `stage-envelope.md`.

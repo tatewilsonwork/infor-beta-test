@@ -7,7 +7,7 @@ description: >
   + EV/EBITDA for operating companies, or P/E + P/B + P/TBV for financial institutions — and
   fills the INFOR Precedents Template, hyperlinking each figure's source. The companion workbook
   behind the deck's precedent-transactions slide.
-version: 0.5.12
+version: 0.5.13
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
