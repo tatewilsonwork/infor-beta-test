@@ -156,6 +156,25 @@ stages:
         description: Absolute path to the companion comps .xlsx (3 verticals × 6 CapIQ tickers + descriptions; metric columns are CapIQ array formulas, un-evaluated until refreshed).
     checkpoint: informational
 
+  # Precedent transactions. Like comps, it depends on nothing upstream — only the
+  # target's facts, to pick the metric family (EV/Revenue+EV/EBITDA for operating
+  # companies, P/E+P/B+P/TBV for financials) and the comparable deal set — so it
+  # runs after `comps`, before `deck`. The column-C FX rate is a CapIQ array
+  # formula, so the converted TEV / $-metric ratios / statistic rows stay
+  # un-evaluated until the analyst refreshes Capital IQ in Excel (disclosed
+  # multiples written into S–Z show immediately); the deck's precedents slide
+  # stays a placeholder.
+  - id: precedents
+    skill: precedents
+    inputs:
+      company: $deal.subject_company
+      ticker: $deal.subject_company.ticker
+    outputs:
+      - name: workbook_path
+        type: Path
+        description: Absolute path to the companion precedents .xlsx (≤2 groups × 6 M&A deals; disclosed multiples are literals, $-metric ratios + statistic rows are formulas, un-evaluated until refreshed).
+    checkpoint: informational
+
   - id: deck
     skill: deck-assembler
     inputs:
@@ -174,9 +193,10 @@ stages:
   # Final consolidation: merge every companion workbook into one file named
   # pitch-<codename>.xlsx (one tab per producing skill) and delete the
   # individual sources. Runs last so the deck stage can still read the
-  # standalone cap-table workbook before it is folded in. The comps workbook
-  # joins as the `comps` tab (its CapIQ helper sheet is dropped automatically);
-  # the aggregator skips any source whose path is null/missing.
+  # standalone cap-table workbook before it is folded in. The comps and
+  # precedents workbooks join as the `comps` / `precedents` tabs (any CapIQ
+  # helper sheet is dropped automatically); the aggregator skips any source
+  # whose path is null/missing.
   - id: workbook-aggregation
     skill: workbook-aggregator
     inputs:
@@ -185,6 +205,7 @@ stages:
         ltm-metrics: $stages.ltm-metrics.workbook_path
         ownership: $stages.ownership.workbook_path
         comps: $stages.comps.workbook_path
+        precedents: $stages.precedents.workbook_path
       deliverable_type: $deal.deliverable_type
       deal_name: $deal.codename
       output_dir: $deal.deal_dir
