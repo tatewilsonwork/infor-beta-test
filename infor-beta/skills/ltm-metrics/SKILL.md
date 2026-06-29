@@ -7,7 +7,7 @@ description: >
   (or EBITDA) bridge. Activates as the earnings-update plan stage `ltm-metrics`, supplying the
   companion data behind the overview slide's LTM revenue pie placeholder. Segment by service /
   product line when disclosed, else by geography.
-version: 0.5.14
+version: 0.5.15
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -39,11 +39,27 @@ If any of these three are missing from the provided sources, **ask the analyst f
 
 When invoked by the conductor, the environment carries:
 
-- `$STAGE_INPUTS` — JSON with `company`, `ticker`, `reporting_quarter`, and `comparison_quarter`
+- `$STAGE_INPUTS` — JSON with `company`, `ticker`, `reporting_quarter`, `comparison_quarter`, and
+  (pitch only) an optional `ltm_bridge_specs` list (see "Extra bridges" below)
 - `$STAGE_OUTPUTS` — path where this stage must write its structured handoff
 - `$DEAL_DIR` — deal directory root
 
 If `$STAGE_INPUTS` is missing a field you need, write `{"error": "missing input: <field>"}` to `$STAGE_OUTPUTS` and stop.
+
+### Extra bridges (pitch only)
+
+In the **pitch** plan, the upstream `financial-summary` stage selects the deck's four metrics and
+passes an `ltm_bridge_specs` list — `[{ "tile_label": "...", "result_label": "LTM <Metric>" }, ...]` —
+for the flow metrics it needs LTM totals for **beyond** the Revenue and Adjusted EBITDA bridges you
+already build. For each spec, build one further `FY + current-YTD − prior-YTD` bridge for that
+metric (extract the three figures from the filings just as for revenue/EBITDA) and pass it as an
+`extra_bridges` entry whose `result_label` is the spec's `result_label` **verbatim** — the
+`financial-summary` tab links its LTM cell to the resulting `(=) <result_label>` row, so the strings
+must match exactly. `financial-summary` excludes Revenue and Adj./unadj. EBITDA from the specs (you
+always bridge those), so do **not** re-add them.
+
+When `ltm_bridge_specs` is absent (the **earnings-update** plan, or direct invocation), behaviour is
+unchanged: only the Revenue and EBITDA bridges are built.
 
 ## Workflow
 
@@ -77,7 +93,7 @@ from pathlib import Path
 
 plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
 sys.path.insert(0, str(plugin_root / "scripts"))
-from ltm_metrics import build_ltm_metrics_workbook, bridge_total, RevenueSegment, BridgeComponent
+from ltm_metrics import build_ltm_metrics_workbook, bridge_total, Bridge, RevenueSegment, BridgeComponent
 
 inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())
 deal_dir = Path(os.environ.get("DEAL_DIR", "."))
@@ -94,6 +110,21 @@ ebitda_bridge = [
     BridgeComponent("Q3 2025 YTD Adj. EBITDA", 815.0, subtract=True),
 ]
 
+# Pitch only: one bridge per ltm_bridge_specs entry, with the components you
+# extract from the filings. result_label must match the spec verbatim. Empty in
+# the earnings-update plan (no extra bridges).
+extra_bridges = []
+for spec in inputs.get("ltm_bridge_specs", []):
+    extra_bridges.append(Bridge(
+        section_title=f"{spec['result_label']} Bridge",
+        result_label=spec["result_label"],
+        components=[
+            BridgeComponent(f"FY2025 {spec['tile_label']}", 540.0),
+            BridgeComponent(f"Q3 2026 YTD {spec['tile_label']}", 305.0),
+            BridgeComponent(f"Q3 2025 YTD {spec['tile_label']}", 238.0, subtract=True),
+        ],
+    ))
+
 workbook_path = build_ltm_metrics_workbook(
     company_name=inputs["company"]["legal_name"],
     period_label="LTM ended March 31, 2026",      # set from the actual reporting period
@@ -108,6 +139,7 @@ workbook_path = build_ltm_metrics_workbook(
     revenue_bridge=revenue_bridge,
     ebitda_bridge=ebitda_bridge,
     ebitda_label="LTM Adj. EBITDA",                # or "LTM EBITDA" if no Adj. disclosed
+    extra_bridges=extra_bridges,                   # pitch only; [] for earnings update
     output_dir=out_dir,
 )
 

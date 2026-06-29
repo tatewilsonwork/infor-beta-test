@@ -85,10 +85,38 @@ stages:
         description: Absolute path to the typed PitchDeckContent JSON artefact.
     checkpoint: informational
 
+  # Financial Summary data tab. Runs *before* `ltm-metrics` because it is the
+  # single source of truth for the deck's four financial metrics: it selects them
+  # (industry-aware) and tells `ltm-metrics`, via `ltm_bridge_specs`, which extra
+  # metrics to bridge LTM for. It gathers the 5-fiscal-year history from the latest
+  # 10-Ks and links each metric's LTM cell to the `ltm-metrics` tab (a label-keyed
+  # lookup that resolves only in the combined workbook). Independent of the
+  # ltm/captable chain — needs only the target's facts + the attached 10-Ks.
+  - id: financial-summary
+    skill: financial-summary
+    inputs:
+      company: $deal.subject_company
+      ticker: $deal.subject_company.ticker
+      reporting_quarter: $plan_inputs.reporting_quarter
+      comparison_quarter: $plan_inputs.comparison_quarter
+    outputs:
+      - name: workbook_path
+        type: Path
+        description: Absolute path to the standalone Financial Summary .xlsx (5 FY + LTM × 4 metrics; chart-ready).
+      - name: financial_metric_labels
+        type: list[str]
+        description: The four Financial Summary metric names, in tile order — read by the deck stage for slide 8.
+      - name: ltm_bridge_specs
+        type: list
+        description: Flow metrics (beyond revenue + Adj. EBITDA) that ltm-metrics must bridge so this tab can link each LTM cell.
+    checkpoint: informational
+
   # LTM metrics run *before* the cap table (mirrors the earnings-update plan) so
   # its LTM revenue / Adj. EBITDA totals flow into the cap table's LTM valuation
   # column (D47 / D48). Without this, the cap table falls back to CapIQ LTM
-  # formulas that render empty / #NAME? in the slide-7 picture.
+  # formulas that render empty / #NAME? in the slide-7 picture. In the pitch plan
+  # it also bridges the extra metrics named in `financial-summary`'s
+  # `ltm_bridge_specs` so the Financial Summary tab can link their LTM totals.
   - id: ltm-metrics
     skill: ltm-metrics
     inputs:
@@ -96,6 +124,7 @@ stages:
       ticker: $deal.subject_company.ticker
       reporting_quarter: $plan_inputs.reporting_quarter
       comparison_quarter: $plan_inputs.comparison_quarter
+      ltm_bridge_specs: $stages.financial-summary.ltm_bridge_specs
     outputs:
       - name: workbook_path
         type: Path
@@ -182,6 +211,7 @@ stages:
       content_bundle_path: $stages.content.content_bundle_path
       captable_workbook_path: $stages.captable.workbook_path
       ownership_workbook_path: $stages.ownership.workbook_path
+      financial_metric_labels: $stages.financial-summary.financial_metric_labels
       template_name: INFOR Slide Library.pptx
       output_dir: $deal.deal_dir
     outputs:
@@ -203,6 +233,7 @@ stages:
       workbooks:
         captable: $stages.captable.workbook_path
         ltm-metrics: $stages.ltm-metrics.workbook_path
+        financial-summary: $stages.financial-summary.workbook_path
         ownership: $stages.ownership.workbook_path
         comps: $stages.comps.workbook_path
         precedents: $stages.precedents.workbook_path

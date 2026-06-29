@@ -28,15 +28,18 @@ def _stage(id, skill=None, inputs=None):
 
 
 def test_pitch_plan_waves():
-    """The pitch plan collapses 9 sequential stages into 5 dependency waves.
+    """The pitch plan schedules 10 stages into 6 dependency waves.
 
-    Wave 0 overlaps the four research-heavy roots (comps / precedents /
-    ltm-metrics / wireframe); the aggregator is alone in the final wave.
+    Wave 0 overlaps the research-heavy roots (financial-summary / comps /
+    precedents / wireframe). financial-summary precedes ltm-metrics because it
+    selects the deck's metrics and tells ltm-metrics which extra ones to bridge;
+    the aggregator is alone in the final wave.
     """
     waves = compute_waves(_load_plan("pitch.yaml"))
     assert waves == [
-        ["wireframe", "ltm-metrics", "comps", "precedents"],
-        ["content", "captable"],
+        ["wireframe", "financial-summary", "comps", "precedents"],
+        ["content", "ltm-metrics"],
+        ["captable"],
         ["ownership"],
         ["deck"],
         ["workbook-aggregation"],

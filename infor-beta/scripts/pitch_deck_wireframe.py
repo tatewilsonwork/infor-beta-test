@@ -24,7 +24,9 @@ def _content_block(entry, *, labels: list[str], current: str) -> dict[str, Any]:
         block["requires"] = ["company_overview_bullets", "cap_table"]
         block["deferred"] = ["ltm_revenue_breakdown"]
     elif entry.library_entry_id == "financial-summary":
-        block["requires"] = ["financial_metric_labels"]
+        # Metric labels come from the `financial-summary` stage output (not the
+        # content bundle); the charts remain deferred placeholders.
+        block["external"] = ["financial_metric_labels"]
         block["deferred"] = ["financial_summary_charts"]
     elif entry.library_entry_id == "acquirer-considerations-mitigants":
         block["requires"] = ["risk_mitigants", "risks_tagline"]

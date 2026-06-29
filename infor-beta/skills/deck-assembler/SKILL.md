@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.14
+version: 0.5.15
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -31,7 +31,7 @@ This stage assembles typed slide/content handoffs into PowerPoint decks.
 
 When invoked by the conductor, read:
 
-- `$STAGE_INPUTS` — JSON with `slide_plan_path`, `content_bundle_path`, `template_name`, and `output_dir`; may also include `captable_workbook_path` and `ownership_workbook_path`
+- `$STAGE_INPUTS` — JSON with `slide_plan_path`, `content_bundle_path`, `template_name`, and `output_dir`; may also include `captable_workbook_path`, `ownership_workbook_path`, and `financial_metric_labels` (the four Financial Summary tile names, selected by the `financial-summary` stage)
 - `$STAGE_OUTPUTS` — path where this stage must write its structured handoff
 - `$DEAL_DIR` — deal directory root
 
@@ -59,7 +59,7 @@ When invoked by the conductor, read:
 - Slides 3–5: static credentials, do not touch.
 - Slide 6: section divider labels.
 - Slide 7: company overview bullets; the cap table is pasted into the `Rectangle 3` placeholder when `captable_workbook_path` is supplied (`slide_index=6`, range `B15:F40`), and the `[x]$MM` footnote token is set to the cap table's output currency (`US` / `C`, read from `F5`). The LTM revenue pie stays a deferred placeholder.
-- Slide 8: financial metric **NAME** labels only; charts stay placeholders.
+- Slide 8: financial metric **NAME** labels only, taken from the `financial_metric_labels` stage input (the `financial-summary` stage's output, not the content bundle); charts stay placeholders.
 - Slide 9: ownership slide (Canadian public targets) — **follows the Financial Summary slide**. When `ownership_workbook_path` is supplied, the left **"Insiders"** placeholder (`Rectangle 1`) is replaced by a picture of the ownership workbook's Select-Insiders block (sheet `Ownership`, range `B4:G17`, fixed `slide_index = _OWNERSHIP_SLIDE_INDEX = 8`). The right **"Institutions"** side stays a Bloomberg-sourced placeholder.
 - Slide 10: concise risks/mitigants + tagline.
 - Slide 11: comps takeaway; chart placeholder stays unless insertion replaces it later.
@@ -148,6 +148,7 @@ elif slide_plan.deliverable_type == "pitch":
         output_dir=output_dir,
         captable_workbook_path=inputs.get("captable_workbook_path"),
         ownership_workbook_path=inputs.get("ownership_workbook_path"),
+        financial_metric_labels=inputs.get("financial_metric_labels"),
     )
 else:
     raise ValueError(f"unsupported deliverable_type: {slide_plan.deliverable_type}")

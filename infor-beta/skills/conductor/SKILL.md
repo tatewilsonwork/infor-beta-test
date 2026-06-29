@@ -10,7 +10,7 @@ description: >
   plan-specific inputs, dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.14
+version: 0.5.15
 allowed-tools: [Read, Write, Bash, Glob, Task]
 ---
 

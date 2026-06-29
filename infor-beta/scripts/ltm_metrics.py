@@ -16,7 +16,7 @@ so the workbook stays analyst-auditable, matching the cap-table convention.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -57,6 +57,21 @@ class BridgeComponent:
     subtract: bool = False
 
 
+@dataclass(frozen=True)
+class Bridge:
+    """A whole LTM bridge block — its section title, result label, and components.
+
+    Used for the pitch-only ``extra_bridges`` (e.g. an LTM Net Income or LTM Gross
+    Profit bridge for the Financial Summary tab). ``result_label`` is the figure
+    the bridge derives (e.g. ``"LTM Net Income"``); the result row is written as
+    ``(=) <result_label>``, which the financial-summary tab keys its LTM link off.
+    """
+
+    section_title: str
+    result_label: str
+    components: list[BridgeComponent] = field(default_factory=list)
+
+
 def _coerce_segments(
     segments: list[RevenueSegment] | list[tuple],
 ) -> list[RevenueSegment]:
@@ -79,6 +94,24 @@ def _coerce_components(
             name, value = c[0], float(c[1])
             subtract = bool(c[2]) if len(c) > 2 else False
             out.append(BridgeComponent(name, value, subtract))
+    return out
+
+
+def _coerce_bridges(bridges: "list[Bridge] | list[dict] | None") -> list[Bridge]:
+    if not bridges:
+        return []
+    out: list[Bridge] = []
+    for b in bridges:
+        if isinstance(b, Bridge):
+            out.append(Bridge(b.section_title, b.result_label, _coerce_components(b.components)))
+        else:
+            out.append(
+                Bridge(
+                    section_title=b["section_title"],
+                    result_label=b["result_label"],
+                    components=_coerce_components(b.get("components")),
+                )
+            )
     return out
 
 
@@ -168,6 +201,7 @@ def build_ltm_metrics_workbook(
     revenue_bridge: list[BridgeComponent] | list[tuple] | None = None,
     ebitda_bridge: list[BridgeComponent] | list[tuple] | None = None,
     ebitda_label: str = "LTM Adj. EBITDA",
+    extra_bridges: "list[Bridge] | list[dict] | None" = None,
     output_dir: Path | str,
     file_stem: str | None = None,
 ) -> Path:
@@ -177,12 +211,20 @@ def build_ltm_metrics_workbook(
     `segmentation_basis` is a human label such as "Service line" or "Geography".
     `ebitda_label` is "LTM Adj. EBITDA" by default; pass "LTM EBITDA" when no
     Adjusted figure is disclosed. Either bridge may be omitted.
+
+    `extra_bridges` (pitch only) appends one further `FY + YTD − prior-YTD` bridge
+    block per `Bridge`, after the revenue and EBITDA bridges, reusing the same
+    layout. The `financial-summary` stage passes these for the additional metrics
+    it selected (e.g. Net Income, Gross Profit) so its tab can link each metric's
+    LTM total off the bridge's `(=) <result_label>` row. Omitted (None) by the
+    earnings-update plan, which keeps the revenue + EBITDA bridges unchanged.
     """
     rows = _coerce_segments(segments)
     if not rows:
         raise ValueError("LTM metrics workbook requires at least one revenue segment")
     rev_components = _coerce_components(revenue_bridge)
     ebitda_components = _coerce_components(ebitda_bridge)
+    extra = _coerce_bridges(extra_bridges)
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -265,6 +307,17 @@ def build_ltm_metrics_workbook(
             result_label=ebitda_label,
             currency=currency,
             components=ebitda_components,
+        )
+    for bridge in extra:
+        if not bridge.components:
+            continue
+        next_row = _write_bridge(
+            ws,
+            start_row=next_row + 1,
+            section_title=bridge.section_title,
+            result_label=bridge.result_label,
+            currency=currency,
+            components=bridge.components,
         )
 
     ws.column_dimensions["A"].width = 42

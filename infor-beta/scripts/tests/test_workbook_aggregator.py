@@ -254,6 +254,44 @@ def test_relink_is_noop_without_ltm_bridge_labels(tmp_path: Path, monkeypatch):
     assert wb["captable"]["D48"].value is None
 
 
+def test_financial_summary_ltm_link_resolves_after_merge(tmp_path: Path, monkeypatch):
+    """The financial-summary tab's label-keyed LTM links (written before the
+    ltm-metrics tab exists) survive the merge and target the renamed 'ltm-metrics'
+    tab — so they resolve in the combined workbook, like the cap table's CapIQ
+    formulas."""
+    monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
+    from financial_summary_workbook import MetricSeries, build_financial_summary_workbook
+
+    fs = build_financial_summary_workbook(
+        company_name="SampleCo",
+        currency_note="Figures in US$MM",
+        period_note="FY = fiscal year; LTM = trailing twelve months",
+        fiscal_labels=["FY2021", "FY2022", "FY2023", "FY2024", "FY2025"],
+        metrics=[
+            MetricSeries("Revenue", "US$MM", [1, 2, 3, 4, 5], result_label="LTM Revenue"),
+            MetricSeries("Gross Profit", "US$MM", [1, 2, 3, 4, 5], result_label="LTM Gross Profit"),
+            MetricSeries("Adjusted EBITDA", "US$MM", [1, 2, 3, 4, 5], result_label="LTM Adj. EBITDA"),
+            MetricSeries("Net Income", "US$MM", [1, 2, 3, 4, 5], result_label="LTM Net Income"),
+        ],
+        output_dir=tmp_path,
+        file_stem="fs",
+    )
+    ltm = _make_workbook(tmp_path / "ltm.xlsx", {"LTM Metrics": [["(=) LTM Revenue", 4520.0]]})
+
+    out = combine_workbooks(
+        sources={"financial-summary": fs, "ltm-metrics": ltm},
+        output_dir=tmp_path,
+        deliverable_type="pitch",
+        deal_name="Atlas",
+    )
+    wb = load_workbook(out)
+    assert "financial-summary" in wb.sheetnames
+    assert "ltm-metrics" in wb.sheetnames  # the link's target tab is present post-merge
+    assert wb["financial-summary"]["G6"].value == (
+        "=INDEX('ltm-metrics'!$B:$B, MATCH(\"(=) LTM Revenue\", 'ltm-metrics'!$A:$A, 0))"
+    )
+
+
 # --- brand theme -------------------------------------------------------------
 
 _INFOR_ACCENT1 = "0E213F"  # INFOR (New) accent1 — distinguishes it from Office's 4F81BD
