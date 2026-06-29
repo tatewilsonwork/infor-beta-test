@@ -2,6 +2,19 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.17] — 2026-06-29
+
+Two pitch-deck chart follow-ups (pitch only; earnings-update untouched): an LTM-revenue pie on the overview slide, and two formatting fixes to the Financial Summary charts. Both reuse the existing `financial-charts` chart infrastructure (Excel COM build → `Chart.Export` PNG, openpyxl + LibreOffice fallback, `insert_pngs_into_placeholders`).
+
+### Added
+- **LTM revenue pie on the overview slide.** `financial_charts.render_ltm_revenue_pie_into_deck` builds an LTM-revenue-by-segment pie on the combined workbook's `ltm-metrics` tab — over the "LTM Revenue Overview" block (categories = Segment column, values = "LTM Revenue (…)" column; the **Total** row excluded), located by its section title via `ltm_revenue_overview_range` (no hardcoded rows; mirrors the aggregator's label-row scan) — and inserts it into the overview slide's (`prs.slides[6]`) deferred `[Pie Chart Placeholder]` (`Rectangle 4`). Excel does the math (the pie references the literal cells). Legend at the **top**, no chart title, no chart border; slice fills from the **INFOR theme accent palette** (new `pptx_helpers.INFOR_ACCENTS` = `0E213F, 46566E, ADB9CA, A4844B, 767171, E5E3E3`, from `INFORFG.thmx` "INFOR (New)" accent1–6), in theme order and cycled past six; Palatino 9 labels with percentage data labels. The chart persists on the `ltm-metrics` tab (mirrors how the FS charts persist on `financial-summary`). Null path: when there is no `ltm-metrics` tab / "LTM Revenue Overview" block, the pie is skipped and the placeholder is left in place. The `financial-charts` stage now renders the pie after the FS charts (chaining the same deck) and its mandatory QA render covers slides `[6, 7]`. (`scripts/financial_charts.py`, `scripts/pptx_helpers.py`, `skills/financial-charts/SKILL.md`)
+
+### Fixed
+- **Financial Summary chart border + gray axis.** The legacy `ChartArea.Border.LineStyle = 0` did not suppress the modern chart-area outline; `_format_com_chart` now clears `ChartArea.Format.Line` (+ the plot-area outline) via a shared `_com_strip_chart_border`, and sets the **category-axis line explicitly black** (`cat_axis.Format.Line`, value axis still hidden). The openpyxl fallback (`_make_openpyxl_chart` / `_make_single_value_chart`) mirrors both via `_openpyxl_no_border_black_axis` (no-fill chart-area border, black `x_axis.spPr` line). (`scripts/financial_charts.py`)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.17`.
+
 ## [0.5.16] — 2026-06-29
 
 Finishes the pitch deck's **Financial Summary** slide: builds the four metric charts on the chart-ready `financial-summary` tab and renders them into the slide. Also closes two `financial-summary`/`ltm-metrics` data-tab defects and a latent aggregator relink bug that left the slide's LTM bars blank.

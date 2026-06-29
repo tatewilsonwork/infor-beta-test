@@ -40,6 +40,11 @@ PALATINO = "Palatino Linotype"
 COLOR_UP = "00B050"    # green — positive delta / beat
 COLOR_DOWN = "C00000"  # red   — negative delta / miss
 
+# INFOR theme accent palette (INFORFG.thmx "INFOR (New)", accent1–6) — categorical
+# fills for pie / segment charts, used in theme order and cycled past six. accent2
+# (46566E) is also the clustered-column bar colour used by the Financial Summary charts.
+INFOR_ACCENTS = ["0E213F", "46566E", "ADB9CA", "A4844B", "767171", "E5E3E3"]
+
 
 # ─── Shape lookup ────────────────────────────────────────────────────────────
 
