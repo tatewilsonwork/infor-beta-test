@@ -176,16 +176,6 @@
       "title": "Executive Summary Bullets",
       "type": "array"
     },
-    "financial_metric_labels": {
-      "description": "Exactly four financial-summary tile labels \u2014 metric NAMES ONLY (e.g. 'Revenue', 'Adjusted EBITDA', 'Combined Loan Balances', 'Adjusted Return on Equity'). No amounts, currency/percent tokens, colons, periods, or YoY deltas: the (placeholder) charts show the values.",
-      "items": {
-        "type": "string"
-      },
-      "maxItems": 4,
-      "minItems": 4,
-      "title": "Financial Metric Labels",
-      "type": "array"
-    },
     "investment_highlights": {
       "items": {
         "$ref": "#/$defs/InvestmentHighlight"
@@ -295,7 +285,6 @@
     "section_labels",
     "current_section",
     "company_overview_bullets",
-    "financial_metric_labels",
     "risk_mitigants",
     "risks_tagline",
     "comps_takeaway",

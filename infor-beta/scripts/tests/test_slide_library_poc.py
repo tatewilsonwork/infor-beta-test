@@ -38,7 +38,6 @@ def _sample_content() -> PitchDeckContent:
             {"text": "Recurring revenue model supported by multi-year contracts and high customer retention", "level": 0},
             {"text": "Publicly listed issuer with established reporting history and access to capital markets", "level": 0},
         ],
-        financial_metric_labels=["Revenue", "Gross Margin", "Adjusted EBITDA", "Free Cash Flow"],
         risk_mitigants=[
             {
                 "risk": "Acquirors may question the durability of organic growth as market conditions normalize",
@@ -212,11 +211,14 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
         content_path=content_path,
         template_path=TEMPLATE,
         output_dir=tmp_path,
+        financial_metric_labels=["Revenue", "Gross Profit", "Adjusted EBITDA", "Net Income"],
     )
 
     assert deck_path.exists()
     prs = Presentation(deck_path)
     assert len(prs.slides) == 16
+    # Slide-8 tiles are filled from the financial-summary stage labels.
+    assert "Adjusted EBITDA" in _all_slides_text(prs)
     text_parts = []
 
     def _collect(shapes):
@@ -292,6 +294,7 @@ def test_pitch_library_poc_plan_stage_order():
     assert [stage.id for stage in plan.stages] == [
         "wireframe",
         "content",
+        "financial-summary",
         "ltm-metrics",
         "captable",
         "ownership",
@@ -302,18 +305,28 @@ def test_pitch_library_poc_plan_stage_order():
     ]
     assert plan.stages[0].skill == "pitch-wireframe"
     assert plan.stages[1].skill == "pitch-content"
-    assert plan.stages[2].skill == "ltm-metrics"
-    assert plan.stages[3].skill == "captable"
-    assert plan.stages[4].skill == "ownership"
-    assert plan.stages[5].skill == "comps"
-    assert plan.stages[6].skill == "precedents"
-    assert plan.stages[7].skill == "deck-assembler"
-    assert plan.stages[8].skill == "workbook-aggregator"
+    assert plan.stages[2].skill == "financial-summary"
+    assert plan.stages[3].skill == "ltm-metrics"
+    assert plan.stages[4].skill == "captable"
+    assert plan.stages[5].skill == "ownership"
+    assert plan.stages[6].skill == "comps"
+    assert plan.stages[7].skill == "precedents"
+    assert plan.stages[8].skill == "deck-assembler"
+    assert plan.stages[9].skill == "workbook-aggregator"
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
     assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
     assert deck_stage.inputs["ownership_workbook_path"] == "$stages.ownership.workbook_path"
+    # The deck reads the four Financial Summary tile labels from the financial-summary stage.
+    assert deck_stage.inputs["financial_metric_labels"] == "$stages.financial-summary.financial_metric_labels"
+    # financial-summary is the single source of truth for the deck's four metrics and
+    # drives ltm-metrics' extra bridges; it runs before ltm-metrics.
+    fs_stage = next(s for s in plan.stages if s.id == "financial-summary")
+    assert fs_stage.inputs["company"] == "$deal.subject_company"
+    assert {o.name for o in fs_stage.outputs} == {"workbook_path", "financial_metric_labels", "ltm_bridge_specs"}
+    ltm_stage = next(s for s in plan.stages if s.id == "ltm-metrics")
+    assert ltm_stage.inputs["ltm_bridge_specs"] == "$stages.financial-summary.ltm_bridge_specs"
     # Ownership runs after captable so F35 can be sourced from the cap table's basic shares.
     ownership_stage = next(s for s in plan.stages if s.id == "ownership")
     assert ownership_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
@@ -329,9 +342,11 @@ def test_pitch_library_poc_plan_stage_order():
     captable_stage = next(s for s in plan.stages if s.id == "captable")
     assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
-    # The LTM, ownership, comps and precedents workbooks fold into the combined pitch workbook.
+    # The LTM, financial-summary, ownership, comps and precedents workbooks fold into
+    # the combined pitch workbook.
     agg_stage = next(s for s in plan.stages if s.id == "workbook-aggregation")
     assert agg_stage.inputs["workbooks"]["ltm-metrics"] == "$stages.ltm-metrics.workbook_path"
+    assert agg_stage.inputs["workbooks"]["financial-summary"] == "$stages.financial-summary.workbook_path"
     assert agg_stage.inputs["workbooks"]["ownership"] == "$stages.ownership.workbook_path"
     assert agg_stage.inputs["workbooks"]["comps"] == "$stages.comps.workbook_path"
     assert agg_stage.inputs["workbooks"]["precedents"] == "$stages.precedents.workbook_path"
@@ -348,6 +363,10 @@ def _assemble(tmp_path: Path, content: PitchDeckContent, *, market_entry_target_
     plan_path = write_slide_plan(plan, tmp_path / "slide_plan.json")
     content_path = tmp_path / "content.json"
     content_path.write_text(content.model_dump_json(indent=2), encoding="utf-8")
+    kwargs.setdefault(
+        "financial_metric_labels",
+        ["Revenue", "Gross Profit", "Adjusted EBITDA", "Net Income"],
+    )
     return assemble_pitch_deck(
         slide_plan_path=plan_path,
         content_path=content_path,
@@ -434,21 +453,6 @@ def test_slide2_exec_summary_keeps_template_colour_and_bullets(tmp_path: Path):
             xml = run._r.xml
             assert "<a:solidFill>" in xml, "run must carry an explicit template colour"
             assert "1B2759" not in xml, "body text must not fall back to the navy list colour"
-
-
-# ─── Fix 3: financial-summary tiles are metric NAMES only ────────────────────
-
-def test_financial_metric_labels_reject_value_laden_strings():
-    base = _sample_content().model_dump()
-    base["financial_metric_labels"] = [
-        "FY2025 Revenue: US$589.8MM (+31% YoY)", "Gross Margin", "Adjusted EBITDA", "Free Cash Flow",
-    ]
-    with pytest.raises(ValidationError):
-        PitchDeckContent.model_validate(base)
-    base["financial_metric_labels"] = [
-        "Revenue", "Adjusted EBITDA", "Combined Loan Balances", "Adjusted Return on Equity",
-    ]
-    assert PitchDeckContent.model_validate(base).financial_metric_labels[2] == "Combined Loan Balances"
 
 
 # ─── Fix 4a: fixed 12-row market-entry structure ─────────────────────────────

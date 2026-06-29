@@ -9,11 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _DATE_RE = re.compile(r"^[A-Z][a-z]+\s+\d{4}$")
 
-# A financial-summary tile shows the metric NAME only — the (placeholder) chart
-# carries the amount. Reject anything that looks value-laden: digits, currency or
-# percent tokens, or a colon (as in "FY2025 Revenue: US$589.8MM (+31% YoY)").
-_METRIC_VALUE_TOKEN_RE = re.compile(r"[\d$%:]")
-
 # The market-entry comparison table is a fixed 12-row structure: three fixed
 # top rows, seven industry-relevant metric rows chosen once per deck (and so
 # identical across every target slide), then two fixed bottom rows.
@@ -117,17 +112,6 @@ class PitchDeckContent(BaseModel):
     section_labels: list[str] = Field(..., min_length=1, max_length=8)
     current_section: str = Field(..., min_length=1, max_length=80)
     company_overview_bullets: list[PitchBullet] = Field(..., min_length=1, max_length=10)
-    financial_metric_labels: list[str] = Field(
-        ...,
-        min_length=4,
-        max_length=4,
-        description=(
-            "Exactly four financial-summary tile labels — metric NAMES ONLY "
-            "(e.g. 'Revenue', 'Adjusted EBITDA', 'Combined Loan Balances', "
-            "'Adjusted Return on Equity'). No amounts, currency/percent tokens, "
-            "colons, periods, or YoY deltas: the (placeholder) charts show the values."
-        ),
-    )
     risk_mitigants: list[RiskMitigantRow] = Field(..., min_length=1, max_length=5)
     risks_tagline: str = Field(..., min_length=1, max_length=180)
     comps_takeaway: str = Field(..., min_length=1, max_length=180)
@@ -165,29 +149,11 @@ class PitchDeckContent(BaseModel):
             raise ValueError("presentation_date must be fully spelled-out month plus four-digit year, e.g. 'April 2026'")
         return value
 
-    @field_validator("section_labels", "financial_metric_labels", "manual_steps")
+    @field_validator("section_labels", "manual_steps")
     @classmethod
     def strings_not_blank(cls, values: list[str]) -> list[str]:
         if any(not value.strip() for value in values):
             raise ValueError("list values cannot be blank")
-        return values
-
-    @field_validator("financial_metric_labels")
-    @classmethod
-    def metric_labels_are_names_only(cls, values: list[str]) -> list[str]:
-        for value in values:
-            if _METRIC_VALUE_TOKEN_RE.search(value):
-                raise ValueError(
-                    f"financial_metric_labels must be metric NAMES only, not a "
-                    f"value-laden string like {value!r}. Drop the amount, currency "
-                    f"and YoY delta (the chart shows them) — e.g. 'Revenue', "
-                    f"'Adjusted EBITDA', 'Combined Loan Balances'."
-                )
-            if len(value) > 40:
-                raise ValueError(
-                    f"financial_metric_labels must stay short enough for a tile "
-                    f"(<= 40 chars); {value!r} reads like a phrase, not a metric name."
-                )
         return values
 
     @model_validator(mode="after")

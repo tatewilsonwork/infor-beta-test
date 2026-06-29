@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from openpyxl import load_workbook
 
-from ltm_metrics import BridgeComponent, RevenueSegment, build_ltm_metrics_workbook
+from ltm_metrics import Bridge, BridgeComponent, RevenueSegment, build_ltm_metrics_workbook
 
 
 def _build(tmp_path: Path, **overrides) -> Path:
@@ -121,3 +121,53 @@ def test_bridges_optional(tmp_path: Path):
 def test_empty_segments_raise(tmp_path: Path):
     with pytest.raises(ValueError):
         _build(tmp_path, segments=[])
+
+
+def test_extra_bridges_append_after_ebitda(tmp_path: Path):
+    # EBITDA bridge result is row 26; row 27 is a blank spacer, the extra bridge
+    # starts at 28 (section 28, header 29, data 30-32, result 33).
+    path = _build(
+        tmp_path,
+        extra_bridges=[
+            Bridge(
+                "LTM Net Income Bridge",
+                "LTM Net Income",
+                [
+                    BridgeComponent("FY2025 Net Income", 700.0),
+                    BridgeComponent("Q3 2026 YTD Net Income", 420.0),
+                    BridgeComponent("Q3 2025 YTD Net Income", 330.0, subtract=True),
+                ],
+            ),
+        ],
+    )
+    ws = load_workbook(path).active
+    assert ws["A28"].value == "LTM Net Income Bridge"
+    assert ws["A33"].value == "(=) LTM Net Income"
+    assert ws["B33"].value == "=B30+B31-B32"
+
+
+def test_extra_bridges_accept_dicts(tmp_path: Path):
+    path = _build(
+        tmp_path,
+        extra_bridges=[
+            {
+                "section_title": "LTM Gross Profit Bridge",
+                "result_label": "LTM Gross Profit",
+                "components": [
+                    ("FY2025 GP", 1000.0),
+                    ("Q3 2026 YTD GP", 600.0),
+                    ("Q3 2025 YTD GP", 470.0, True),
+                ],
+            },
+        ],
+    )
+    ws = load_workbook(path).active
+    assert ws["A28"].value == "LTM Gross Profit Bridge"
+    assert ws["A33"].value == "(=) LTM Gross Profit"
+    assert ws["B33"].value == "=B30+B31-B32"
+
+
+def test_extra_bridges_default_none_leaves_workbook_unchanged(tmp_path: Path):
+    # Without extra_bridges the workbook ends at the EBITDA bridge (result row 26).
+    ws = load_workbook(_build(tmp_path)).active
+    assert ws["A28"].value is None

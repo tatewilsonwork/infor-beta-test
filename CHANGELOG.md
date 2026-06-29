@@ -2,6 +2,23 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.15] — 2026-06-29
+
+Adds a chart-ready `financial-summary` data tab behind the pitch deck's Financial Summary slide, and makes that stage the single source of truth for the deck's four financial metrics.
+
+### Added
+- **`financial-summary` skill + `financial_summary_workbook.py`.** A new pitch stage that selects the four most relevant metrics for the target (industry-aware: operating company vs. financial institution), gathers their **last five fiscal years** from the latest 10-Ks plus an **LTM** column, and emits a standalone companion `.xlsx` folded into the combined `pitch-<codename>.xlsx` as the `financial-summary` tab. The tab is laid out *chart-ready* (one metric per row, fiscal years + LTM as a single contiguous numeric header axis, no merged cells in the data block, a Units column) so a later task can drop native Excel charts on it with no reshaping — building the charts is out of scope here. The four metric labels are emitted as a typed stage output and become the deck's slide-8 tiles.
+- **LTM linkage to the `ltm-metrics` tab.** Each flow metric's LTM cell is a label-keyed lookup (`=INDEX('ltm-metrics'!$B:$B, MATCH("(=) <result_label>", 'ltm-metrics'!$A:$A, 0))`) that resolves in the combined workbook and stays `#N/A` in the standalone file — the same "unresolved in standalone, resolves post-merge" pattern as the cap table's CapIQ formulas. Non-flow metrics (balances / ratios) fall back to the latest reported value.
+- **`extra_bridges` on the LTM workbook builder.** `build_ltm_metrics_workbook` gains an optional `extra_bridges` parameter (and a `Bridge` dataclass) that appends one `FY + YTD − prior-YTD` bridge per entry, reusing `_write_bridge`. In the pitch plan `financial-summary` drives these via its `ltm_bridge_specs` output so `ltm-metrics` bridges exactly the selected metrics; the earnings-update plan passes nothing, so its behaviour is unchanged.
+
+### Changed
+- **`financial-summary` runs before `ltm-metrics` in `plans/pitch.yaml`.** Because `financial-summary` selects the metrics and tells `ltm-metrics` (via `ltm_bridge_specs`) which extra ones to bridge, it precedes `ltm-metrics`; the `deck` stage reads `financial_metric_labels` from it and the `workbook-aggregation` stage folds its workbook in. The pitch plan now schedules into 6 waves (`financial-summary` joins `wireframe`/`comps`/`precedents` in wave 1; `ltm-metrics` moves to wave 2). No schema change — the references are the DAG.
+- **Label selection removed from `pitch-content`.** Dropped `financial_metric_labels` (and its two validators) from the `PitchDeckContent` schema and the `pitch-content` skill; the `deck` stage now takes the labels from the `financial-summary` stage output instead, threaded into `assemble_pitch_deck(financial_metric_labels=...)`. (`scripts/schemas/pitch_deck_content.py`, `skills/pitch-content/SKILL.md`, `scripts/pitch_deck_assembler.py`, `scripts/pitch_deck_wireframe.py`, `skills/deck-assembler/SKILL.md`)
+- **Deal-init filings prompt generalized.** The G6 prompt now asks for the latest four fiscal-year 10-Ks (for the five-year financial-summary history) in addition to the interim YTD stubs needed for the LTM bridge, for pitch as well as earnings update. (`scripts/deal_init.py`)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.15` (including the new `financial-summary` skill).
+
 ## [0.5.14] — 2026-06-09
 
 Adds a precedent-transactions slide to the pitch deck and fixes a batch of companion-workbook and deck issues surfaced by a live pitch run.

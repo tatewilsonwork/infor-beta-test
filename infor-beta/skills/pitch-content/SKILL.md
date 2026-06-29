@@ -1,7 +1,7 @@
 ---
 name: pitch-content
 description: Drafts the broad typed content bundle for the 16-slide INFOR slide-library POC deck from analyst notes and optional supporting sources.
-version: 0.5.14
+version: 0.5.15
 allowed-tools:
   - Read
   - Write
@@ -35,7 +35,7 @@ Drafts the single broad `PitchDeckContent` handoff for the Phase 3 slide-library
 Scope:
 - Executive Summary bullets: flexible count; choose main/sub-bullets.
 - Public-company overview bullets: concise description of who the company is and what it does.
-- Financial Summary metric labels: exactly four, **metric NAMES only** — e.g. `Revenue`, `Adjusted EBITDA`, `Combined Loan Balances`, `Adjusted Return on Equity`. Do **not** put the amount, currency, units, or YoY delta in the label (no `FY2025 Revenue: US$589.8MM (+31% YoY)`); the value is shown by the (placeholder) chart, not the tile. The schema rejects digits, `$`/`%`, and colons in these labels.
+- Financial Summary metric labels: **not your job** — the `financial-summary` stage selects the four metrics and emits their labels, so the deck reads them from that stage, not from this content bundle. Do not draft them here.
 - Acquirer risks/mitigants: **draft five rows** — the slide-10 table has five body rows, so five consideration/mitigant pairs fill it (the schema allows 1–5; fewer leaves blank rows at the bottom, which is what we're avoiding). Each row has exactly three mitigants. Each mitigant should be **one very short sentence** (roughly one line, up to ~160 chars) — not a terse fragment, but not a paragraph either.
 - Comps takeaway: one sentence.
 - Precedents takeaway: one sentence — the precedent-transactions slide's one-line takeaway (mirrors the comps takeaway; the chart stays a placeholder).

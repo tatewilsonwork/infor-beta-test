@@ -296,6 +296,7 @@ def assemble_pitch_deck(
     output_dir: Path | str,
     captable_workbook_path: Path | str | None = None,
     ownership_workbook_path: Path | str | None = None,
+    financial_metric_labels: list[str] | None = None,
 ) -> Path:
     """Fill the INFOR slide-library pitch deck.
 
@@ -306,6 +307,11 @@ def assemble_pitch_deck(
     the ownership slide when ``ownership_workbook_path`` is supplied (both via the
     ``excel_to_powerpoint`` insertion helper); other chart/table insertions remain
     deferred placeholders.
+
+    ``financial_metric_labels`` are the four Financial Summary tile labels,
+    selected by and handed off from the ``financial-summary`` stage (no longer on
+    ``PitchDeckContent``). When supplied it must hold exactly four names; when
+    None the slide-8 tiles keep their template placeholder text.
     """
     slide_plan = SlidePlan.model_validate_json(Path(slide_plan_path).read_text(encoding="utf-8"))
     content = PitchDeckContent.model_validate_json(Path(content_path).read_text(encoding="utf-8"))
@@ -385,11 +391,13 @@ def assemble_pitch_deck(
     if currency_letter is not None:
         fill_footnote_token(find_shape(slide7, "Text Placeholder 1"), currency_letter)
 
-    # Slide 8 — financial metric labels only; charts remain placeholders.
-    slide8 = prs.slides[7]
-    metric_shapes = ["Rectangle 13", "Rectangle 12", "Rectangle 15", "Rectangle 14"]
-    for shape_name, label in zip(metric_shapes, content.financial_metric_labels, strict=True):
-        set_text(find_shape(slide8, shape_name), [label])
+    # Slide 8 — financial metric labels only (from the financial-summary stage);
+    # charts remain placeholders. Left as template placeholders when no labels.
+    if financial_metric_labels:
+        slide8 = prs.slides[7]
+        metric_shapes = ["Rectangle 13", "Rectangle 12", "Rectangle 15", "Rectangle 14"]
+        for shape_name, label in zip(metric_shapes, financial_metric_labels, strict=True):
+            set_text(find_shape(slide8, shape_name), [label])
 
     # Slide 10 — concise acquirer risks and mitigants + tagline.
     slide10 = prs.slides[9]
