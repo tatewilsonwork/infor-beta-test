@@ -7,7 +7,7 @@ description: >
   target (industry-aware: operating company vs. financial institution), gathers their last five
   fiscal years from the latest 10-Ks plus an LTM column, and emits the four metric labels the deck
   tiles use. The single source of truth for the deck's four financial metrics.
-version: 0.5.15
+version: 0.5.16
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -84,8 +84,20 @@ Pull each metric's value for the **last five fiscal years** from the **latest fo
 10-Ks** (each 10-K reports the current + prior fiscal year, so four filings cover five distinct
 years; use the one-year overlap between consecutive filings to cross-check the figures). Record the
 five values **chronologically (oldest → newest)** with their fiscal-year labels (e.g. `FY2021` …
-`FY2025`). Use the metric's natural units consistently down the row (e.g. `US$MM`, `%`). Do not
-estimate a missing year — ask the analyst for the specific 10-K.
+`FY2025`). Do not estimate a missing year — ask the analyst for the specific 10-K.
+
+**Units — millions, matching the LTM tab (required).** A dollar metric's values **and** its `units`
+string are in **millions** of the filing's reporting currency, labelled with an `"MM"` suffix
+(`US$MM`, `C$MM`) — never `US$` / full dollars. This must match the `ltm-metrics` tab exactly:
+each flow metric's LTM cell links the `ltm-metrics` bridge total **value-for-value** (`=INDEX/MATCH`),
+so a scale mismatch (e.g. this tab in `US$MM` while `ltm-metrics` used `US$`) makes the LTM bar 10⁶×
+off. Non-dollar metrics use their natural unit (`%`, `x`). Keep the unit constant down the row.
+
+**Combined metrics — pass an Excel formula, never pre-summed.** If a metric combines two or more
+reported figures (e.g. "Ending Combined Loan & Advance Bal." = loans + advances), pass each fiscal
+value (and, for a non-flow combined metric, the `ltm_value`) as an Excel **formula string** of the
+components — `"=9000+800"`, not `9800` — so the arithmetic lives in the cell and stays auditable
+(Excel does the math, not you). The builder writes a `"="` string straight through as a formula.
 
 ### Step 4 — Decide the LTM column (suppression rule)
 
@@ -101,10 +113,11 @@ LTM = trailing twelve months as of the **most recent reported quarter**.
 ### Step 5 — Build the workbook
 
 Build with the shared helper `build_financial_summary_workbook` (see the reference command). The
-builder lays out the chart-ready grid, writes the FY values as numbers, and writes the LTM links —
-you supply the metric series. For each **flow** metric set `result_label` to the exact
-`ltm-metrics` bridge label its LTM links to (see the coordination note below). For each **non-flow**
-metric set `ltm_value` to the latest reported figure and leave `result_label = None`.
+builder lays out the chart-ready grid, writes the FY values (numbers, or `"="` formulas for combined
+metrics — see Step 3), and writes the LTM links — you supply the metric series. For each **flow**
+metric set `result_label` to the exact `ltm-metrics` bridge label its LTM links to (see the
+coordination note below). For each **non-flow** metric set `ltm_value` to the latest reported figure
+(a number, or a `"="` formula when that figure is itself combined) and leave `result_label = None`.
 
 **Coordinating with `ltm-metrics` (read carefully).** `ltm-metrics` always builds a **Revenue**
 bridge (result row `(=) LTM Revenue`) and an **EBITDA** bridge (`(=) LTM Adj. EBITDA`, or

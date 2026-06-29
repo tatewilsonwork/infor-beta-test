@@ -129,3 +129,29 @@ def test_non_flow_without_ltm_value_raises_when_ltm_shown(tmp_path: Path):
     bad[3] = MetricSeries("Combined Loan Balances", "US$MM", [1.0, 2.0, 3.0, 4.0, 5.0])
     with pytest.raises(ValueError):
         _build(tmp_path, metrics=bad)
+
+
+def test_combined_metric_fiscal_value_written_as_formula(tmp_path: Path):
+    # A combined metric (loans + advances) passes each FY value as a formula of
+    # its reported components, never pre-summed; openpyxl stores it as a formula.
+    metrics = _metrics()
+    metrics[3] = MetricSeries(
+        "Combined Loan & Advance Bal.",
+        "US$MM",
+        ["=9000+800", "=10000+850", "=11000+900", "=12000+950", "=12500+1000"],
+        ltm_value="=12500+1000",
+    )
+    ws = load_workbook(_build(tmp_path, metrics=metrics)).active
+    assert ws["B9"].data_type == "f"
+    assert ws["B9"].value == "=9000+800"
+    # Non-flow combined LTM is likewise a formula.
+    assert ws["G9"].data_type == "f"
+    assert ws["G9"].value == "=12500+1000"
+
+
+def test_bare_text_metric_value_raises(tmp_path: Path):
+    bad = _metrics()
+    bad[0] = MetricSeries("Revenue", "US$MM", [3100.0, 3450.0, 3820.0, 4180.0, "n/a"],
+                          result_label="LTM Revenue")
+    with pytest.raises(ValueError):
+        _build(tmp_path, metrics=bad)

@@ -302,6 +302,7 @@ def test_pitch_library_poc_plan_stage_order():
         "precedents",
         "deck",
         "workbook-aggregation",
+        "financial-charts",
     ]
     assert plan.stages[0].skill == "pitch-wireframe"
     assert plan.stages[1].skill == "pitch-content"
@@ -313,6 +314,11 @@ def test_pitch_library_poc_plan_stage_order():
     assert plan.stages[7].skill == "precedents"
     assert plan.stages[8].skill == "deck-assembler"
     assert plan.stages[9].skill == "workbook-aggregator"
+    assert plan.stages[10].skill == "financial-charts"
+    # financial-charts runs last: it charts the combined workbook and edits the deck.
+    fc_stage = next(s for s in plan.stages if s.id == "financial-charts")
+    assert fc_stage.inputs["combined_workbook_path"] == "$stages.workbook-aggregation.combined_workbook_path"
+    assert fc_stage.inputs["deck_path"] == "$stages.deck.deck_path"
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"

@@ -5,7 +5,7 @@ description: >
   "Insider Information by Issuer" report. Activates on /ownership and as the pitch plan `ownership`
   stage. Parses the analyst-attached SEDI PDF, keeps only current insiders, sums each one's common
   shares, looks up roles, and writes the INFOR ownership workbook (companion to the ownership slide).
-version: 0.5.15
+version: 0.5.16
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 

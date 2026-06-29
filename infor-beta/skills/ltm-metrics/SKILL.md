@@ -7,7 +7,7 @@ description: >
   (or EBITDA) bridge. Activates as the earnings-update plan stage `ltm-metrics`, supplying the
   companion data behind the overview slide's LTM revenue pie placeholder. Segment by service /
   product line when disclosed, else by geography.
-version: 0.5.15
+version: 0.5.16
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -71,6 +71,7 @@ unchanged: only the Revenue and EBITDA bridges are built.
 4. Build the **revenue bridge** components: FY revenue (additive), current-year YTD revenue (additive), prior-year YTD revenue (subtractive). The workbook computes the LTM total via a formula.
 5. Build the **EBITDA bridge** the same way. Prefer **Adjusted EBITDA** if the company discloses it (pass `ebitda_label="LTM Adj. EBITDA"`); fall back to unadjusted EBITDA (`ebitda_label="LTM EBITDA"`) if no Adj. figure is available. If EBITDA is not directly disclosed, derive it from operating income + D&A (+ disclosed adjustments) for each period, and note the basis.
 6. Build the workbook with the shared helper. All arithmetic (% of total, totals, the bridge sums) lives in cell formulas — Excel does the math, not the LLM.
+   - **Units — millions, with an `"MM"` suffix (required).** Pass every bridge component in **millions** of the filing's reporting currency, and set `currency` to a label carrying an `"MM"` suffix (`US$MM`, `C$MM`) — never `US$` / full dollars. In the pitch plan the `financial-summary` tab links these bridge totals **value-for-value** (`=INDEX/MATCH` into the `(=) <result_label>` row), so the scale here must match its columns exactly; a mismatch (e.g. `US$` here vs. `US$MM` there) makes the linked LTM bar 10⁶× off.
 7. Write the workbook to `$DEAL_DIR/artefacts/` (bootstrap the folder if needed), then write `$STAGE_OUTPUTS`:
 
 ```json

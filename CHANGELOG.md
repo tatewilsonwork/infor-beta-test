@@ -2,6 +2,26 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.16] — 2026-06-29
+
+Finishes the pitch deck's **Financial Summary** slide: builds the four metric charts on the chart-ready `financial-summary` tab and renders them into the slide. Also closes two `financial-summary`/`ltm-metrics` data-tab defects and a latent aggregator relink bug that left the slide's LTM bars blank.
+
+### Added
+- **`financial-charts` skill + `scripts/financial_charts.py`.** A new pitch-only stage that runs **after** `workbook-aggregation`. It builds one INFOR-formatted clustered-column chart per metric (single series = the metric's row, categories = the period header read dynamically so a suppressed-LTM tab charts five columns) on the **combined** workbook's `financial-summary` tab — the only place each flow metric's `=INDEX('ltm-metrics'!…)` LTM link resolves — then renders each chart and inserts it into the slide's four chart placeholders (`Rectangle 17/7/19/18` ← data rows 6–9), stretched to each placeholder's box. Charts persist on the deliverable tab too. Formatting: Palatino 9 black labels, no title/gridlines, hidden value axis, gap width 50%, data labels Outside End, bars filled `46566E`. Excel COM on Windows (full fidelity, builds native charts + exports PNG); openpyxl + LibreOffice fallback off-Windows. A new `financial-charts` plan stage wires `combined_workbook_path` (from `workbook-aggregation`) + `deck_path` (from `deck`). (`plans/pitch.yaml`, `skills/financial-charts/SKILL.md`)
+- **Combined-metric values as Excel formulas.** `MetricSeries.fiscal_values` / `ltm_value` now accept an Excel formula string beginning with `"="` (e.g. `"=9000+800"` for a combined metric like "Ending Combined Loan & Advance Bal."), validated and written through as a cell formula — the arithmetic stays auditable (Excel does the math), never pre-summed. (`scripts/financial_summary_workbook.py`, `skills/financial-summary/SKILL.md`)
+
+### Fixed
+- **Financial Summary LTM bars were blank / 10⁶ off.** Two root causes, both fixed:
+  - **Aggregator left the financial-summary→ltm-metrics link external (COM path).** Copying the financial-summary sheet bound its LTM-link formulas to an *external* workbook relationship (the soon-deleted source); Excel's `.Formula` getter showed an internal-looking `'ltm-metrics'!` but the cell still resolved to `#N/A`. The aggregator now re-assigns each financial-summary LTM-link formula, re-binding it to the sibling `ltm-metrics` tab so it resolves on recalc — mirroring the existing cap-table / ownership relinks. (`scripts/workbook_aggregator.py`: `_relink_financial_summary_com` / `_relink_financial_summary_openpyxl`, `_internalize_external_sheet_ref`)
+  - **Units scale mismatch.** Locked both the `financial-summary` and `ltm-metrics` skills onto **millions with an `"MM"` suffix** (`US$MM`, `C$MM`) — never `US$` / full dollars — because each flow metric's LTM cell links the bridge total value-for-value, so a scale mismatch made the LTM bar 10⁶× off. (`skills/financial-summary/SKILL.md`, `skills/ltm-metrics/SKILL.md`)
+
+### Changed
+- **Aggregator barrier generalized for post-aggregation stages.** `plan_schedule.stage_dependencies` no longer forces `workbook-aggregator` to depend on *every* stage — it now excludes the aggregator's own downstream consumers (its data-edge descendants). Without this, a stage that consumes the combined workbook (like `financial-charts`) would form an `aggregator → consumer → aggregator` cycle. Earnings-update (no post-aggregation consumer) is unchanged; pitch schedules into **7 waves** (`workbook-aggregation` then `financial-charts` last). (`scripts/plan_schedule.py`)
+- **Slide-8 charts no longer deferred in the deck-assembler.** `deck-assembler` still fills only the metric-name tiles; the four chart placeholders are now filled by the downstream `financial-charts` stage. (`skills/deck-assembler/SKILL.md`)
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.16` (including the new `financial-charts` skill).
+
 ## [0.5.15] — 2026-06-29
 
 Adds a chart-ready `financial-summary` data tab behind the pitch deck's Financial Summary slide, and makes that stage the single source of truth for the deck's four financial metrics.

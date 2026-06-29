@@ -28,12 +28,14 @@ def _stage(id, skill=None, inputs=None):
 
 
 def test_pitch_plan_waves():
-    """The pitch plan schedules 10 stages into 6 dependency waves.
+    """The pitch plan schedules 11 stages into 7 dependency waves.
 
     Wave 0 overlaps the research-heavy roots (financial-summary / comps /
     precedents / wireframe). financial-summary precedes ltm-metrics because it
-    selects the deck's metrics and tells ltm-metrics which extra ones to bridge;
-    the aggregator is alone in the final wave.
+    selects the deck's metrics and tells ltm-metrics which extra ones to bridge.
+    `workbook-aggregation` is alone in its wave (it consolidates + deletes the
+    source workbooks), then `financial-charts` runs strictly last: it charts the
+    combined workbook (where the LTM links resolve) and edits the assembled deck.
     """
     waves = compute_waves(_load_plan("pitch.yaml"))
     assert waves == [
@@ -43,6 +45,7 @@ def test_pitch_plan_waves():
         ["ownership"],
         ["deck"],
         ["workbook-aggregation"],
+        ["financial-charts"],
     ]
 
 
@@ -153,6 +156,31 @@ def test_aggregator_runs_after_a_stage_it_does_not_reference():
     plan = _load_plan("pitch.yaml")
     wave_index = {sid: i for i, wave in enumerate(compute_waves(plan)) for sid in wave}
     assert wave_index["workbook-aggregation"] > wave_index["deck"]
+
+
+def test_post_aggregation_consumer_does_not_cycle():
+    """A stage that consumes the combined workbook (e.g. `financial-charts`) runs
+    AFTER the aggregator. The barrier must not force the aggregator to depend on
+    its own consumer (that would be a cycle)."""
+    plan = Plan(
+        deliverable_type="pitch",
+        description="x",
+        stages=[
+            _stage("a"),
+            _stage("deck", inputs={"x": "$stages.a.out"}),
+            _stage("agg", skill="workbook-aggregator", inputs={"w": "$stages.a.out"}),
+            _stage("charts", inputs={"wb": "$stages.agg.out", "d": "$stages.deck.out"}),
+        ],
+    )
+    deps = stage_dependencies(plan)
+    # The aggregator depends on producers (a, deck) but NOT on its consumer.
+    assert "charts" not in deps["agg"]
+    assert {"a", "deck"} <= deps["agg"]
+    # No cycle; charts is strictly last.
+    waves = compute_waves(plan)
+    assert waves[-1] == ["charts"]
+    wave_index = {sid: i for i, wave in enumerate(waves) for sid in wave}
+    assert wave_index["charts"] > wave_index["agg"]
 
 
 # --- cycle detection --------------------------------------------------------

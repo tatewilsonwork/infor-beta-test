@@ -292,6 +292,40 @@ def test_financial_summary_ltm_link_resolves_after_merge(tmp_path: Path, monkeyp
     )
 
 
+def test_internalize_external_sheet_ref_rewrites_workbook_index_and_path_forms():
+    from workbook_aggregator import _internalize_external_sheet_ref
+
+    idx_form = "=INDEX('[1]ltm-metrics'!$B:$B, MATCH(\"(=) LTM Revenue\", '[1]ltm-metrics'!$A:$A, 0))"
+    assert _internalize_external_sheet_ref(idx_form, "ltm-metrics", "ltm-metrics") == (
+        "=INDEX('ltm-metrics'!$B:$B, MATCH(\"(=) LTM Revenue\", 'ltm-metrics'!$A:$A, 0))"
+    )
+    # Full-path external form (Excel emits this once the source workbook is closed).
+    path_form = "=INDEX('C:\\d\\[SampleCo - LTM Metrics.xlsx]ltm-metrics'!$B:$B, MATCH(\"k\", 'C:\\d\\[SampleCo - LTM Metrics.xlsx]ltm-metrics'!$A:$A, 0))"
+    assert _internalize_external_sheet_ref(path_form, "ltm-metrics", "ltm-metrics") == (
+        "=INDEX('ltm-metrics'!$B:$B, MATCH(\"k\", 'ltm-metrics'!$A:$A, 0))"
+    )
+    # A purely-internal ref (the openpyxl path) is left untouched.
+    internal = "=INDEX('ltm-metrics'!$B:$B, MATCH(\"k\", 'ltm-metrics'!$A:$A, 0))"
+    assert _internalize_external_sheet_ref(internal, "ltm-metrics", "ltm-metrics") == internal
+
+
+def test_relink_financial_summary_openpyxl_internalizes_external_links(tmp_path: Path):
+    from workbook_aggregator import _relink_financial_summary_openpyxl
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    fs = wb.create_sheet("financial-summary")
+    wb.create_sheet("ltm-metrics")
+    # Simulate the external link a COM copy would leave behind.
+    fs["G6"] = "=INDEX('[1]ltm-metrics'!$B:$B, MATCH(\"(=) LTM Revenue\", '[1]ltm-metrics'!$A:$A, 0))"
+    fs["B6"] = 5.0  # a non-LTM numeric cell is left alone
+    _relink_financial_summary_openpyxl(wb, {"financial-summary": "financial-summary", "ltm-metrics": "ltm-metrics"})
+    assert fs["G6"].value == (
+        "=INDEX('ltm-metrics'!$B:$B, MATCH(\"(=) LTM Revenue\", 'ltm-metrics'!$A:$A, 0))"
+    )
+    assert fs["B6"].value == 5.0
+
+
 # --- brand theme -------------------------------------------------------------
 
 _INFOR_ACCENT1 = "0E213F"  # INFOR (New) accent1 — distinguishes it from Office's 4F81BD
