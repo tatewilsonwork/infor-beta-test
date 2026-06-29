@@ -4,8 +4,10 @@ description: >
   Use this skill as the pitch plan's post-aggregation `financial-charts` stage. It builds the four
   INFOR-formatted clustered-column charts for the deck's Financial Summary slide on the combined
   pitch workbook's `financial-summary` tab — where each flow metric's LTM link resolves — then
-  renders them into the slide's four chart placeholders. Runs after `workbook-aggregation`.
-version: 0.5.16
+  renders them into the slide's four chart placeholders. It also builds the overview slide's LTM
+  revenue-by-segment pie on the combined workbook's `ltm-metrics` tab and drops it into the
+  "[Pie Chart Placeholder]". Runs after `workbook-aggregation`.
+version: 0.5.17
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -15,6 +17,10 @@ This stage finishes the pitch deck's **Financial Summary** slide (library entry 
 `financial-summary` stage already built the chart-ready data tab and the deck-assembler already
 filled the four metric **name** tiles; this stage builds the **four charts** (one per metric) and
 drops them into the slide's four chart placeholders.
+
+It also fills the **overview** slide's deferred **LTM revenue pie** — see the section below. Both
+the FS charts and the pie ride this single post-aggregation stage because the data live on the same
+combined workbook (FS charts off the `financial-summary` tab, the pie off the `ltm-metrics` tab).
 
 ## Why it runs after `workbook-aggregation`
 
@@ -64,21 +70,44 @@ One **clustered-column** chart per metric (4 total): a single data series = that
 
 Each placeholder is 4.53" × 2.51"; the rendered chart is stretched to its box.
 
+## LTM revenue pie (overview slide = `prs.slides[6]`)
+
+The overview ("Introduction to {company}") slide carries a deferred `[Pie Chart Placeholder]`
+(shape `Rectangle 4`, box 4.51" × 1.77") under the "LTM Revenue Breakdown" label. This stage fills
+it with a by-segment pie built on the combined workbook's **`ltm-metrics`** tab, over the
+**"LTM Revenue Overview"** block (categories = the Segment column, values = the "LTM Revenue (…)"
+column; the **Total** row is excluded). The block is located by its section title — no hardcoded
+row numbers — and the values are **literal** (no cross-tab link), so Excel just charts the cells.
+
+- Legend at the **TOP**; **no** chart title; **no** chart border
+- Slice fills from the **INFOR theme accent palette** (`pptx_helpers.INFOR_ACCENTS`:
+  `0E213F, 46566E, ADB9CA, A4844B, 767171, E5E3E3`), in order, cycled past six
+- Palatino 9 labels/legend; percentage data labels
+
+When the combined workbook has no `ltm-metrics` tab or no "LTM Revenue Overview" block, the pie is
+skipped and the placeholder is left in place (the null path).
+
 ## Workflow
 
 1. Read `$STAGE_INPUTS`.
 2. Call `render_financial_summary_charts_into_deck(...)` (see the reference command). It builds the
    four charts on the combined workbook's `financial-summary` tab and inserts them into the deck.
-3. **Overflow / chart QA — mandatory, do not skip.** Render the Financial Summary slide to PNG with
-   `render_deck_to_png(deck_path, out, slide_indices=[7])`, read the PNG, and confirm:
-   - all four charts landed in their placeholders;
-   - the INFOR formatting is applied (bars `46566E`, data labels outside-end, no value axis /
-     gridlines / title, Palatino 9);
+3. Call `render_ltm_revenue_pie_into_deck(...)` on the **deck written by step 2** (chain the same
+   path) to build + insert the overview LTM revenue pie. A `None` return means the pie was skipped
+   (no `ltm-metrics` tab / block) — leave the placeholder.
+4. **Chart QA — mandatory, do not skip.** Render the overview slide **and** the Financial Summary
+   slide to PNG with `render_deck_to_png(deck_path, out, slide_indices=[6, 7])`, read the PNGs, and
+   confirm:
+   - **Overview (slide 6):** the pie filled the placeholder; legend at top; INFOR accent slice
+     fills; no title / no border; reads legibly in the wide/short box.
+   - **Financial Summary (slide 7):** all four charts landed; INFOR formatting (bars `46566E`, data
+     labels outside-end, **no border**, **black** category-axis line, no value axis / gridlines /
+     title, Palatino 9);
    - the combined-metric and LTM bars use the **same scale** as the fiscal-year bars (no 10⁶
      mismatch — a symptom of a units mismatch between the `financial-summary` and `ltm-metrics`
      tabs; both must be in millions with an `"MM"` suffix).
    If the renderer is unavailable, say so explicitly rather than skipping silently.
-4. Write `$STAGE_OUTPUTS`.
+5. Write `$STAGE_OUTPUTS`.
 
 When `$STAGE_OUTPUTS` is **unset** (direct invocation), run the same flow against the supplied
 paths and skip the JSON handoff.
@@ -91,26 +120,44 @@ from pathlib import Path
 
 plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
 sys.path.insert(0, str(plugin_root / "scripts"))
-from financial_charts import render_financial_summary_charts_into_deck
+from financial_charts import (
+    render_financial_summary_charts_into_deck,
+    render_ltm_revenue_pie_into_deck,
+)
 from slide_render import render_deck_to_png
 
 inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())
 deal_dir = Path(os.environ.get("DEAL_DIR", "."))
+deck_path = inputs["deck_path"]
+combined = inputs["combined_workbook_path"]
 
-out_deck = render_financial_summary_charts_into_deck(
-    deck_path=inputs["deck_path"],
-    combined_workbook_path=inputs["combined_workbook_path"],
+# 1) Financial Summary charts (slide 7) — modifies the deck in place.
+fs_deck = render_financial_summary_charts_into_deck(
+    deck_path=deck_path,
+    combined_workbook_path=combined,
 )
+fs_inserted = fs_deck is not None
+deck_path = str(fs_deck) if fs_deck is not None else deck_path
 
-if out_deck is None:
-    # No financial-summary tab — slide left with placeholders.
-    result = {"deck_path": inputs["deck_path"], "charts_inserted": False}
-else:
-    # Mandatory QA render (zero-based slide index 7 = Financial Summary slide).
-    qa_dir = deal_dir / "runs" / "financial-charts-qa"
-    render_deck_to_png(out_deck, qa_dir, slide_indices=[7])
-    # → read qa_dir/slide_8.png and confirm the four charts + INFOR formatting.
-    result = {"deck_path": str(out_deck), "charts_inserted": True}
+# 2) Overview LTM revenue pie (slide 6) — chained onto the FS-charts deck.
+pie_deck = render_ltm_revenue_pie_into_deck(
+    deck_path=deck_path,
+    combined_workbook_path=combined,
+)
+pie_inserted = pie_deck is not None
+deck_path = str(pie_deck) if pie_deck is not None else deck_path
+
+# 3) Mandatory QA render — overview (index 6) + Financial Summary (index 7).
+qa_dir = deal_dir / "runs" / "financial-charts-qa"
+render_deck_to_png(deck_path, qa_dir, slide_indices=[6, 7])
+# → read qa_dir/slide_7.png (overview pie) and slide_8.png (FS charts) and confirm
+#   the formatting described in the Workflow QA step.
+
+result = {
+    "deck_path": deck_path,
+    "charts_inserted": fs_inserted,
+    "pie_inserted": pie_inserted,
+}
 
 stage_outputs = os.environ.get("STAGE_OUTPUTS")
 if stage_outputs:
@@ -122,9 +169,11 @@ if stage_outputs:
 ```json
 {
   "deck_path": "/absolute/path/to/the/final/pitch/deck.pptx",
-  "charts_inserted": true
+  "charts_inserted": true,
+  "pie_inserted": true
 }
 ```
 
 `deck_path` is the final pitch deck (same file as the `deck` stage's output, modified in place).
-`charts_inserted` is `false` when there was no `financial-summary` tab to chart.
+`charts_inserted` is `false` when there was no `financial-summary` tab to chart; `pie_inserted` is
+`false` when there was no `ltm-metrics` "LTM Revenue Overview" block for the overview pie.

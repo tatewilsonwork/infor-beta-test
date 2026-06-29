@@ -21,9 +21,17 @@ Two backends mirror ``excel_to_powerpoint.py`` / ``slide_render.py``:
     workbook built off LibreOffice-recalculated values. Best-effort fidelity.
 
 INFOR chart formatting (the only formatting that matters): Palatino Linotype 9 pt
-black (data labels + category-axis labels); no chart title; no major gridlines;
-the value (vertical) axis hidden — no line, no label; gap width 50%; data labels
-on every bar at Outside End; all bars filled RGB(70, 86, 110) = hex ``46566E``.
+black (data labels + category-axis labels); no chart title; no chart border; the
+category (horizontal) axis line black; no major gridlines; the value (vertical)
+axis hidden — no line, no label; gap width 50%; data labels on every bar at Outside
+End; all bars filled RGB(70, 86, 110) = hex ``46566E``.
+
+The same module also builds the overview slide's **LTM revenue pie**
+(``render_ltm_revenue_pie_into_deck``): a by-segment pie over the combined
+workbook's ``ltm-metrics`` tab "LTM Revenue Overview" block (literal values), with
+the legend at the TOP, no title/border, and slice fills from the INFOR theme accent
+palette (``pptx_helpers.INFOR_ACCENTS``). It rides the same post-aggregation stage
+and is dropped into the overview slide's "Rectangle 4" placeholder.
 """
 
 from __future__ import annotations
@@ -36,6 +44,8 @@ import tempfile
 from pathlib import Path
 
 from pptx import Presentation
+
+from pptx_helpers import INFOR_ACCENTS
 
 # --- INFOR chart constants ---------------------------------------------------
 _BAR_RGB_HEX = "46566E"  # RGB(70, 86, 110) as openpyxl RRGGBB
@@ -68,12 +78,39 @@ _CHART_H_PT = 2.51 * 72
 _CHART_W_CM = 4.53 * 2.54
 _CHART_H_CM = 2.51 * 2.54
 
+# --- LTM revenue pie (overview slide) ----------------------------------------
+# The pie is built on the combined workbook's `ltm-metrics` tab — its "LTM Revenue
+# Overview" block carries literal segment × LTM-revenue values — and dropped into
+# the overview slide's wide/short "[Pie Chart Placeholder]" (Rectangle 4). The
+# data live on the same combined workbook the FS charts use, so this rides the
+# post-aggregation `financial-charts` stage rather than a parallel path.
+_PIE_SHEET_DEFAULT = "ltm-metrics"
+_PIE_SECTION_LABEL = "LTM Revenue Overview"
+_PIE_TOTAL_LABEL = "Total"
+_PIE_SEGMENT_COL = 1  # column A — segment names (categories)
+_PIE_VALUE_COL = 2    # column B — LTM revenue (values)
+# Overview slide in the assembled pitch deck (slides[6] after the earnings slide
+# at raw library index 7 is deleted).
+_OVERVIEW_SLIDE_INDEX = 6
+_PIE_PLACEHOLDER = "Rectangle 4"
+# Placeholder box: 4.51" x 1.77" (wide and short) — size the exported pie to the
+# same aspect so the stretched picture is not distorted.
+_PIE_W_PT = 4.51 * 72
+_PIE_H_PT = 1.77 * 72
+_PIE_W_CM = 4.51 * 2.54
+_PIE_H_CM = 1.77 * 2.54
+
 # --- Excel COM enums ---------------------------------------------------------
 _XL_NORMAL = -4143
 _XL_COLUMN_CLUSTERED = 51
+_XL_PIE = 5
 _XL_CATEGORY = 1
 _XL_VALUE = 2
 _XL_LABEL_OUTSIDE_END = 2
+_XL_LABEL_BEST_FIT = 5
+_XL_LEGEND_TOP = -4160
+_MSO_FALSE = 0
+_MSO_TRUE = -1
 
 
 def period_axis_columns(ws) -> tuple[int, int]:
@@ -94,6 +131,70 @@ def period_axis_columns(ws) -> tuple[int, int]:
             "tab is not in the expected chart-ready layout"
         )
     return 2, units_col - 1
+
+
+def _find_label_row_openpyxl(ws, prefixes) -> int | None:
+    """Row (1-based) of the first col-A cell whose text starts with any prefix.
+
+    Mirrors ``workbook_aggregator._find_label_row_openpyxl`` — the established way
+    to locate a labelled block on these tabs without hardcoding row numbers.
+    """
+    for row in ws.iter_rows(min_col=1, max_col=1):
+        value = row[0].value
+        if isinstance(value, str) and any(value.strip().startswith(p) for p in prefixes):
+            return row[0].row
+    return None
+
+
+def ltm_revenue_overview_range(ws) -> tuple[int, int] | None:
+    """Return the (first, last) 1-based data row of the "LTM Revenue Overview" block.
+
+    The block runs: section title row, header row (section + 1), then one row per
+    segment starting at section + 2, ending just above the "Total" row. Segment
+    names live in column A and LTM revenue values in column B. The Total row is
+    excluded. ``ws`` is an openpyxl worksheet. Returns ``None`` when the block (or
+    its Total row) is not found.
+    """
+    section = _find_label_row_openpyxl(ws, (_PIE_SECTION_LABEL,))
+    if section is None:
+        return None
+    first_data = section + 2  # skip the section title + the header row
+    total = _find_label_row_openpyxl_from(ws, (_PIE_TOTAL_LABEL,), start=first_data)
+    if total is None or total <= first_data:
+        return None
+    return first_data, total - 1
+
+
+def _find_label_row_openpyxl_from(ws, prefixes, *, start: int) -> int | None:
+    """Like ``_find_label_row_openpyxl`` but only scanning rows >= ``start``."""
+    for row in range(start, ws.max_row + 1):
+        value = ws.cell(row=row, column=1).value
+        if isinstance(value, str) and any(value.strip().startswith(p) for p in prefixes):
+            return row
+    return None
+
+
+def _find_label_row_com(ws, prefixes, *, start: int = 1) -> int | None:
+    """COM counterpart of :func:`_find_label_row_openpyxl_from`."""
+    try:
+        used = ws.UsedRange
+        last = used.Row + used.Rows.Count - 1
+    except Exception:
+        last = 200
+    for r in range(start, last + 1):
+        value = ws.Cells(r, 1).Value
+        if isinstance(value, str) and any(value.strip().startswith(p) for p in prefixes):
+            return r
+    return None
+
+
+def _hex_to_com_bgr(hex_rgb: str) -> int:
+    """Convert an ``RRGGBB`` hex string to the int Excel COM ``.RGB`` expects
+    (``R + G*256 + B*65536`` — i.e. BGR byte order)."""
+    r = int(hex_rgb[0:2], 16)
+    g = int(hex_rgb[2:4], 16)
+    b = int(hex_rgb[4:6], 16)
+    return r + g * 256 + b * 65536
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +255,72 @@ def _resolve_axis(workbook: Path, sheet_name: str) -> tuple[int, int] | None:
         if sheet_name not in wb.sheetnames:
             return None
         return period_axis_columns(wb[sheet_name])
+    finally:
+        wb.close()
+
+
+# ---------------------------------------------------------------------------
+# LTM revenue pie (overview slide) — public orchestrator
+# ---------------------------------------------------------------------------
+def render_ltm_revenue_pie_into_deck(
+    *,
+    deck_path: Path | str,
+    combined_workbook_path: Path | str,
+    sheet_name: str = _PIE_SHEET_DEFAULT,
+    slide_index: int = _OVERVIEW_SLIDE_INDEX,
+    placeholder_name: str = _PIE_PLACEHOLDER,
+    output_path: Path | str | None = None,
+) -> Path | None:
+    """Build the LTM-revenue-by-segment pie and place it on the overview slide.
+
+    The pie is built on the combined workbook's ``ltm-metrics`` tab (its "LTM
+    Revenue Overview" block carries literal segment × LTM-revenue values) and
+    dropped into the overview slide's "[Pie Chart Placeholder]" (``Rectangle 4``).
+
+    Returns the output deck path, or ``None`` when the combined workbook has no
+    ``ltm-metrics`` tab / no "LTM Revenue Overview" block — in that case the slide
+    keeps its placeholder, mirroring the FS / ownership null paths.
+    """
+    deck = Path(deck_path).resolve()
+    workbook = Path(combined_workbook_path).resolve()
+    if not deck.exists():
+        raise FileNotFoundError(f"deck not found: {deck}")
+    if not workbook.exists():
+        raise FileNotFoundError(f"combined workbook not found: {workbook}")
+
+    rng = _resolve_pie_range(workbook, sheet_name)
+    if rng is None:
+        return None
+    first_row, last_row = rng
+
+    if sys.platform == "win32":
+        try:
+            png = _build_pie_com(workbook, sheet_name, first_row, last_row)
+        except RuntimeError:
+            # Excel COM unavailable on this Windows box — fall through.
+            png = _build_pie_openpyxl_libreoffice(workbook, sheet_name, first_row, last_row)
+    else:
+        png = _build_pie_openpyxl_libreoffice(workbook, sheet_name, first_row, last_row)
+
+    out = Path(output_path).resolve() if output_path is not None else deck
+    return insert_pngs_into_placeholders(
+        deck_path=deck,
+        slide_index=slide_index,
+        pngs_by_placeholder={placeholder_name: png},
+        output_path=out,
+    )
+
+
+def _resolve_pie_range(workbook: Path, sheet_name: str) -> tuple[int, int] | None:
+    """Read the "LTM Revenue Overview" data-row span from the combined workbook,
+    or None if the ``ltm-metrics`` tab / block is absent."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(workbook, read_only=True)
+    try:
+        if sheet_name not in wb.sheetnames:
+            return None
+        return ltm_revenue_overview_range(wb[sheet_name])
     finally:
         wb.close()
 
@@ -307,11 +474,33 @@ def _build_charts_com(
                 os.unlink(tmp)
 
 
+def _com_strip_chart_border(chart) -> None:
+    """Remove the chart-area and plot-area outlines so no border frames the picture.
+
+    The legacy ``ChartArea.Border.LineStyle = 0`` alone does not suppress the
+    modern chart-area outline in current Excel — that line is drawn by
+    ``ChartArea.Format.Line``, which defaults visible. We clear both, plus the
+    plot-area outline, defensively (a pie has no plot-area line to clear).
+    """
+    try:
+        chart.ChartArea.Format.Line.Visible = _MSO_FALSE
+    except Exception:
+        pass
+    try:
+        chart.ChartArea.Border.LineStyle = 0
+    except Exception:
+        pass
+    try:
+        chart.PlotArea.Format.Line.Visible = _MSO_FALSE
+    except Exception:
+        pass
+
+
 def _format_com_chart(chart, series) -> None:
     """Apply the INFOR chart formatting to a COM chart + its single series."""
     chart.HasTitle = False
     chart.HasLegend = False
-    chart.ChartArea.Border.LineStyle = 0  # no border box around the picture
+    _com_strip_chart_border(chart)
 
     # Gap width 50% (clustered-column group).
     chart.ChartGroups(1).GapWidth = _GAP_WIDTH
@@ -329,18 +518,152 @@ def _format_com_chart(chart, series) -> None:
     labels.Font.Size = _FONT_SIZE_PT
     labels.Font.Color = 0  # black
 
-    # Category (horizontal) axis: Palatino 9 black, no title.
+    # Category (horizontal) axis: Palatino 9 black, no title, black axis line
+    # (the default is a gray line — set it explicitly black).
     cat_axis = chart.Axes(_XL_CATEGORY)
     cat_axis.HasTitle = False
     cat_axis.TickLabels.Font.Name = _FONT_NAME
     cat_axis.TickLabels.Font.Size = _FONT_SIZE_PT
     cat_axis.TickLabels.Font.Color = 0
+    cat_axis.Format.Line.Visible = _MSO_TRUE
+    cat_axis.Format.Line.ForeColor.RGB = 0  # black
 
     # Value (vertical) axis + gridlines: hidden entirely.
     value_axis = chart.Axes(_XL_VALUE)
     value_axis.HasTitle = False
     value_axis.HasMajorGridlines = False
     value_axis.Delete()
+
+
+def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: int) -> bytes:
+    """Build the LTM-revenue pie on the ``ltm-metrics`` tab via Excel COM, export PNG.
+
+    Mirrors :func:`_build_charts_com`: the chart is built + exported at an on-screen
+    scratch spot (a chart parked below the rendered viewport exports blank), then
+    parked below the data and saved so it persists on the tab.
+    """
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:
+        raise RuntimeError(
+            "pywin32 is required for COM-based chart building (Windows + Excel only)"
+        ) from exc
+
+    pythoncom.CoInitialize()
+    excel = None
+    tmp_paths: list[str] = []
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = True
+        excel.DisplayAlerts = False
+        try:
+            excel.WindowState = _XL_NORMAL
+            excel.Top, excel.Left = 4000, 6000
+        except Exception:
+            pass
+        wb = excel.Workbooks.Open(str(workbook), ReadOnly=False, UpdateLinks=0)
+        try:
+            try:
+                excel.CalculateFull()
+            except Exception:
+                pass
+            ws = wb.Worksheets(sheet_name)
+            try:
+                excel.ActiveWindow.ScrollRow = 1
+                excel.ActiveWindow.ScrollColumn = 1
+            except Exception:
+                pass
+            scratch_left = ws.Cells(1, 2).Left
+            scratch_top = ws.Cells(1, 1).Top
+            chart_obj = ws.ChartObjects().Add(
+                Left=scratch_left, Top=scratch_top, Width=_PIE_W_PT, Height=_PIE_H_PT
+            )
+            chart = chart_obj.Chart
+            chart.ChartType = _XL_PIE
+            while chart.SeriesCollection().Count > 0:
+                chart.SeriesCollection(1).Delete()
+            series = chart.SeriesCollection().NewSeries()
+            series.Values = ws.Range(
+                ws.Cells(first_row, _PIE_VALUE_COL), ws.Cells(last_row, _PIE_VALUE_COL)
+            )
+            series.XValues = ws.Range(
+                ws.Cells(first_row, _PIE_SEGMENT_COL), ws.Cells(last_row, _PIE_SEGMENT_COL)
+            )
+            _format_com_pie(chart, series, last_row - first_row + 1)
+
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                tmp = f.name
+            tmp_paths.append(tmp)
+            chart.Export(Filename=tmp, FilterName="PNG")
+            with open(tmp, "rb") as fh:
+                png = fh.read()
+
+            # Park the (now-exported) chart below the data for persistence.
+            try:
+                chart_obj.Left = scratch_left
+                chart_obj.Top = ws.Cells(last_row + 3, 1).Top
+            except Exception:
+                pass
+
+            wb.Save()
+        finally:
+            wb.Close(SaveChanges=False)
+        return png
+    finally:
+        if excel is not None:
+            excel.Quit()
+        pythoncom.CoUninitialize()
+        for tmp in tmp_paths:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+
+def _format_com_pie(chart, series, n_points: int) -> None:
+    """Apply INFOR pie formatting: legend at top, no title/border, accent slice fills."""
+    chart.HasTitle = False
+    _com_strip_chart_border(chart)
+
+    # Legend at the TOP, Palatino 9 black.
+    chart.HasLegend = True
+    legend = chart.Legend
+    legend.Position = _XL_LEGEND_TOP
+    try:
+        legend.Font.Name = _FONT_NAME
+        legend.Font.Size = _FONT_SIZE_PT
+        legend.Font.Color = 0
+    except Exception:
+        pass
+
+    # Per-slice fills from the INFOR theme accents, in order, cycled past six.
+    for i in range(1, n_points + 1):
+        try:
+            point = series.Points(i)
+            point.Format.Fill.Visible = True
+            point.Format.Fill.ForeColor.RGB = _hex_to_com_bgr(
+                INFOR_ACCENTS[(i - 1) % len(INFOR_ACCENTS)]
+            )
+        except Exception:
+            pass
+
+    # Percentage data labels, Palatino 9. Set ShowPercentage/ShowValue directly on
+    # the DataLabels object — under late-binding COM, ApplyDataLabels(ShowValue=...)
+    # keyword args silently do nothing, leaving the raw value shown (and a "0.0%"
+    # number format then renders e.g. 1932 as "193200.0%").
+    try:
+        series.HasDataLabels = True
+        labels = series.DataLabels()
+        labels.ShowPercentage = True
+        labels.ShowValue = False
+        labels.ShowCategoryName = False
+        labels.ShowLegendKey = False
+        labels.NumberFormat = "0.0%"
+        labels.Position = _XL_LABEL_BEST_FIT
+        labels.Font.Name = _FONT_NAME
+        labels.Font.Size = _FONT_SIZE_PT
+        labels.Font.Color = 0
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -410,8 +733,22 @@ def _make_openpyxl_chart(ws, data_row: int, first_col: int, last_col: int):
     chart.x_axis.txPr = _palatino_text()
     chart.y_axis.delete = True
     chart.y_axis.majorGridlines = None
+    _openpyxl_no_border_black_axis(chart)
 
     return chart
+
+
+def _openpyxl_no_border_black_axis(chart) -> None:
+    """No chart-area border + a black category-axis line.
+
+    openpyxl best-effort mirror of the COM border/axis fix: clears the chart-area
+    outline and sets the category-axis line explicitly black (the default is gray).
+    """
+    from openpyxl.chart.shapes import GraphicalProperties
+    from openpyxl.drawing.line import LineProperties
+
+    chart.graphical_properties = GraphicalProperties(ln=LineProperties(noFill=True))
+    chart.x_axis.spPr = GraphicalProperties(ln=LineProperties(solidFill="000000"))
 
 
 def _palatino_text():
@@ -549,4 +886,136 @@ def _make_single_value_chart(ws, n: int):
     chart.x_axis.txPr = _palatino_text()
     chart.y_axis.delete = True
     chart.y_axis.majorGridlines = None
+    _openpyxl_no_border_black_axis(chart)
     return chart
+
+
+# ---------------------------------------------------------------------------
+# openpyxl + LibreOffice backend for the LTM revenue pie — best-effort
+# ---------------------------------------------------------------------------
+def _build_pie_openpyxl_libreoffice(
+    workbook: Path, sheet_name: str, first_row: int, last_row: int
+) -> bytes:
+    """Persist a native openpyxl pie on the ltm-metrics tab, then render its PNG.
+
+    The "LTM Revenue Overview" values are literal (unlike the FS LTM links), so no
+    LibreOffice recalc is needed — the labels/values are read straight from the tab
+    and re-charted in a throwaway single-pie workbook for the PNG.
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(workbook)
+    if sheet_name not in wb.sheetnames:
+        raise KeyError(f"sheet {sheet_name!r} not found in {workbook}")
+    ws = wb[sheet_name]
+    n = last_row - first_row + 1
+    ws.add_chart(
+        _make_openpyxl_pie(ws, first_row, last_row, n),
+        ws.cell(row=last_row + 3, column=1).coordinate,
+    )
+    labels = [ws.cell(row=r, column=_PIE_SEGMENT_COL).value for r in range(first_row, last_row + 1)]
+    values = [ws.cell(row=r, column=_PIE_VALUE_COL).value for r in range(first_row, last_row + 1)]
+    wb.save(workbook)
+    return _render_single_pie_png(labels, values)
+
+
+def _style_openpyxl_pie(chart, n_points: int) -> None:
+    """INFOR pie formatting: no title, accent slice fills, legend at top, % labels."""
+    from openpyxl.chart.label import DataLabelList
+    from openpyxl.chart.series import DataPoint
+    from openpyxl.chart.shapes import GraphicalProperties
+
+    chart.title = None
+    chart.width = _PIE_W_CM
+    chart.height = _PIE_H_CM
+    chart.series[0].data_points = [
+        DataPoint(idx=i, spPr=GraphicalProperties(solidFill=INFOR_ACCENTS[i % len(INFOR_ACCENTS)]))
+        for i in range(n_points)
+    ]
+    chart.legend.position = "t"
+    labels = DataLabelList()
+    labels.showPercent = True
+    labels.numFmt = "0.0%"
+    labels.txPr = _palatino_text()
+    chart.dataLabels = labels
+
+
+def _make_openpyxl_pie(ws, first_row: int, last_row: int, n_points: int):
+    """Build an INFOR-formatted PieChart over the "LTM Revenue Overview" block."""
+    from openpyxl.chart import PieChart, Reference
+
+    chart = PieChart()
+    data = Reference(
+        ws, min_col=_PIE_VALUE_COL, max_col=_PIE_VALUE_COL, min_row=first_row, max_row=last_row
+    )
+    cats = Reference(
+        ws, min_col=_PIE_SEGMENT_COL, max_col=_PIE_SEGMENT_COL, min_row=first_row, max_row=last_row
+    )
+    chart.add_data(data, titles_from_data=False)
+    chart.set_categories(cats)
+    _style_openpyxl_pie(chart, n_points)
+    return chart
+
+
+def _make_single_pie_chart(ws, n: int):
+    """A pie over a literal block: categories A1:A{n}, values B1:B{n}."""
+    from openpyxl.chart import PieChart, Reference
+
+    chart = PieChart()
+    data = Reference(ws, min_col=2, max_col=2, min_row=1, max_row=n)
+    cats = Reference(ws, min_col=1, max_col=1, min_row=1, max_row=n)
+    chart.add_data(data, titles_from_data=False)
+    chart.set_categories(cats)
+    _style_openpyxl_pie(chart, n)
+    return chart
+
+
+def _render_single_pie_png(labels: list, values: list) -> bytes:
+    """Render the INFOR pie to PNG from literal labels/values via LibreOffice.
+
+    Mirrors :func:`_render_single_chart_png`: data parked above the print area, the
+    print area set to the chart footprint, converted to PDF, white margins trimmed.
+    """
+    from openpyxl import Workbook
+
+    from excel_to_powerpoint import _soffice_convert, _trim_white_margins
+
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        raise RuntimeError("LibreOffice (soffice/libreoffice) not found on PATH")
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as exc:
+        raise RuntimeError("pypdfium2 is required for the non-Windows chart renderer") from exc
+
+    wb = Workbook()
+    ws = wb.active
+    n = len(labels)
+    for i in range(n):
+        ws.cell(row=1 + i, column=1, value=labels[i])
+        ws.cell(row=1 + i, column=2, value=values[i])
+    # Anchor the chart away from the data and print only its footprint.
+    ws.add_chart(_make_single_pie_chart(ws, n), "D2")
+    ws.print_area = "D2:N28"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    for side in ("left", "right", "top", "bottom"):
+        setattr(ws.page_margins, side, 0.1)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        src = Path(tmp_dir) / "pie.xlsx"
+        wb.save(src)
+        _soffice_convert(soffice, src, "pdf", Path(tmp_dir))
+        pdf_path = Path(tmp_dir) / "pie.pdf"
+        if not pdf_path.exists():
+            raise RuntimeError("LibreOffice produced no PDF for the pie chart")
+        pdf = pdfium.PdfDocument(str(pdf_path))
+        try:
+            pil = pdf[0].render(scale=200 / 72).to_pil().convert("RGB")
+            pil = _trim_white_margins(pil)
+            buf = io.BytesIO()
+            pil.save(buf, format="PNG")
+            return buf.getvalue()
+        finally:
+            pdf.close()

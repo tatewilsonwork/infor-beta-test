@@ -14,10 +14,16 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Inches
 
 from financial_summary_workbook import MetricSeries, build_financial_summary_workbook
+from ltm_metrics import RevenueSegment, build_ltm_metrics_workbook
+from pptx_helpers import INFOR_ACCENTS
 from financial_charts import (
     _make_openpyxl_chart,
+    _make_openpyxl_pie,
+    _make_single_value_chart,
     insert_png_into_placeholder,
+    ltm_revenue_overview_range,
     period_axis_columns,
+    render_ltm_revenue_pie_into_deck,
 )
 
 # A valid 1x1 transparent PNG — avoids a PIL dependency in the test.
@@ -88,6 +94,9 @@ def test_make_openpyxl_chart_applies_infor_formatting(tmp_path: Path):
     assert chart.y_axis.delete is True
     assert chart.y_axis.majorGridlines is None
     assert chart.x_axis.delete is False
+    # v0.5.17: no chart-area border, black category-axis line.
+    assert chart.graphical_properties.line.noFill is True
+    assert chart.x_axis.spPr.line.solidFill.srgbClr == "000000"
 
 
 def test_add_openpyxl_charts_yields_four_charts(tmp_path: Path):
@@ -145,3 +154,145 @@ def test_insert_missing_placeholder_raises(tmp_path: Path):
             png_bytes=_PNG_1X1,
             output_path=deck,
         )
+
+
+def test_single_value_chart_has_black_axis_and_no_border(tmp_path: Path):
+    # v0.5.17 border/axis fix also applies to the LibreOffice single-value renderer.
+    ws = load_workbook(_fs_workbook(tmp_path)).active
+    chart = _make_single_value_chart(ws, 6)
+    assert chart.graphical_properties.line.noFill is True
+    assert chart.x_axis.spPr.line.solidFill.srgbClr == "000000"
+
+
+# --- LTM revenue pie (overview slide) ---------------------------------------
+
+
+def _ltm_workbook(tmp_path: Path, segments=None, sheet_name: str = "ltm-metrics") -> Path:
+    """Build an ltm-metrics workbook, renaming its tab to the combined-workbook name."""
+    segs = segments if segments is not None else [
+        RevenueSegment("Cloud Services", 1932.0),
+        RevenueSegment("Customer Support", 1480.0),
+        RevenueSegment("License", 360.0),
+        RevenueSegment("Professional Services", 290.0),
+    ]
+    path = build_ltm_metrics_workbook(
+        company_name="SampleCo",
+        period_label="LTM ended March 31, 2026",
+        currency="US$MM",
+        segmentation_basis="Service line",
+        segments=segs,
+        revenue_bridge=None,
+        ebitda_bridge=None,
+        output_dir=tmp_path,
+    )
+    wb = load_workbook(path)
+    wb.active.title = sheet_name
+    wb.save(path)
+    return path
+
+
+def test_ltm_revenue_overview_range_locates_block(tmp_path: Path):
+    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    rng = ltm_revenue_overview_range(ws)
+    # Section row 6, header row 7, four segments at rows 8-11; Total (row 12) excluded.
+    assert rng == (8, 11)
+    first, last = rng
+    assert [ws.cell(row=r, column=1).value for r in range(first, last + 1)] == [
+        "Cloud Services",
+        "Customer Support",
+        "License",
+        "Professional Services",
+    ]
+    assert [ws.cell(row=r, column=2).value for r in range(first, last + 1)] == [
+        1932.0,
+        1480.0,
+        360.0,
+        290.0,
+    ]
+    assert ws.cell(row=last + 1, column=1).value == "Total"
+
+
+def test_ltm_revenue_overview_range_none_when_absent(tmp_path: Path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.active["A1"] = "Something Else"
+    assert ltm_revenue_overview_range(wb.active) is None
+
+
+def test_make_openpyxl_pie_applies_infor_formatting(tmp_path: Path):
+    from openpyxl.chart import PieChart
+
+    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    first, last = ltm_revenue_overview_range(ws)
+    n = last - first + 1
+    pie = _make_openpyxl_pie(ws, first, last, n)
+
+    assert isinstance(pie, PieChart)
+    assert pie.title is None
+    assert pie.legend.position == "t"  # legend at the TOP
+    fills = [dp.graphicalProperties.solidFill.srgbClr for dp in pie.series[0].data_points]
+    assert fills == INFOR_ACCENTS[:n]  # INFOR theme accents, in order
+    assert pie.dataLabels.showPercent is True
+
+
+def test_pie_slice_fills_cycle_past_six(tmp_path: Path):
+    segs = [RevenueSegment(f"Segment {i}", 100.0 + i) for i in range(7)]
+    ws = load_workbook(_ltm_workbook(tmp_path, segments=segs)).active
+    first, last = ltm_revenue_overview_range(ws)
+    n = last - first + 1
+    assert n == 7
+    pie = _make_openpyxl_pie(ws, first, last, n)
+    fills = [dp.graphicalProperties.solidFill.srgbClr for dp in pie.series[0].data_points]
+    assert fills[6] == INFOR_ACCENTS[0]  # the 7th slice cycles back to accent1
+
+
+def _deck_with_pie_placeholder(tmp_path: Path) -> Path:
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+    box = slide.shapes.add_textbox(Inches(2.62), Inches(3.40), Inches(4.51), Inches(1.77))
+    box.name = "Rectangle 4"
+    box.text_frame.text = "[Pie Chart Placeholder]"
+    path = tmp_path / "overview_deck.pptx"
+    prs.save(path)
+    return path
+
+
+def test_insert_png_replaces_pie_placeholder(tmp_path: Path):
+    deck = _deck_with_pie_placeholder(tmp_path)
+    out = insert_png_into_placeholder(
+        deck_path=deck,
+        slide_index=0,
+        placeholder_name="Rectangle 4",
+        png_bytes=_PNG_1X1,
+        output_path=deck,
+    )
+    prs = Presentation(out)
+    slide = prs.slides[0]
+    assert "Rectangle 4" not in [s.name for s in slide.shapes]
+    pictures = [s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    assert len(pictures) == 1
+
+
+def test_render_pie_returns_none_without_ltm_tab(tmp_path: Path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.active.title = "financial-summary"  # no ltm-metrics tab
+    combined = tmp_path / "pitch-Test.xlsx"
+    wb.save(combined)
+
+    deck = _deck_with_pie_placeholder(tmp_path)
+    out = render_ltm_revenue_pie_into_deck(
+        deck_path=deck,
+        combined_workbook_path=combined,
+        slide_index=0,
+        output_path=deck,
+    )
+    assert out is None
+    # The placeholder is left intact (the null path, like ownership).
+    prs = Presentation(deck)
+    text = " ".join(
+        s.text_frame.text for s in prs.slides[0].shapes if s.has_text_frame
+    )
+    assert "[Pie Chart Placeholder]" in text
