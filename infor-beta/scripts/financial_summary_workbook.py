@@ -80,31 +80,61 @@ class MetricSeries:
     - ``units``: the unit string for this metric's values (e.g. ``"US$MM"``,
       ``"%"``). Constant down the row, shown in the Units column.
     - ``fiscal_values``: the five fiscal-year values, **chronological (oldest ->
-      newest)**; length must match the workbook's ``fiscal_labels``.
+      newest)**; length must match the workbook's ``fiscal_labels``. Each value
+      is either a number **or** an Excel formula string beginning with ``"="``.
+      A **combined** metric (one that sums two or more reported figures — e.g.
+      "Ending Combined Loan & Advance Bal." = loans + advances) is passed as a
+      formula of its components (``"=9000+800"``), **never pre-summed**, so the
+      arithmetic lives in the cell and stays analyst-auditable.
     - ``result_label``: for a **flow** metric, the exact `ltm-metrics` bridge
       result label (e.g. ``"LTM Revenue"``) — the LTM cell links to its
       ``(=) <result_label>`` row. ``None`` for a non-flow metric.
     - ``ltm_value``: for a **non-flow** metric (``result_label is None``), the
-      latest reported value used as the point-in-time "LTM" figure. Ignored when
-      ``result_label`` is set.
+      latest reported value used as the point-in-time "LTM" figure — a number,
+      or a ``"="`` formula when that latest value is itself combined. Ignored
+      when ``result_label`` is set.
     """
 
     label: str
     units: str
-    fiscal_values: list[float] = field(default_factory=list)
+    fiscal_values: list[float | str] = field(default_factory=list)
     result_label: str | None = None
-    ltm_value: float | None = None
+    ltm_value: float | str | None = None
+
+
+def _coerce_value(value: "float | int | str") -> float | str:
+    """Coerce one cell value: keep an Excel formula string, else cast to float.
+
+    A string value must begin with ``"="`` (a formula such as ``"=9000+800"``);
+    a bare text value would make the chart-ready data block non-numeric and
+    break the downstream charts, so it is rejected.
+    """
+    if isinstance(value, str):
+        if not value.startswith("="):
+            raise ValueError(
+                f"string metric value {value!r} must be an Excel formula "
+                f'starting with "=" (e.g. "=9000+800"); bare text is not allowed'
+            )
+        return value
+    return float(value)
 
 
 def _normalize_metric(metric: "MetricSeries | dict") -> MetricSeries:
     if isinstance(metric, MetricSeries):
-        return metric
+        # Re-validate formula strings even on a pre-built instance.
+        return MetricSeries(
+            label=metric.label,
+            units=metric.units,
+            fiscal_values=[_coerce_value(v) for v in metric.fiscal_values],
+            result_label=metric.result_label,
+            ltm_value=(None if metric.ltm_value is None else _coerce_value(metric.ltm_value)),
+        )
     return MetricSeries(
         label=metric["label"],
         units=metric.get("units", ""),
-        fiscal_values=[float(v) for v in metric.get("fiscal_values", [])],
+        fiscal_values=[_coerce_value(v) for v in metric.get("fiscal_values", [])],
         result_label=metric.get("result_label"),
-        ltm_value=(None if metric.get("ltm_value") is None else float(metric["ltm_value"])),
+        ltm_value=(None if metric.get("ltm_value") is None else _coerce_value(metric["ltm_value"])),
     )
 
 

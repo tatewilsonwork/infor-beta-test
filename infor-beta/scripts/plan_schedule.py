@@ -71,13 +71,38 @@ def _iter_strings(value: Any) -> Iterable[str]:
             yield from _iter_strings(v)
 
 
+def _transitive_deps(deps: dict[str, set[str]]) -> dict[str, set[str]]:
+    """Transitive closure of a direct-dependency map (fixpoint iteration)."""
+    closure = {k: set(v) for k, v in deps.items()}
+    changed = True
+    while changed:
+        changed = False
+        for k in closure:
+            add: set[str] = set()
+            for d in closure[k]:
+                add |= closure.get(d, set())
+            if not add <= closure[k]:
+                closure[k] |= add
+                changed = True
+    return closure
+
+
 def stage_dependencies(plan: Plan) -> dict[str, set[str]]:
     """Map each stage id to the set of stage ids it depends on.
 
     Data edges are derived from `$stages.<id>.<name>` references found anywhere
     in a stage's inputs. The `workbook-aggregator` stage (if present) is then
-    forced to depend on every other stage — the barrier rule (see module
-    docstring). Self-references and references to unknown stage ids are dropped.
+    forced to depend on every other stage **except its own downstream
+    consumers** — the barrier rule (see module docstring). Self-references and
+    references to unknown stage ids are dropped.
+
+    Excluding the aggregator's consumers matters once a stage runs *after*
+    aggregation (e.g. `financial-charts`, which charts the combined workbook):
+    such a stage references `$stages.<aggregator>.…`, so blindly making the
+    aggregator depend on *every* stage would form a cycle. A stage that consumes
+    the combined workbook must run after the aggregator, never before it. Plans
+    with no post-aggregation consumer are unaffected (the consumer set is empty,
+    so the aggregator still depends on every other stage and is alone last).
     """
     ids = {s.id for s in plan.stages}
     deps: dict[str, set[str]] = {s.id: set() for s in plan.stages}
@@ -92,10 +117,15 @@ def stage_dependencies(plan: Plan) -> dict[str, set[str]]:
                 deps[stage.id].add(dep_id)
 
     # Aggregator barrier: it consolidates + deletes every source workbook, so it
-    # must run strictly last — after the deck reads the standalone cap table.
+    # must run strictly last among its *producers* — after the deck reads the
+    # standalone cap table — but strictly *before* any stage that consumes the
+    # combined workbook it emits. Use the data-edge closure to find those
+    # consumers and leave them out of the forced dependency set.
+    trans = _transitive_deps(deps)
     for stage in plan.stages:
         if stage.skill == _AGGREGATOR_SKILL:
-            deps[stage.id] |= ids - {stage.id}
+            consumers = {sid for sid in ids if stage.id in trans.get(sid, set())}
+            deps[stage.id] |= ids - {stage.id} - consumers
 
     return deps
 

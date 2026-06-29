@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.15
+version: 0.5.16
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -59,7 +59,7 @@ When invoked by the conductor, read:
 - Slides 3–5: static credentials, do not touch.
 - Slide 6: section divider labels.
 - Slide 7: company overview bullets; the cap table is pasted into the `Rectangle 3` placeholder when `captable_workbook_path` is supplied (`slide_index=6`, range `B15:F40`), and the `[x]$MM` footnote token is set to the cap table's output currency (`US` / `C`, read from `F5`). The LTM revenue pie stays a deferred placeholder.
-- Slide 8: financial metric **NAME** labels only, taken from the `financial_metric_labels` stage input (the `financial-summary` stage's output, not the content bundle); charts stay placeholders.
+- Slide 8: financial metric **NAME** labels only, taken from the `financial_metric_labels` stage input (the `financial-summary` stage's output, not the content bundle). The four chart placeholders are left as-is here; they are filled by the downstream **`financial-charts`** stage, which runs after `workbook-aggregation` (the charts can only be drawn once the combined workbook's `financial-summary` LTM links resolve against the folded-in `ltm-metrics` tab).
 - Slide 9: ownership slide (Canadian public targets) — **follows the Financial Summary slide**. When `ownership_workbook_path` is supplied, the left **"Insiders"** placeholder (`Rectangle 1`) is replaced by a picture of the ownership workbook's Select-Insiders block (sheet `Ownership`, range `B4:G17`, fixed `slide_index = _OWNERSHIP_SLIDE_INDEX = 8`). The right **"Institutions"** side stays a Bloomberg-sourced placeholder.
 - Slide 10: concise risks/mitigants + tagline.
 - Slide 11: comps takeaway; chart placeholder stays unless insertion replaces it later.

@@ -245,3 +245,21 @@ stages:
         type: Path
         description: Absolute path to the combined workbook (one tab per producing skill); replaces the individual workbooks.
     checkpoint: informational
+
+  # Financial Summary charts: build the deck's four metric charts on the COMBINED
+  # workbook's `financial-summary` tab — the only place each flow metric's
+  # `=INDEX('ltm-metrics'!…)` LTM link resolves (the standalone tab is #N/A until
+  # this point) — then drop the rendered charts into the slide-8 placeholders.
+  # Runs after BOTH `deck` (which it edits) and `workbook-aggregation` (whose
+  # combined workbook it charts); the scheduler places it alone in the final wave.
+  - id: financial-charts
+    skill: financial-charts
+    inputs:
+      combined_workbook_path: $stages.workbook-aggregation.combined_workbook_path
+      deck_path: $stages.deck.deck_path
+      deal_dir: $deal.deal_dir
+    outputs:
+      - name: deck_path
+        type: Path
+        description: The final pitch deck, with the four Financial Summary charts inserted (same file, modified in place).
+    checkpoint: informational

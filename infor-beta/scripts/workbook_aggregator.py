@@ -233,6 +233,15 @@ def combine_workbooks(
 # the cap table follows; the ownership % tracks the cap table's share count.
 _LTM_REVENUE_LABEL = "(=) LTM Revenue"
 _LTM_EBITDA_LABELS = ("(=) LTM Adj. EBITDA", "(=) LTM EBITDA")
+# The financial-summary tab's LTM cells are authored as `=INDEX('ltm-metrics'!…)`
+# label lookups (sheet token below). The COM copy rewrites that cross-source
+# reference as an EXTERNAL link (`'[1]ltm-metrics'!` / a full source path), which
+# resolves to #N/A; the relink re-points it at the sibling `ltm-metrics` tab now
+# in the combined workbook. (The openpyxl path copies the formula string verbatim,
+# so it is already internal — the relink is a harmless no-op there.)
+_FS_SKILL = "financial-summary"
+_LTM_SKILL = "ltm-metrics"
+_FS_LTM_REF_SHEET = "ltm-metrics"  # the sheet token the financial-summary links use
 _CAP_LTM_REVENUE_CELL = "D47"   # cap table LTM Revenue (millions, F5 currency)
 _CAP_LTM_EBITDA_CELL = "D48"    # cap table LTM Adj. EBITDA
 _CAP_BASIC_SHARES_CELL = "F17"  # cap table basic shares outstanding (millions)
@@ -252,6 +261,65 @@ _OUTPUT_CCY_LINK_FONT = ("Palatino Linotype", 9.0, "0000FF")  # name, size, aRGB
 def _quote_sheet(name: str) -> str:
     """Single-quote a sheet name for use in a formula (handles spaces/hyphens)."""
     return "'" + name.replace("'", "''") + "'"
+
+
+def _internalize_external_sheet_ref(formula: str, ext_sheet: str, internal_tab: str) -> str:
+    """Re-point a formula's external-workbook ref to ``ext_sheet`` at ``internal_tab``.
+
+    Matches a quoted external sheet reference — `'…[<wb>]<ext_sheet>'` (the `[<wb>]`
+    is the external workbook index or path COM inserts) — and rewrites it to the
+    internal `'<internal_tab>'`. No-op when the formula has no such external ref.
+    """
+    pattern = r"'[^']*\[[^\]]*\]" + re.escape(ext_sheet) + r"'"
+    return re.sub(pattern, _quote_sheet(internal_tab), formula)
+
+
+def _relink_financial_summary_openpyxl(combined, skill_to_tab: dict[str, str]) -> None:
+    """Re-point the financial-summary tab's LTM links at the sibling ltm-metrics tab."""
+    fs = skill_to_tab.get(_FS_SKILL)
+    ltm = skill_to_tab.get(_LTM_SKILL)
+    names = set(combined.sheetnames)
+    if fs not in names or ltm not in names:
+        return
+    ws = combined[fs]
+    for row in ws.iter_rows():
+        for cell in row:
+            v = cell.value
+            if isinstance(v, str) and v.startswith("=") and _FS_LTM_REF_SHEET in v:
+                new = _internalize_external_sheet_ref(v, _FS_LTM_REF_SHEET, ltm)
+                if new != v:
+                    cell.value = new
+
+
+def _relink_financial_summary_com(combined, skill_to_tab: dict[str, str]) -> None:
+    """COM counterpart of `_relink_financial_summary_openpyxl`.
+
+    Copying the financial-summary sheet binds its LTM-link formulas to an EXTERNAL
+    workbook relationship (the soon-deleted source). Excel's `.Formula` getter
+    collapses that to an internal-looking `'ltm-metrics'!` string, but the cell
+    still resolves to #N/A because the binding is external — so a string-compare
+    rewrite is a no-op and the bug survives. Re-*assigning* the (internalized)
+    formula forces Excel to re-bind it to the sibling `ltm-metrics` tab, after
+    which it resolves on recalc. So re-set every LTM-link cell unconditionally.
+    """
+    fs = skill_to_tab.get(_FS_SKILL)
+    ltm = skill_to_tab.get(_LTM_SKILL)
+    names = {combined.Sheets(i + 1).Name for i in range(combined.Sheets.Count)}
+    if fs not in names or ltm not in names:
+        return
+    ws = combined.Worksheets(fs)
+    try:
+        used = ws.UsedRange
+        last_row = used.Row + used.Rows.Count - 1
+        last_col = used.Column + used.Columns.Count - 1
+    except Exception:
+        last_row, last_col = 12, 10
+    for r in range(1, last_row + 1):
+        for c in range(1, last_col + 1):
+            cell = ws.Cells(r, c)
+            f = cell.Formula
+            if isinstance(f, str) and f.startswith("=") and _FS_LTM_REF_SHEET in f and "MATCH(" in f:
+                cell.Formula = _internalize_external_sheet_ref(f, _FS_LTM_REF_SHEET, ltm)
 
 
 def _find_label_row_openpyxl(ws, prefixes) -> int | None:
@@ -299,6 +367,8 @@ def _relink_cross_tab_openpyxl(combined, skill_to_tab: dict[str, str]) -> None:
                 cell = combined[tab][cell_ref]
                 cell.value = f"={_quote_sheet(cap)}!{_CAP_OUTPUT_CCY_CELL}"
                 cell.font = Font(name=name, size=size, color=color)
+
+    _relink_financial_summary_openpyxl(combined, skill_to_tab)
 
 
 def _find_label_row_com(ws, prefixes) -> int | None:
@@ -349,6 +419,7 @@ def _relink_cross_tab_com(combined, skill_to_tab: dict[str, str]) -> None:
                     rng.Font.Name = name
                     rng.Font.Size = size
                     rng.Font.Color = bgr
+        _relink_financial_summary_com(combined, skill_to_tab)
     except Exception:
         pass
 
