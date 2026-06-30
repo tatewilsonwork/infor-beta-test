@@ -7,7 +7,7 @@ description: >
   renders them into the slide's four chart placeholders. It also builds the overview slide's LTM
   revenue-by-segment pie on the combined workbook's `ltm-metrics` tab and drops it into the
   "[Pie Chart Placeholder]". Runs after `workbook-aggregation`.
-version: 0.5.18
+version: 0.5.19
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -102,14 +102,19 @@ Each placeholder is 4.53" × 2.51"; the rendered chart is stretched to its box.
 The overview ("Introduction to {company}") slide carries a deferred `[Pie Chart Placeholder]`
 (shape `Rectangle 4`, box 4.51" × 1.77") under the "LTM Revenue Breakdown" label. This stage fills
 it with a by-segment pie built on the combined workbook's **`ltm-metrics`** tab, over the
-**"LTM Revenue Overview"** block (categories = the Segment column, values = the "LTM Revenue (…)"
-column; the **Total** row is excluded). The block is located by its section title — no hardcoded
-row numbers — and the values are **literal** (no cross-tab link), so Excel just charts the cells.
+**"LTM Revenue Overview"** block (categories / legend = the Segment column, series = the
+**"% of Total"** column — the `=B/Btotal` fraction Excel computes; the **Total** row is
+excluded). The block is located by its section title — no hardcoded row numbers. Charting the
+fraction column rather than the dollar amounts gives identical slice geometry but lets the data
+labels read the segment share. (Off-Windows, openpyxl can't evaluate the `=B/Btotal` formula, so
+the PNG render recomputes the fractions from the literal $ column — the analyst's workbook still
+charts the live formula column.)
 
 - Legend at the **TOP**; **no** chart title; **no** chart border
 - Slice fills from the **INFOR theme accent palette** (`pptx_helpers.INFOR_ACCENTS`:
   `0E213F, 46566E, ADB9CA, A4844B, 767171, E5E3E3`), in order, cycled past six
-- Palatino 9 labels/legend; percentage data labels
+- Palatino 9 labels/legend; **value-only** data labels (percentage / category / series / legend-key
+  flags off), number format `#,##0.0%_);(#,##0.0%);"--"` so the fraction reads e.g. `45.2%`
 
 When the combined workbook has no `ltm-metrics` tab or no "LTM Revenue Overview" block, the pie is
 skipped and the placeholder is left in place (the null path).

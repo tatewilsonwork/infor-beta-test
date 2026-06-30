@@ -2,6 +2,20 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.19] — 2026-06-30
+
+Two pitch-deck chart/data formatting changes (pitch only; earnings-update untouched). Both work on the openpyxl/LibreOffice (Cowork / Linux) path and keep the Windows/Excel-COM path working; every change is additive and platform-guarded.
+
+### Changed
+- **Overview LTM-revenue pie now charts the "% of Total", not the $ amounts.** The pie series on the combined workbook's `ltm-metrics` tab is now the **"% of Total" column** (column C, the `=B/Btotal` fraction) instead of the column-B dollar amounts, and its data labels show **VALUE only** — percentage, category name, series name, and legend-key flags are all off — with the number format `#,##0.0%_);(#,##0.0%);"--"`, so a fraction like `0.452` renders as `45.2%`. Slice geometry is unchanged and the segment names stay on the top legend. The COM path (`_format_com_pie`, `_build_pie_com`) references column C after its `CalculateFull()`; the off-Windows render path can't evaluate the column-C formula, so the throwaway PNG-render workbook charts fractions recomputed in Python from the column-B `$` literals (`frac = b / sum(b)`) via the new `_fractions_from_amounts` helper. New `_PIE_PCT_COL` / `_PIE_LABEL_FORMAT` constants; `_PIE_VALUE_COL` is retained for the Python fraction-compute. (`scripts/financial_charts.py`)
+- **Financial Summary metric value cells use a currency number format.** The `financial-summary` tab's metric value cells (FY values, the LTM literal fallback, and the LTM link cell) now use `$#,##0.0_);($#,##0.0);"--"` instead of `#,##0.0`. This is the workbook cell format only — the separate `financial_charts._VALUE_FORMAT` used for the FS **chart** data labels is unchanged, and the `ltm-metrics` tab's column-B format is out of scope. (`scripts/financial_summary_workbook.py`)
+
+### Tests
+- `scripts/tests/test_financial_charts.py`: `test_make_openpyxl_pie_applies_infor_formatting` now asserts the pie series references the "% of Total" column (C) and shows value (not percentage); new `test_pie_data_labels_show_value_only_with_percent_format` locks the value-only flags and the `#,##0.0%` label format. `scripts/tests/test_financial_summary_workbook.py`: new `test_value_cells_use_currency_number_format` asserts the `$#,##0.0` cell format on the FY, LTM-link, and non-flow LTM cells.
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.19`.
+
 ## [0.5.18] — 2026-06-30
 
 Hardens the pitch `financial-charts` stage for the Excel-less production runtime (Cowork / Linux, openpyxl + LibreOffice only) — three defects surfaced by recent runs. Windows/Excel-COM paths are unchanged; every fix is additive and platform-guarded.
