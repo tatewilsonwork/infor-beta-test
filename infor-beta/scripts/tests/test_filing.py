@@ -29,6 +29,8 @@ def test_all_enum_values_construct():
         "MD&A",
         "management-circular",
         "annual-report",
+        "annual-financial-statements",
+        "interim-financial-statements",
         "ARS",
         "prospectus",
         "press-release",
@@ -46,6 +48,16 @@ def test_all_enum_values_construct():
         else:
             f = Filing(type=FilingType(value))
         assert f.type.value == value
+
+
+def test_canadian_statement_types_construct():
+    """The jurisdiction-neutral statement types (Canadian core market) round-trip."""
+    annual = Filing(type=FilingType.ANNUAL_FINANCIAL_STATEMENTS, title="Propel FY2025 AFS")
+    interim = Filing(type=FilingType.INTERIM_FINANCIAL_STATEMENTS, title="Propel Q3 2025 IFS")
+    assert annual.type.value == "annual-financial-statements"
+    assert interim.type.value == "interim-financial-statements"
+    # No type_other required for these (they are not OTHER).
+    assert annual.type_other is None and interim.type_other is None
 
 
 def test_other_requires_type_other():

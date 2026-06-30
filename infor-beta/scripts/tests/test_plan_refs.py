@@ -22,12 +22,13 @@ def ctx():
     )
 
 
-def _resolve(value, *, plan_inputs=None, ctx=None, stage_outputs=None):
+def _resolve(value, *, plan_inputs=None, ctx=None, stage_outputs=None, optional_plan_inputs=None):
     return resolve_refs(
         value,
         plan_inputs=plan_inputs or {},
         deal_context=ctx,
         stage_outputs=stage_outputs or {},
+        optional_plan_inputs=optional_plan_inputs,
     )
 
 
@@ -94,6 +95,67 @@ def test_unknown_prefix_raises(ctx):
 def test_missing_plan_input_raises(ctx):
     with pytest.raises(ReferenceResolutionError):
         _resolve("$plan_inputs.does_not_exist", plan_inputs={}, ctx=ctx)
+
+
+def test_missing_optional_plan_input_resolves_to_none(ctx):
+    """A declared-optional plan input the analyst didn't supply -> None, not a raise."""
+    out = _resolve(
+        "$plan_inputs.section_labels",
+        plan_inputs={},
+        ctx=ctx,
+        optional_plan_inputs={"section_labels"},
+    )
+    assert out is None
+
+
+def test_missing_optional_plan_input_in_dict_resolves_to_none(ctx):
+    """The softening flows through the recursive dict/list walk too."""
+    out = _resolve(
+        {"labels": "$plan_inputs.section_labels", "quarter": "$plan_inputs.q"},
+        plan_inputs={"q": "Q4 2025"},
+        ctx=ctx,
+        optional_plan_inputs={"section_labels", "current_section", "cim_path"},
+    )
+    assert out == {"labels": None, "quarter": "Q4 2025"}
+
+
+def test_supplied_optional_plan_input_still_resolves(ctx):
+    """When an optional input IS supplied, its real value is returned (not None)."""
+    out = _resolve(
+        "$plan_inputs.section_labels",
+        plan_inputs={"section_labels": ["A", "B"]},
+        ctx=ctx,
+        optional_plan_inputs={"section_labels"},
+    )
+    assert out == ["A", "B"]
+
+
+def test_missing_required_plan_input_still_raises_with_optional_set(ctx):
+    """A name NOT in the optional set still raises even when other inputs are optional."""
+    with pytest.raises(ReferenceResolutionError):
+        _resolve(
+            "$plan_inputs.reporting_quarter",
+            plan_inputs={},
+            ctx=ctx,
+            optional_plan_inputs={"section_labels"},
+        )
+
+
+def test_missing_deal_ref_still_raises_with_optional_set(ctx):
+    """The optional softening applies to plan_inputs only — $deal misses still raise."""
+    with pytest.raises(ReferenceResolutionError):
+        _resolve("$deal.no_such_field", ctx=ctx, optional_plan_inputs={"no_such_field"})
+
+
+def test_missing_stage_ref_still_raises_with_optional_set(ctx):
+    """Likewise, a missing $stages ref still raises regardless of optional_plan_inputs."""
+    with pytest.raises(ReferenceResolutionError):
+        _resolve(
+            "$stages.unrun.output",
+            ctx=ctx,
+            stage_outputs={},
+            optional_plan_inputs={"unrun"},
+        )
 
 
 def test_missing_deal_field_raises(ctx):

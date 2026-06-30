@@ -9,6 +9,14 @@ until aggregation.) The charts are then rendered and dropped into the Financial
 Summary slide's four chart placeholders, stretched to each placeholder's box —
 the same picture-into-placeholder pattern as the cap-table / ownership insertions.
 
+This stage MUTATES THE ALREADY-ASSEMBLED DECK IN PLACE — it must never re-run the
+`deck-assembler` (or any other skill). It runs *after* `workbook-aggregation` has
+folded the standalone `captable` / `ownership` workbooks into the combined file and
+deleted them, so re-assembling the deck would re-paste those (now-gone) tables and
+revert them to empty placeholders. The orchestrators below only open ``deck_path``,
+insert pictures into existing placeholders, and save; nothing here dispatches a
+sub-agent or rebuilds the deck.
+
 Two backends mirror ``excel_to_powerpoint.py`` / ``slide_render.py``:
 
   - **Excel COM** (Windows + Excel) — native clustered-column charts are built on
@@ -232,6 +240,10 @@ def render_financial_summary_charts_into_deck(
     charts were persisted to the workbook but their PNGs could not be rendered for
     the deck (LibreOffice unavailable — the graceful-degradation path, Issue 1).
     In both cases the slide keeps its placeholders, like the ownership null path.
+
+    Modifies the deck at ``deck_path`` IN PLACE (or writes ``output_path``); it does
+    not re-assemble it. Never call this from a flow that also re-runs the
+    deck-assembler — see the module docstring.
     """
     deck = Path(deck_path).resolve()
     workbook = Path(combined_workbook_path).resolve()
@@ -306,6 +318,10 @@ def render_ltm_revenue_pie_into_deck(
     Revenue Overview" block, **or** because the native pie was persisted to the
     workbook but its PNG could not be rendered for the deck (LibreOffice unavailable
     — the graceful-degradation path). Mirrors the FS / ownership null paths.
+
+    Modifies the deck at ``deck_path`` IN PLACE (or writes ``output_path``); it does
+    not re-assemble it. Never call this from a flow that also re-runs the
+    deck-assembler — see the module docstring.
     """
     deck = Path(deck_path).resolve()
     workbook = Path(combined_workbook_path).resolve()
@@ -541,9 +557,19 @@ def _format_com_chart(chart, series) -> None:
     series.Format.Fill.Visible = True
     series.Format.Fill.ForeColor.RGB = _BAR_RGB_COM
 
-    # Data labels on every bar, Outside End, Palatino 9 black.
+    # Data labels on every bar, Outside End, Palatino 9 black. Show the VALUE
+    # only — set the other flags off explicitly (mirrors _format_com_pie and the
+    # openpyxl path) so no "<category>; <series>" text rides along (Issue P1.2).
     series.HasDataLabels = True
     labels = series.DataLabels()
+    try:
+        labels.ShowValue = True
+        labels.ShowPercentage = False
+        labels.ShowCategoryName = False
+        labels.ShowSeriesName = False
+        labels.ShowLegendKey = False
+    except Exception:
+        pass
     labels.Position = _XL_LABEL_OUTSIDE_END
     labels.NumberFormat = _VALUE_FORMAT
     labels.Font.Name = _FONT_NAME
@@ -780,9 +806,16 @@ def _make_openpyxl_chart(ws, data_row: int, first_col: int, last_col: int):
     # All bars filled RGB(70, 86, 110).
     chart.series[0].graphicalProperties.solidFill = _BAR_RGB_HEX
 
-    # Data labels on every bar, Outside End, Palatino 9 black.
+    # Data labels on every bar, Outside End, Palatino 9 black. Show the VALUE
+    # only — the other label flags must be turned OFF explicitly, or LibreOffice
+    # renders "<category>; <series>; <value>" (e.g. "FY2025; Row 2; 589.808")
+    # instead of "589.8" (Issue P1.2).
     labels = DataLabelList()
     labels.showVal = True
+    labels.showCatName = False
+    labels.showSerName = False
+    labels.showLegendKey = False
+    labels.showPercent = False
     labels.dLblPos = "outEnd"
     labels.numFmt = _VALUE_FORMAT
     labels.txPr = _palatino_text()
@@ -940,8 +973,14 @@ def _make_single_value_chart(ws, n: int):
     chart.add_data(data, from_rows=True, titles_from_data=False)
     chart.set_categories(cats)
     chart.series[0].graphicalProperties.solidFill = _BAR_RGB_HEX
+    # Value-only data labels (see _make_openpyxl_chart): the other flags must be
+    # off or LibreOffice renders "<category>; <series>; <value>" (Issue P1.2).
     labels = DataLabelList()
     labels.showVal = True
+    labels.showCatName = False
+    labels.showSerName = False
+    labels.showLegendKey = False
+    labels.showPercent = False
     labels.dLblPos = "outEnd"
     labels.numFmt = _VALUE_FORMAT
     labels.txPr = _palatino_text()

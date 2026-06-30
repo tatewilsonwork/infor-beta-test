@@ -13,15 +13,28 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook, load_workbook
 
+import workbook_aggregator
 from workbook_aggregator import (
     _combine_via_openpyxl,
     _default_theme_path,
     _excel_safe_sheet_name,
     _extract_theme_xml,
+    _recalc_with_libreoffice,
     _unique_sheet_name,
     combine_workbooks,
     combined_filename,
 )
+
+
+@pytest.fixture(autouse=True)
+def _stub_recalc(monkeypatch):
+    """Keep the merge/relink/theme tests deterministic regardless of whether the
+    test machine has LibreOffice: stub combine_workbooks' recalc step to a no-op so
+    it never shells out to soffice (which would re-save and could rewrite formulas /
+    the theme XML). The recalc-specific tests below call the *real* imported
+    `_recalc_with_libreoffice` (a stable reference the module-attr patch doesn't
+    rebind) or override this stub with a recorder."""
+    monkeypatch.setattr(workbook_aggregator, "_recalc_with_libreoffice", lambda p: False)
 
 
 def _make_workbook(path: Path, sheets: dict[str, list[list]]) -> Path:
@@ -381,3 +394,68 @@ def test_theme_override_can_be_disabled(tmp_path: Path, monkeypatch):
         theme_xml = z.read("xl/theme/theme1.xml").decode("utf-8", "replace")
     accent1 = re.search(r"<a:accent1>\s*<a:srgbClr val=\"([0-9A-Fa-f]{6})\"", theme_xml)
     assert accent1 is not None and accent1.group(1).upper() != _INFOR_ACCENT1
+
+
+# --- LibreOffice recalc (P3.2) ----------------------------------------------
+
+
+def test_combine_invokes_recalc_on_openpyxl_path(tmp_path: Path, monkeypatch):
+    # The openpyxl merge path must hand the merged file to the LibreOffice recalc
+    # step (so cross-tab links carry evaluated values for downstream stages).
+    monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
+    seen: list[Path] = []
+    monkeypatch.setattr(
+        workbook_aggregator,
+        "_recalc_with_libreoffice",
+        lambda p: seen.append(Path(p)) or True,
+    )
+    a = _make_workbook(tmp_path / "cap.xlsx", {"Cap": [[1]]})
+    out = combine_workbooks(
+        sources={"captable": a},
+        output_dir=tmp_path,
+        deliverable_type="pitch",
+        deal_name="Atlas",
+    )
+    assert seen == [out]
+
+
+def test_recalc_returns_false_when_libreoffice_absent(tmp_path: Path, monkeypatch):
+    # No soffice/libreoffice on PATH -> graceful no-op; formulas left untouched.
+    wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["Total", "=1+1"]]})
+    monkeypatch.setattr(workbook_aggregator.shutil, "which", lambda name: None)
+    assert _recalc_with_libreoffice(wb_path) is False
+    # The merged file is unchanged — the formula is preserved un-evaluated.
+    assert load_workbook(wb_path)["S"]["B1"].value == "=1+1"
+
+
+def test_recalc_replaces_file_and_preserves_formula_when_present(tmp_path: Path, monkeypatch):
+    # With LibreOffice present, the recalced workbook replaces the merged file and
+    # the formula survives (LibreOffice's xlsx export keeps formula strings).
+    wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["Total", "=1+1"]]})
+    monkeypatch.setattr(
+        workbook_aggregator.shutil,
+        "which",
+        lambda name: "/usr/bin/soffice" if name in ("soffice", "libreoffice") else None,
+    )
+
+    def fake_convert(soffice, src, out_fmt, out_dir):
+        # Emulate LibreOffice recalc-on-load: keep the formula, add a sentinel cell
+        # proving the recalced file is what ends up replacing the original.
+        wb = load_workbook(src)
+        wb["S"]["C1"] = "RECALCED"
+        wb.save(Path(out_dir) / f"{Path(src).stem}.xlsx")
+
+    monkeypatch.setattr("excel_to_powerpoint._soffice_convert", fake_convert)
+    assert _recalc_with_libreoffice(wb_path) is True
+    merged = load_workbook(wb_path)["S"]
+    assert merged["C1"].value == "RECALCED"   # the recalced file replaced the original
+    assert merged["B1"].value == "=1+1"        # formula preserved (auditability)
+
+
+def test_recalc_returns_false_when_conversion_yields_nothing(tmp_path: Path, monkeypatch):
+    # soffice present but produces no output file -> graceful False, file untouched.
+    wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["Total", "=1+1"]]})
+    monkeypatch.setattr(workbook_aggregator.shutil, "which", lambda name: "/usr/bin/soffice")
+    monkeypatch.setattr("excel_to_powerpoint._soffice_convert", lambda *a, **k: None)
+    assert _recalc_with_libreoffice(wb_path) is False
+    assert load_workbook(wb_path)["S"]["B1"].value == "=1+1"

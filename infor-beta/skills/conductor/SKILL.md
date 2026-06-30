@@ -10,7 +10,7 @@ description: >
   plan-specific inputs, dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.19
+version: 0.5.20
 allowed-tools: [Read, Write, Bash, Glob, Task]
 ---
 
@@ -40,6 +40,9 @@ from run_log import (
     make_run_id, create_run_dir, write_plan_snapshot,
     write_stage_inputs, read_stage_outputs, write_stage_log, write_summary,
 )
+# Optional thin driver that collapses the per-wave boilerplate (resolve refs,
+# write every inputs.json, render envelopes / read + validate every outputs.json):
+from conductor_cli import prep_wave, collect_wave, write_plan_inputs
 ```
 
 ---
@@ -78,6 +81,14 @@ For each `InputSpec` in `plan.plan_inputs` where `required is True`, prompt the 
 
 Store the collected values as a plain dict `plan_inputs: dict[str, Any]`. Validate types informally — exact pydantic-validation of plan-input values is deferred; in v1 the type field is documentation.
 
+**Optional inputs the analyst didn't supply must stay OUT of `plan_inputs` — do not pre-seed them with `None` or any placeholder.** Instead compute the set of optional plan-input names once and pass it to every `resolve_refs` call in Step 6a:
+
+```python
+optional_plan_inputs = {spec.name for spec in plan.plan_inputs if not spec.required}
+```
+
+A stage that references an unsupplied optional input (`$plan_inputs.<name>`) then resolves to `None` automatically; a missing *required* input — or any missing `$deal.*` / `$stages.*` reference — still raises and halts the run.
+
 ### Step 5 — Create the run directory
 
 ```python
@@ -100,14 +111,16 @@ Each wave is a list of stage ids with **no dependency between them**, so the who
 
 > 5 waves: [1] `wireframe`, `ltm-metrics`, `comps`, `precedents` (parallel) → [2] `content`, `captable` → [3] `ownership` → [4] `deck` → [5] `workbook-aggregation`.
 
+> **Driver shortcut.** Rather than hand-coding 6a/6c per wave, persist the collected `plan_inputs` once with `write_plan_inputs(run_dir, plan_inputs)` and drive each wave with the `conductor_cli` helpers: `prep_wave(run_dir, n)` resolves every reference (passing `optional_plan_inputs` for you), writes each stage's `inputs.json` through the pydantic/`Path`-safe encoder, and returns the rendered dispatch envelopes; after the wave, `collect_wave(run_dir, n)` reads + validates every `outputs.json`. (Equivalently, `python ${CLAUDE_PLUGIN_ROOT}/scripts/conductor_cli.py prep-wave <run_dir> <n>` / `collect-wave <run_dir> <n>`.) You still issue the `Task` calls and run the checkpoints yourself. The manual steps below are the contract these helpers implement.
+
 Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage id. For each wave, in order:
 
 **6a — Prepare every stage in the wave.** For each stage id in the wave, look up its `Stage` and:
-1. **Resolve inputs.** `resolve_refs(stage.inputs, plan_inputs=..., deal_context=ctx, stage_outputs=stage_outputs)`. Every `$stages.*` reference a wave member needs is already in `stage_outputs` — the scheduler guarantees its producer ran in an earlier wave.
+1. **Resolve inputs.** `resolve_refs(stage.inputs, plan_inputs=plan_inputs, deal_context=ctx, stage_outputs=stage_outputs, optional_plan_inputs=optional_plan_inputs)`. Every `$stages.*` reference a wave member needs is already in `stage_outputs` — the scheduler guarantees its producer ran in an earlier wave. Passing `optional_plan_inputs` (from Step 4) lets an unsupplied optional plan input resolve to `None` instead of crashing the run.
 2. **Persist inputs.** `write_stage_inputs(run_dir, stage.id, resolved_inputs)`.
-3. **Render envelope.** Load `references/stage-envelope.md`, substitute its placeholders, prepare the prompt for the Agent tool.
+3. **Render envelope.** Load `references/stage-envelope.md`, substitute its placeholders with the **absolute** paths for *that stage* (`{{stage_inputs_path}}` → its `inputs.json`, `{{stage_outputs_path}}` → its `outputs.json`, `{{deal_dir}}`, `{{plugin_root}}`), and prepare the prompt for the Agent tool. The rendered prompt carries the `export STAGE_INPUTS=… / STAGE_OUTPUTS=… / DEAL_DIR=… / CLAUDE_PLUGIN_ROOT=…` block as the sub-agent's first step.
 
-**6b — Dispatch the whole wave concurrently.** Issue one `Task` (Agent) call per stage **in a single message** so they run in parallel. On each call set the env vars `STAGE_INPUTS` and `STAGE_OUTPUTS` (absolute paths to *that stage's* `inputs.json` / `outputs.json`) and `DEAL_DIR` (absolute path to the deal directory). Wait for every sub-agent in the wave to finish before continuing. (A single-stage wave is just one `Task` call — same as the old sequential behaviour.)
+**6b — Dispatch the whole wave concurrently.** Issue one `Task` (Agent) call per stage **in a single message** so they run in parallel, passing each stage's **rendered prompt** (the only channel — the `Task`/`Agent` tool has no parameter for environment variables, so the handoff paths must live in the prompt body, not be set as env vars on the call). Each sub-agent exports those paths itself before running its SKILL.md commands. Wait for every sub-agent in the wave to finish before continuing. (A single-stage wave is just one `Task` call — same as the old sequential behaviour.)
 
 **6c — Collect the wave.** After all of the wave's sub-agents return, for each stage id in the wave (in listed order):
 4. **Read outputs.** `outputs = read_stage_outputs(run_dir, stage.id)`. This raises `FileNotFoundError` if the sub-skill failed to write outputs.json — surface the failure to the analyst and stop. Do not start the next wave if any stage in this one produced no structured outputs.

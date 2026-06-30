@@ -22,12 +22,22 @@ stage input is either a literal or one named reference).
 Unknown prefixes raise `UnknownReferenceError`. Missing fields raise
 `ReferenceResolutionError`. Both are subclasses of `ValueError` so callers
 can catch the broad class.
+
+Optional plan inputs: a plan may declare `InputSpec`s with `required=False`
+(e.g. `section_labels`, `valuation_range`, `risk_notes`). When the analyst
+doesn't supply one, the conductor's `plan_inputs` dict simply won't carry that
+key — and a stage that references it via `$plan_inputs.<name>` would otherwise
+fail resolution. Pass the set of optional plan-input names as
+`optional_plan_inputs`; a missing `$plan_inputs.<name>` whose name is in that
+set resolves to `None` instead of raising. Missing *required* plan inputs,
+unknown plan inputs, and any missing `$deal.*` / `$stages.*` reference still
+raise — only the explicitly-declared-optional ones are softened.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from typing import AbstractSet, Any, Mapping
 
 _REF_RE = re.compile(r"^\$(plan_inputs|deal|stages)\.(.+)$")
 
@@ -63,7 +73,14 @@ def _walk_attribute_path(root: Any, parts: list[str], full_ref: str) -> Any:
     return current
 
 
-def _resolve_one(ref: str, *, plan_inputs: Mapping[str, Any], deal_context: Any, stage_outputs: Mapping[str, Mapping[str, Any]]) -> Any:
+def _resolve_one(
+    ref: str,
+    *,
+    plan_inputs: Mapping[str, Any],
+    deal_context: Any,
+    stage_outputs: Mapping[str, Mapping[str, Any]],
+    optional_plan_inputs: AbstractSet[str],
+) -> Any:
     m = _REF_RE.match(ref)
     if not m:
         raise UnknownReferenceError(
@@ -73,6 +90,13 @@ def _resolve_one(ref: str, *, plan_inputs: Mapping[str, Any], deal_context: Any,
     parts = rest.split(".")
 
     if prefix == "plan_inputs":
+        # A declared-optional plan input the analyst didn't supply resolves to
+        # None rather than raising. Only the TOP-level name is softened — a
+        # supplied-but-malformed optional input (e.g. dotted access past a None)
+        # still surfaces through the normal walk below.
+        top = parts[0]
+        if top not in plan_inputs and top in optional_plan_inputs:
+            return None
         return _walk_attribute_path(plan_inputs, parts, ref)
     if prefix == "deal":
         return _walk_attribute_path(deal_context, parts, ref)
@@ -99,6 +123,7 @@ def resolve_refs(
     plan_inputs: Mapping[str, Any],
     deal_context: Any,
     stage_outputs: Mapping[str, Mapping[str, Any]],
+    optional_plan_inputs: AbstractSet[str] | None = None,
 ) -> Any:
     """Recursively walk `value` and resolve any `$ref` strings within it.
 
@@ -110,7 +135,14 @@ def resolve_refs(
     `plan_inputs` should be a plain dict[name -> resolved value].
     `deal_context` may be either a pydantic DealContext or a dict-shaped equivalent.
     `stage_outputs` is `{stage_id: {output_name: value}}` from prior stages.
+    `optional_plan_inputs` is the set of plan-input names declared `required=False`
+    (typically `{spec.name for spec in plan.plan_inputs if not spec.required}`).
+    A `$plan_inputs.<name>` whose name is in this set but absent from `plan_inputs`
+    resolves to `None` instead of raising; defaults to the empty set, so existing
+    callers keep the strict behaviour. Missing required/unknown plan inputs and any
+    missing `$deal.*` / `$stages.*` reference still raise.
     """
+    optional = optional_plan_inputs if optional_plan_inputs is not None else frozenset()
     if isinstance(value, str):
         if value.startswith("$"):
             return _resolve_one(
@@ -118,6 +150,7 @@ def resolve_refs(
                 plan_inputs=plan_inputs,
                 deal_context=deal_context,
                 stage_outputs=stage_outputs,
+                optional_plan_inputs=optional,
             )
         return value
     if isinstance(value, Mapping):
@@ -127,6 +160,7 @@ def resolve_refs(
                 plan_inputs=plan_inputs,
                 deal_context=deal_context,
                 stage_outputs=stage_outputs,
+                optional_plan_inputs=optional,
             )
             for k, v in value.items()
         }
@@ -137,6 +171,7 @@ def resolve_refs(
                 plan_inputs=plan_inputs,
                 deal_context=deal_context,
                 stage_outputs=stage_outputs,
+                optional_plan_inputs=optional,
             )
             for v in value
         ]
