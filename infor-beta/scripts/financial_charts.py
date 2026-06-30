@@ -22,9 +22,11 @@ Two backends mirror ``excel_to_powerpoint.py`` / ``slide_render.py``:
 
 INFOR chart formatting (the only formatting that matters): Palatino Linotype 9 pt
 black (data labels + category-axis labels); no chart title; no chart border; the
-category (horizontal) axis line black; no major gridlines; the value (vertical)
-axis hidden — no line, no label; gap width 50%; data labels on every bar at Outside
-End; all bars filled RGB(70, 86, 110) = hex ``46566E``.
+category (horizontal) axis rendered as a **solid black baseline line of visible
+width** (a hairline / width-less line is dropped by the LibreOffice PNG render, so
+the width is explicit); no major gridlines; the value (vertical) axis hidden — no
+line, no label; gap width 50%; data labels on every bar at Outside End; all bars
+filled RGB(70, 86, 110) = hex ``46566E``.
 
 The same module also builds the overview slide's **LTM revenue pie**
 (``render_ltm_revenue_pie_into_deck``): a by-segment pie over the combined
@@ -56,6 +58,13 @@ _FONT_SIZE_PT = 9
 _FONT_SIZE_HUNDREDTHS = _FONT_SIZE_PT * 100  # openpyxl drawing fonts use 1/100 pt
 _GAP_WIDTH = 50
 _VALUE_FORMAT = "#,##0.0"
+
+# Category (horizontal) axis baseline: an explicit, visible solid-black line.
+# Without an explicit width the openpyxl ``<a:ln>`` defaults to a hairline that the
+# LibreOffice PNG render drops entirely, leaving the bars with no baseline (Issue
+# 2). 12700 EMU = 1.0 pt for the openpyxl path; the COM path takes the point value.
+_AXIS_LINE_WIDTH_EMU = 12700
+_AXIS_LINE_WEIGHT_PT = 1.0
 
 # --- tab / slide geometry ----------------------------------------------------
 _SHEET_DEFAULT = "financial-summary"
@@ -210,10 +219,12 @@ def render_financial_summary_charts_into_deck(
 ) -> Path | None:
     """Build the four Financial Summary charts and place them into the deck.
 
-    Returns the output deck path, or ``None`` when the combined workbook has no
-    ``financial-summary`` tab (e.g. the financial-summary stage produced nothing)
-    — in that case the slide is left with its placeholders, like the ownership
-    null path.
+    Returns the output deck path, or ``None`` when the slide is left with its
+    placeholders — either because the combined workbook has no ``financial-summary``
+    tab (the financial-summary stage produced nothing) **or** because the native
+    charts were persisted to the workbook but their PNGs could not be rendered for
+    the deck (LibreOffice unavailable — the graceful-degradation path, Issue 1).
+    In both cases the slide keeps its placeholders, like the ownership null path.
     """
     deck = Path(deck_path).resolve()
     workbook = Path(combined_workbook_path).resolve()
@@ -235,6 +246,12 @@ def render_financial_summary_charts_into_deck(
             pngs = _build_charts_openpyxl_libreoffice(workbook, sheet_name, first_col, last_col)
     else:
         pngs = _build_charts_openpyxl_libreoffice(workbook, sheet_name, first_col, last_col)
+
+    if not pngs or any(row not in pngs for _name, row in _PLACEHOLDER_MAP):
+        # Native charts were persisted to the workbook, but their PNGs could not be
+        # rendered (LibreOffice unavailable). Leave the slide placeholders rather
+        # than crashing — the durable artefact (workbook charts) is already saved.
+        return None
 
     out = Path(output_path).resolve() if output_path is not None else deck
     return insert_pngs_into_placeholders(
@@ -277,9 +294,11 @@ def render_ltm_revenue_pie_into_deck(
     Revenue Overview" block carries literal segment × LTM-revenue values) and
     dropped into the overview slide's "[Pie Chart Placeholder]" (``Rectangle 4``).
 
-    Returns the output deck path, or ``None`` when the combined workbook has no
-    ``ltm-metrics`` tab / no "LTM Revenue Overview" block — in that case the slide
-    keeps its placeholder, mirroring the FS / ownership null paths.
+    Returns the output deck path, or ``None`` when the slide keeps its placeholder
+    — either because the combined workbook has no ``ltm-metrics`` tab / no "LTM
+    Revenue Overview" block, **or** because the native pie was persisted to the
+    workbook but its PNG could not be rendered for the deck (LibreOffice unavailable
+    — the graceful-degradation path). Mirrors the FS / ownership null paths.
     """
     deck = Path(deck_path).resolve()
     workbook = Path(combined_workbook_path).resolve()
@@ -301,6 +320,12 @@ def render_ltm_revenue_pie_into_deck(
             png = _build_pie_openpyxl_libreoffice(workbook, sheet_name, first_row, last_row)
     else:
         png = _build_pie_openpyxl_libreoffice(workbook, sheet_name, first_row, last_row)
+
+    if png is None:
+        # Native pie persisted to the workbook, but its PNG could not be rendered
+        # (LibreOffice unavailable). Leave the overview placeholder rather than
+        # crashing — the durable artefact (workbook pie) is already saved.
+        return None
 
     out = Path(output_path).resolve() if output_path is not None else deck
     return insert_pngs_into_placeholders(
@@ -518,8 +543,9 @@ def _format_com_chart(chart, series) -> None:
     labels.Font.Size = _FONT_SIZE_PT
     labels.Font.Color = 0  # black
 
-    # Category (horizontal) axis: Palatino 9 black, no title, black axis line
-    # (the default is a gray line — set it explicitly black).
+    # Category (horizontal) axis: Palatino 9 black, no title, a visible solid-black
+    # baseline line (the default is a gray line — set it explicitly black with a
+    # visible weight so the bars sit on a clear baseline).
     cat_axis = chart.Axes(_XL_CATEGORY)
     cat_axis.HasTitle = False
     cat_axis.TickLabels.Font.Name = _FONT_NAME
@@ -527,6 +553,10 @@ def _format_com_chart(chart, series) -> None:
     cat_axis.TickLabels.Font.Color = 0
     cat_axis.Format.Line.Visible = _MSO_TRUE
     cat_axis.Format.Line.ForeColor.RGB = 0  # black
+    try:
+        cat_axis.Format.Line.Weight = _AXIS_LINE_WEIGHT_PT  # visible width (points)
+    except Exception:
+        pass
 
     # Value (vertical) axis + gridlines: hidden entirely.
     value_axis = chart.Axes(_XL_VALUE)
@@ -678,6 +708,13 @@ def _build_charts_openpyxl_libreoffice(
     do not survive that path), so loading + re-saving it here costs nothing extra.
     PNGs are rendered from single-chart temp workbooks built off
     LibreOffice-recalculated values so the LTM bar is correct.
+
+    Chart persistence on the tab must **not** depend on LibreOffice being present:
+    the native charts are added and the workbook saved **first**, then the PNG
+    render is attempted. If ``soffice``/``libreoffice`` (or ``pypdfium2``) is
+    missing, the workbook charts have already been saved and an empty ``{}`` is
+    returned so the caller degrades gracefully (leaves the deck placeholders)
+    rather than aborting the whole stage (Issue 1).
     """
     from openpyxl import load_workbook
 
@@ -688,14 +725,26 @@ def _build_charts_openpyxl_libreoffice(
     anchors = ["B11", "I11", "B27", "I27"]
     for (_placeholder, data_row), anchor in zip(_PLACEHOLDER_MAP, anchors):
         ws.add_chart(_make_openpyxl_chart(ws, data_row, first_col, last_col), anchor)
+    # Persist the native charts on the tab FIRST — independent of LibreOffice.
     wb.save(workbook)
 
-    resolved = _libreoffice_recalc_values(workbook, sheet_name, first_col, last_col)
-    labels = resolved["labels"]
-    pngs: dict[int, bytes] = {}
-    for _placeholder, data_row in _PLACEHOLDER_MAP:
-        pngs[data_row] = _render_single_chart_png(labels, resolved[data_row])
-    return pngs
+    try:
+        resolved = _libreoffice_recalc_values(workbook, sheet_name, first_col, last_col)
+        labels = resolved["labels"]
+        pngs: dict[int, bytes] = {}
+        for _placeholder, data_row in _PLACEHOLDER_MAP:
+            pngs[data_row] = _render_single_chart_png(labels, resolved[data_row])
+        return pngs
+    except RuntimeError as exc:
+        # LibreOffice / pypdfium2 unavailable for the deck-image step. The native
+        # charts are already saved on the tab; degrade gracefully instead of
+        # aborting the stage — the caller leaves the slide placeholders.
+        print(
+            f"[financial-charts] deck-image render skipped ({exc}); the four native "
+            f"charts are saved on the '{sheet_name}' tab of {workbook.name}.",
+            file=sys.stderr,
+        )
+        return {}
 
 
 def _make_openpyxl_chart(ws, data_row: int, first_col: int, last_col: int):
@@ -739,16 +788,20 @@ def _make_openpyxl_chart(ws, data_row: int, first_col: int, last_col: int):
 
 
 def _openpyxl_no_border_black_axis(chart) -> None:
-    """No chart-area border + a black category-axis line.
+    """No chart-area border + a visible solid-black category-axis baseline.
 
     openpyxl best-effort mirror of the COM border/axis fix: clears the chart-area
-    outline and sets the category-axis line explicitly black (the default is gray).
+    outline and sets the category-axis line explicitly black **with a visible
+    width**. A width-less ``<a:ln>`` renders as a hairline that LibreOffice drops
+    on export, so the bars float with no baseline (Issue 2) — pin the width.
     """
     from openpyxl.chart.shapes import GraphicalProperties
     from openpyxl.drawing.line import LineProperties
 
     chart.graphical_properties = GraphicalProperties(ln=LineProperties(noFill=True))
-    chart.x_axis.spPr = GraphicalProperties(ln=LineProperties(solidFill="000000"))
+    chart.x_axis.spPr = GraphicalProperties(
+        ln=LineProperties(w=_AXIS_LINE_WIDTH_EMU, solidFill="000000")
+    )
 
 
 def _palatino_text():
@@ -895,12 +948,18 @@ def _make_single_value_chart(ws, n: int):
 # ---------------------------------------------------------------------------
 def _build_pie_openpyxl_libreoffice(
     workbook: Path, sheet_name: str, first_row: int, last_row: int
-) -> bytes:
+) -> bytes | None:
     """Persist a native openpyxl pie on the ltm-metrics tab, then render its PNG.
 
     The "LTM Revenue Overview" values are literal (unlike the FS LTM links), so no
     LibreOffice recalc is needed — the labels/values are read straight from the tab
     and re-charted in a throwaway single-pie workbook for the PNG.
+
+    Like the FS chart path, the native pie is added and the workbook saved **first**
+    so its persistence does not depend on LibreOffice; the PNG render is attempted
+    after. If ``soffice``/``libreoffice`` (or ``pypdfium2``) is missing, the pie has
+    already been saved on the tab and ``None`` is returned so the caller leaves the
+    overview placeholder instead of aborting the stage (Issue 3 parity with Issue 1).
     """
     from openpyxl import load_workbook
 
@@ -915,8 +974,18 @@ def _build_pie_openpyxl_libreoffice(
     )
     labels = [ws.cell(row=r, column=_PIE_SEGMENT_COL).value for r in range(first_row, last_row + 1)]
     values = [ws.cell(row=r, column=_PIE_VALUE_COL).value for r in range(first_row, last_row + 1)]
+    # Persist the native pie on the tab FIRST — independent of LibreOffice.
     wb.save(workbook)
-    return _render_single_pie_png(labels, values)
+
+    try:
+        return _render_single_pie_png(labels, values)
+    except RuntimeError as exc:
+        print(
+            f"[financial-charts] overview pie render skipped ({exc}); the native "
+            f"pie is saved on the '{sheet_name}' tab of {workbook.name}.",
+            file=sys.stderr,
+        )
+        return None
 
 
 def _style_openpyxl_pie(chart, n_points: int) -> None:

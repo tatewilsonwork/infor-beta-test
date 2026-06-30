@@ -2,6 +2,21 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.18] — 2026-06-30
+
+Hardens the pitch `financial-charts` stage for the Excel-less production runtime (Cowork / Linux, openpyxl + LibreOffice only) — three defects surfaced by recent runs. Windows/Excel-COM paths are unchanged; every fix is additive and platform-guarded.
+
+### Fixed
+- **Financial Summary charts never reached the Excel workbook.** `_build_charts_openpyxl_libreoffice` now persists the four native chart objects on the combined workbook's `financial-summary` tab **first** and saves, **then** attempts the LibreOffice PNG render. If `soffice`/`libreoffice` (or `pypdfium2`) is missing, the workbook charts are already saved and the function degrades gracefully — it returns `{}` and `render_financial_summary_charts_into_deck` returns `None`, leaving the deck placeholders, instead of raising and aborting the whole stage. The `financial-charts` SKILL.md now makes it **mandatory** to build charts via `render_financial_summary_charts_into_deck` / `render_ltm_revenue_pie_into_deck` and **forbids** hand-rolling charts with matplotlib (or any other plotting library); the native charts must persist on the workbook tab AND be inserted into the deck. (`scripts/financial_charts.py`, `skills/financial-charts/SKILL.md`)
+- **The category-axis baseline was invisible.** The openpyxl category-axis line set via `_openpyxl_no_border_black_axis` (used by `_make_openpyxl_chart` and `_make_single_value_chart`) had a colour but **no width**, so the LibreOffice render dropped it and the bars floated with no baseline. It now carries an explicit visible width (`_AXIS_LINE_WIDTH_EMU`, 1 pt = 12700 EMU); the COM formatter `_format_com_chart` gets a matching explicit `Weight`. The value axis stays hidden; labels stay Palatino 9 black. (`scripts/financial_charts.py`, `skills/financial-charts/SKILL.md`)
+- **The overview LTM-revenue pie shared the abort-on-missing-LibreOffice bug.** `_build_pie_openpyxl_libreoffice` now persists the native pie on the `ltm-metrics` tab first and saves, then attempts the PNG render; missing LibreOffice returns `None` (and `render_ltm_revenue_pie_into_deck` leaves the overview placeholder) rather than aborting the stage — Issue-3 parity with the FS-chart fix. (`scripts/financial_charts.py`)
+
+### Tests
+- `scripts/tests/test_financial_charts.py`: assert the openpyxl category-axis line carries a visible (non-hairline) width; new graceful-degradation tests — with LibreOffice mocked absent, the four FS charts and the LTM pie are still persisted on their workbook tabs and the orchestrators return `None` without raising or touching the deck. `scripts/tests/test_plan_schedule.py`: lock that `financial-charts` depends on both `deck` and `workbook-aggregation`.
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all shipped skill frontmatter versions to `0.5.18`.
+
 ## [0.5.17] — 2026-06-29
 
 Two pitch-deck chart follow-ups (pitch only; earnings-update untouched): an LTM-revenue pie on the overview slide, and two formatting fixes to the Financial Summary charts. Both reuse the existing `financial-charts` chart infrastructure (Excel COM build → `Chart.Export` PNG, openpyxl + LibreOffice fallback, `insert_pngs_into_placeholders`).
