@@ -40,6 +40,9 @@ from run_log import (
     make_run_id, create_run_dir, write_plan_snapshot,
     write_stage_inputs, read_stage_outputs, write_stage_log, write_summary,
 )
+# Optional thin driver that collapses the per-wave boilerplate (resolve refs,
+# write every inputs.json, render envelopes / read + validate every outputs.json):
+from conductor_cli import prep_wave, collect_wave, write_plan_inputs
 ```
 
 ---
@@ -107,6 +110,8 @@ waves = compute_waves(plan)   # list[list[stage_id]] in execution order
 Each wave is a list of stage ids with **no dependency between them**, so the whole wave is dispatched **concurrently** and the conductor waits for it to finish before starting the next. Dependencies are auto-derived from the `$stages.<id>.<name>` references already in each stage's inputs — the references *are* the DAG, there is no `depends_on` field. The `workbook-aggregator` stage is always scheduled alone in the final wave (it consolidates and deletes the individual workbooks, so nothing may run alongside it). Tell the analyst the wave plan up front, e.g.:
 
 > 5 waves: [1] `wireframe`, `ltm-metrics`, `comps`, `precedents` (parallel) → [2] `content`, `captable` → [3] `ownership` → [4] `deck` → [5] `workbook-aggregation`.
+
+> **Driver shortcut.** Rather than hand-coding 6a/6c per wave, persist the collected `plan_inputs` once with `write_plan_inputs(run_dir, plan_inputs)` and drive each wave with the `conductor_cli` helpers: `prep_wave(run_dir, n)` resolves every reference (passing `optional_plan_inputs` for you), writes each stage's `inputs.json` through the pydantic/`Path`-safe encoder, and returns the rendered dispatch envelopes; after the wave, `collect_wave(run_dir, n)` reads + validates every `outputs.json`. (Equivalently, `python ${CLAUDE_PLUGIN_ROOT}/scripts/conductor_cli.py prep-wave <run_dir> <n>` / `collect-wave <run_dir> <n>`.) You still issue the `Task` calls and run the checkpoints yourself. The manual steps below are the contract these helpers implement.
 
 Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage id. For each wave, in order:
 

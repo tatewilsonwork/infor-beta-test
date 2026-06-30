@@ -89,6 +89,8 @@ and tell the analyst to confirm `INFOR Ownership Template.xlsx` exists in the pl
 Read the attached PDF. It lists every insider the issuer has ever had, each as a block:
 `Insider Name:` … `Insider Relationship:` (codes 1–8) … `Ceased to be Insider:` … then security rows.
 
+SEDI exports are normally clean text (see `references/sedi-extraction.md`), but if a particular report comes through garbled (CID-font scramble, U+FFFD characters, or blank pages), read it via the shared `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/pdf_extract.py` helper (`from pdf_extract import extract_pdf_text`), which detects garble and falls back to rendering + tesseract OCR — never transcribe scrambled glyphs.
+
 **Keep only insiders whose `Ceased to be Insider:` is `Not Applicable`.** Drop every insider with a
 ceased date — they are former insiders. (See `references/sedi-extraction.md` for the relationship-code
 legend and worked parsing examples.)

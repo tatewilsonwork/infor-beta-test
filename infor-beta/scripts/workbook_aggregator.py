@@ -29,7 +29,14 @@ Two merge backends, mirroring `excel_to_powerpoint.py`:
 
   - **openpyxl** (Cowork / Linux / macOS, or Windows without Excel) — a
     best-effort cell-and-style copy. External data connections (CapIQ) and
-    charts do NOT survive this path; use it only when COM is unavailable.
+    charts do NOT survive this path; use it only when COM is unavailable. The
+    openpyxl copy writes formula strings with NO cached values, so after the
+    merge `_recalc_with_libreoffice` re-saves the combined file through headless
+    LibreOffice (recalc-on-load) to cache evaluated values while preserving the
+    formulas — otherwise downstream stages (`financial-charts`) would read the
+    cross-tab links as `None`. That recalc is best-effort: when LibreOffice is
+    absent the workbook simply keeps its un-evaluated formulas (the COM path needs
+    no such step — Excel recalcs natively on save).
 
 Theme: the combined workbook is stamped with the INFOR brand theme
 (`templates/INFORFG.thmx`) on both backends — `ApplyTheme` under COM,
@@ -58,7 +65,9 @@ constraints are enforced in both backends.
 from __future__ import annotations
 
 import re
+import shutil
 import sys
+import tempfile
 import time
 import zipfile
 from pathlib import Path
@@ -210,13 +219,26 @@ def combine_workbooks(
     output_path = out_dir / combined_filename(deliverable_type, deal_name)
 
     theme = _resolve_theme_path(theme_path)
+    used_openpyxl = False
     if sys.platform == "win32":
         try:
             _combine_via_com(kept, output_path, theme)
         except RuntimeError:
             _combine_via_openpyxl(kept, output_path, theme)
+            used_openpyxl = True
     else:
         _combine_via_openpyxl(kept, output_path, theme)
+        used_openpyxl = True
+
+    # The openpyxl merge writes formula strings with NO cached values, so the
+    # cross-tab links (the financial-summary `=INDEX('ltm-metrics'!…)` LTM lookups,
+    # the cap table's relinked LTM cells, CapIQ-degraded cells) sit un-evaluated
+    # until the analyst opens the file — and a downstream stage like
+    # `financial-charts` would read `None`. Recalc the merged file on the
+    # non-Windows path with LibreOffice so it carries evaluated values (the COM
+    # path already recalcs natively via Excel on save). Formulas are preserved.
+    if used_openpyxl:
+        _recalc_with_libreoffice(output_path)
 
     if delete_sources:
         for _skill, path in kept:
@@ -224,6 +246,57 @@ def combine_workbooks(
                 path.unlink(missing_ok=True)
 
     return output_path
+
+
+def _recalc_with_libreoffice(workbook_path: Path) -> bool:
+    """Recalc an openpyxl-merged workbook in place with headless LibreOffice.
+
+    Loads the workbook in LibreOffice with recalc-on-load and re-saves it, caching
+    the evaluated values **while preserving the formula strings** (LibreOffice's
+    `.xlsx` export keeps formulas, so analyst auditability is intact). Downstream
+    stages then read evaluated numbers instead of `None`. Reuses the recalc-on-load
+    `_soffice_convert` helper that `financial_charts` / `excel_to_powerpoint` use.
+
+    Best-effort and non-fatal: returns ``True`` if the recalc ran and replaced the
+    file, ``False`` if LibreOffice (`soffice`/`libreoffice`) is unavailable or the
+    conversion produced nothing — in which case the merged workbook keeps its
+    un-evaluated formulas (the analyst's Excel recalcs them on open) rather than the
+    stage aborting. Never raises.
+    """
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if soffice is None:
+        print(
+            "[workbook-aggregator] LibreOffice (soffice/libreoffice) not found on "
+            "PATH; the combined workbook keeps its un-evaluated cross-tab formulas "
+            "(Excel will recalc them on open).",
+            file=sys.stderr,
+        )
+        return False
+
+    from excel_to_powerpoint import _soffice_convert  # recalc-on-load helper
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            _soffice_convert(
+                soffice, workbook_path, "xlsx:Calc MS Excel 2007 XML", Path(tmp_dir)
+            )
+            recalced = Path(tmp_dir) / f"{workbook_path.stem}.xlsx"
+            if not recalced.exists():
+                print(
+                    "[workbook-aggregator] LibreOffice produced no recalculated "
+                    "workbook; leaving formulas un-evaluated.",
+                    file=sys.stderr,
+                )
+                return False
+            shutil.copyfile(recalced, workbook_path)
+        return True
+    except RuntimeError as exc:
+        print(
+            f"[workbook-aggregator] LibreOffice recalc failed ({exc}); leaving the "
+            "combined workbook's formulas un-evaluated.",
+            file=sys.stderr,
+        )
+        return False
 
 
 # ─── Cross-tab relink ────────────────────────────────────────────────────────

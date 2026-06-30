@@ -112,6 +112,8 @@ Determine the filing's reporting currency from the attached documents. Write bot
 
 Read the attached documents and extract all items listed in the Domain Reference section below. Use the most recent balance sheet date available.
 
+**Garbled PDFs:** if a filing's text comes through scrambled (CID-font glyph soup, U+FFFD replacement characters, or blank pages), do **not** transcribe the garbage. Use the shared `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/pdf_extract.py` helper, which detects garble and falls back to rendering the pages + tesseract OCR: `from pdf_extract import extract_pdf_text; r = extract_pdf_text(path)` — read `r.text`, and if `r.garbled` is still true (tesseract unavailable) tell the analyst rather than guessing the numbers.
+
 **Source tracking:** For every value extracted, record its source in this format:
 `"[Document Name] - Page [#], [Section Name]"`
 You will attach these as cell comments in Step 6.
