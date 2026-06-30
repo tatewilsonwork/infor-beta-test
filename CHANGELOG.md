@@ -2,6 +2,30 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.20] — 2026-06-30
+
+Fixes for three bugs surfaced by a live Cowork conductor run, plus contract/doc and robustness work. Every change is additive and keeps the Windows/Excel-COM path working alongside the openpyxl/LibreOffice (Cowork / Linux) path.
+
+### Fixed
+- **Optional plan inputs no longer crash reference resolution (P1.1).** `plan_refs.resolve_refs` accepts an `optional_plan_inputs` set; a `$plan_inputs.<name>` whose name is in it but absent from `plan_inputs` resolves to `None` instead of raising `ReferenceResolutionError`. Missing *required* plan inputs and any missing `$deal.*` / `$stages.*` reference still raise. The conductor computes the set (`{spec.name for spec in plan.plan_inputs if not spec.required}`) and is told not to pre-seed unsupplied optionals with `None`. (`scripts/plan_refs.py`, `skills/conductor/SKILL.md`)
+- **Financial Summary bar-chart data labels show the value only (P1.2).** `_make_openpyxl_chart` and `_make_single_value_chart` now set `showCatName` / `showSerName` / `showLegendKey` / `showPercent` to `False` (keeping `showVal` + `numFmt` + Outside-End), so LibreOffice renders `589.8` instead of `FY2025; Row 2; 589.808`; mirrored defensively on the COM `_format_com_chart`. The overview pie is unchanged (v0.5.19). (`scripts/financial_charts.py`)
+- **`financial-charts` can no longer revert the cap-table / ownership tables (P1.3).** The stage is doc-locked (SKILL.md + module / orchestrator docstrings) to never invoke `deck-assembler` — or any skill — via `Task`: it runs after `workbook-aggregation` deleted the standalone cap-table / ownership workbooks, so re-assembling the deck would revert those tables to placeholders. Any re-insert must read the combined workbook's `captable` / `Ownership` tabs. (`skills/financial-charts/SKILL.md`, `scripts/financial_charts.py`)
+
+### Changed
+- **Stage envelope no longer relies on env vars the Task tool can't set (P2.1).** The conductor renders the handoff paths (`STAGE_INPUTS` / `STAGE_OUTPUTS` / `DEAL_DIR` / `CLAUDE_PLUGIN_ROOT`) into the prompt **body** with a copy-pasteable `export` block (bash + PowerShell) as the sub-agent's first step; the "already set for you" framing and the "conductor must also set these env vars" table note are removed. (`skills/conductor/references/stage-envelope.md`, `skills/conductor/SKILL.md`)
+- **Deal-init filings prompt + `FilingType` go jurisdiction-neutral for Canadian filers (P2.2).** The G6 prompt now asks for "annual financial statements / 10-Ks" and "interim statements / 10-Q" rather than US-only form labels, and `FilingType` gains `ANNUAL_FINANCIAL_STATEMENTS` / `INTERIM_FINANCIAL_STATEMENTS`. JSON-Schema views regenerated. (`scripts/deal_init.py`, `scripts/schemas/filing.py`, `scripts/schemas/json/`)
+
+### Added
+- **Shared PDF text → OCR fallback helper (P3.1).** New `scripts/pdf_extract.py`: text-layer extraction (pypdfium2) → garble detection (`is_garbled`, a pure heuristic) → rendered-page tesseract OCR. Degrades gracefully when pypdfium2 / tesseract is absent (returns the garbled layer flagged, never raises). Referenced from `ltm-metrics` / `captable` / `ownership` SKILL.md (+ ownership's `sedi-extraction.md`).
+- **LibreOffice recalc on the openpyxl merge path (P3.2).** After the openpyxl merge, `workbook_aggregator._recalc_with_libreoffice` re-saves the combined workbook through headless LibreOffice (recalc-on-load) so cross-tab links (the financial-summary LTM `=INDEX` lookups, the cap-table relinks) carry evaluated values for downstream stages — **formulas preserved**. Best-effort: leaves formulas un-evaluated when LibreOffice is absent. The COM path is unchanged (Excel recalcs natively).
+- **Thin conductor driver (P3.3).** New `scripts/conductor_cli.py` with `prep-wave` / `collect-wave` subcommands: resolve refs (passing `optional_plan_inputs`), write every `inputs.json` and read / validate every `outputs.json`, and render the dispatch envelopes — all serialized through `run_log._json_default` (pydantic + `Path` safe), so the `json.dumps`-on-`Company` crash can't recur. Wired into the conductor SKILL.md as an optional driver.
+
+### Tests
+- New `scripts/tests/test_pdf_extract.py` (garble heuristic + orchestrator branches) and `scripts/tests/test_conductor_cli.py` (prep / collect, `Company` / `Path` serialization, optional-input softening). Extended `test_plan_refs.py` (optional-input cases), `test_financial_charts.py` (value-only label flags), `test_filing.py` (new enum members), and `test_workbook_aggregator.py` (recalc present / absent, with an autouse stub keeping the existing merge tests deterministic regardless of LibreOffice presence).
+
+### Bumped
+- marketplace, plugin manifest, pyproject, README status line, and all 14 shipped skill frontmatter versions to `0.5.20`.
+
 ## [0.5.19] — 2026-06-30
 
 Two pitch-deck chart/data formatting changes (pitch only; earnings-update untouched). Both work on the openpyxl/LibreOffice (Cowork / Linux) path and keep the Windows/Excel-COM path working; every change is additive and platform-guarded.

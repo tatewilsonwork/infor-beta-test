@@ -5,7 +5,7 @@ description: >
   conductor stage inputs and emits a typed SlidePlan JSON artefact for the fixed 5-slide
   earnings-update structure cloned from the shared INFOR Slide Library. Activates inside the
   conductor plan stage `wireframe`.
-version: 0.5.19
+version: 0.5.20
 allowed-tools: [Read, Write, Bash]
 ---
 
