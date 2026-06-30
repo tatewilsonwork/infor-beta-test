@@ -30,10 +30,13 @@ filled RGB(70, 86, 110) = hex ``46566E``.
 
 The same module also builds the overview slide's **LTM revenue pie**
 (``render_ltm_revenue_pie_into_deck``): a by-segment pie over the combined
-workbook's ``ltm-metrics`` tab "LTM Revenue Overview" block (literal values), with
-the legend at the TOP, no title/border, and slice fills from the INFOR theme accent
-palette (``pptx_helpers.INFOR_ACCENTS``). It rides the same post-aggregation stage
-and is dropped into the overview slide's "Rectangle 4" placeholder.
+workbook's ``ltm-metrics`` tab "LTM Revenue Overview" block. The pie series is the
+**"% of Total" column** (the ``=B/Btotal`` fraction), so its data labels show the
+segment share (value-only, ``#,##0.0%`` format) rather than the dollar amounts; the
+legend at the TOP carries the segment names, no title/border, and slice fills from
+the INFOR theme accent palette (``pptx_helpers.INFOR_ACCENTS``). It rides the same
+post-aggregation stage and is dropped into the overview slide's "Rectangle 4"
+placeholder.
 """
 
 from __future__ import annotations
@@ -96,8 +99,12 @@ _CHART_H_CM = 2.51 * 2.54
 _PIE_SHEET_DEFAULT = "ltm-metrics"
 _PIE_SECTION_LABEL = "LTM Revenue Overview"
 _PIE_TOTAL_LABEL = "Total"
-_PIE_SEGMENT_COL = 1  # column A — segment names (categories)
-_PIE_VALUE_COL = 2    # column B — LTM revenue (values)
+_PIE_SEGMENT_COL = 1  # column A — segment names (categories / legend)
+_PIE_VALUE_COL = 2    # column B — LTM revenue $ amounts (Python fraction-compute reads this)
+_PIE_PCT_COL = 3      # column C — "% of Total" (=B/Btotal fraction); the chart series
+# Data-label number format for the pie: the series is the column-C fraction, so a
+# value-only "%" format renders e.g. 0.452 as "45.2%".
+_PIE_LABEL_FORMAT = '#,##0.0%_);(#,##0.0%);"--"'
 # Overview slide in the assembled pitch deck (slides[6] after the earnings slide
 # at raw library index 7 is deleted).
 _OVERVIEW_SLIDE_INDEX = 6
@@ -614,8 +621,10 @@ def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: in
             while chart.SeriesCollection().Count > 0:
                 chart.SeriesCollection(1).Delete()
             series = chart.SeriesCollection().NewSeries()
+            # Chart the column-C "% of Total" fraction (resolved by the CalculateFull
+            # above), not the column-B $ amounts — the value labels then read the share.
             series.Values = ws.Range(
-                ws.Cells(first_row, _PIE_VALUE_COL), ws.Cells(last_row, _PIE_VALUE_COL)
+                ws.Cells(first_row, _PIE_PCT_COL), ws.Cells(last_row, _PIE_PCT_COL)
             )
             series.XValues = ws.Range(
                 ws.Cells(first_row, _PIE_SEGMENT_COL), ws.Cells(last_row, _PIE_SEGMENT_COL)
@@ -676,18 +685,20 @@ def _format_com_pie(chart, series, n_points: int) -> None:
         except Exception:
             pass
 
-    # Percentage data labels, Palatino 9. Set ShowPercentage/ShowValue directly on
-    # the DataLabels object — under late-binding COM, ApplyDataLabels(ShowValue=...)
-    # keyword args silently do nothing, leaving the raw value shown (and a "0.0%"
-    # number format then renders e.g. 1932 as "193200.0%").
+    # Value-only data labels, Palatino 9. The series is the column-C "% of Total"
+    # fraction, so ShowValue + a "%" number format renders e.g. 0.452 as "45.2%"
+    # (ShowPercentage is off — we want the cell's own value, not a recomputed share).
+    # Set the flags directly on the DataLabels object: under late-binding COM,
+    # ApplyDataLabels(ShowValue=...) keyword args silently do nothing.
     try:
         series.HasDataLabels = True
         labels = series.DataLabels()
-        labels.ShowPercentage = True
-        labels.ShowValue = False
+        labels.ShowValue = True
+        labels.ShowPercentage = False
         labels.ShowCategoryName = False
+        labels.ShowSeriesName = False
         labels.ShowLegendKey = False
-        labels.NumberFormat = "0.0%"
+        labels.NumberFormat = _PIE_LABEL_FORMAT
         labels.Position = _XL_LABEL_BEST_FIT
         labels.Font.Name = _FONT_NAME
         labels.Font.Size = _FONT_SIZE_PT
@@ -946,14 +957,32 @@ def _make_single_value_chart(ws, n: int):
 # ---------------------------------------------------------------------------
 # openpyxl + LibreOffice backend for the LTM revenue pie — best-effort
 # ---------------------------------------------------------------------------
+def _fractions_from_amounts(amounts: list) -> list:
+    """Convert a list of $ amounts to fractions of their total (None-safe).
+
+    The off-Windows PNG render charts literal cells, but the pie's "% of Total"
+    column on the real tab is the formula ``=B/Btotal`` that openpyxl cannot
+    evaluate. So for the throwaway render workbook we recompute the same fractions
+    in Python from the column-B ``$`` literals, so the rendered slices and value
+    labels match the native pie's column-C series.
+    """
+    numeric = [a for a in amounts if isinstance(a, (int, float))]
+    total = sum(numeric)
+    if not total:
+        return [None for _ in amounts]
+    return [(a / total if isinstance(a, (int, float)) else None) for a in amounts]
+
+
 def _build_pie_openpyxl_libreoffice(
     workbook: Path, sheet_name: str, first_row: int, last_row: int
 ) -> bytes | None:
     """Persist a native openpyxl pie on the ltm-metrics tab, then render its PNG.
 
-    The "LTM Revenue Overview" values are literal (unlike the FS LTM links), so no
-    LibreOffice recalc is needed — the labels/values are read straight from the tab
-    and re-charted in a throwaway single-pie workbook for the PNG.
+    The native pie's series is the **"% of Total" column** (column C, a ``=B/Btotal``
+    formula). openpyxl cannot evaluate that formula, so the throwaway render workbook
+    charts the equivalent fractions recomputed in Python from the column-B ``$``
+    literals (``frac = b / sum(b)``) — the slices and value labels then match the
+    native pie without a LibreOffice recalc of the source tab.
 
     Like the FS chart path, the native pie is added and the workbook saved **first**
     so its persistence does not depend on LibreOffice; the PNG render is attempted
@@ -973,12 +1002,16 @@ def _build_pie_openpyxl_libreoffice(
         ws.cell(row=last_row + 3, column=1).coordinate,
     )
     labels = [ws.cell(row=r, column=_PIE_SEGMENT_COL).value for r in range(first_row, last_row + 1)]
-    values = [ws.cell(row=r, column=_PIE_VALUE_COL).value for r in range(first_row, last_row + 1)]
+    amounts = [ws.cell(row=r, column=_PIE_VALUE_COL).value for r in range(first_row, last_row + 1)]
     # Persist the native pie on the tab FIRST — independent of LibreOffice.
     wb.save(workbook)
 
     try:
-        return _render_single_pie_png(labels, values)
+        # The render workbook charts literal cells, but the real tab's "% of Total"
+        # column is a formula openpyxl can't evaluate — recompute the fractions from
+        # the $ literals so the rendered slices/labels match the native pie's column-C
+        # series.
+        return _render_single_pie_png(labels, _fractions_from_amounts(amounts))
     except RuntimeError as exc:
         print(
             f"[financial-charts] overview pie render skipped ({exc}); the native "
@@ -989,7 +1022,9 @@ def _build_pie_openpyxl_libreoffice(
 
 
 def _style_openpyxl_pie(chart, n_points: int) -> None:
-    """INFOR pie formatting: no title, accent slice fills, legend at top, % labels."""
+    """INFOR pie formatting: no title, accent slice fills, legend at top, value-only
+    "%" labels (the series is the column-C "% of Total" fraction, so a value label
+    with a "%" number format reads e.g. "45.2%")."""
     from openpyxl.chart.label import DataLabelList
     from openpyxl.chart.series import DataPoint
     from openpyxl.chart.shapes import GraphicalProperties
@@ -1003,19 +1038,29 @@ def _style_openpyxl_pie(chart, n_points: int) -> None:
     ]
     chart.legend.position = "t"
     labels = DataLabelList()
-    labels.showPercent = True
-    labels.numFmt = "0.0%"
+    labels.showVal = True
+    labels.showPercent = False
+    labels.showCatName = False
+    labels.showSerName = False
+    labels.showLegendKey = False
+    labels.numFmt = _PIE_LABEL_FORMAT
     labels.txPr = _palatino_text()
     chart.dataLabels = labels
 
 
 def _make_openpyxl_pie(ws, first_row: int, last_row: int, n_points: int):
-    """Build an INFOR-formatted PieChart over the "LTM Revenue Overview" block."""
+    """Build an INFOR-formatted PieChart over the "LTM Revenue Overview" block.
+
+    The series is the **"% of Total" column** (column C, the ``=B/Btotal`` fraction)
+    so the data labels read the segment share; Excel evaluates the formula. Slice
+    geometry is identical to charting the $ amounts. Categories (legend) = the
+    Segment column.
+    """
     from openpyxl.chart import PieChart, Reference
 
     chart = PieChart()
     data = Reference(
-        ws, min_col=_PIE_VALUE_COL, max_col=_PIE_VALUE_COL, min_row=first_row, max_row=last_row
+        ws, min_col=_PIE_PCT_COL, max_col=_PIE_PCT_COL, min_row=first_row, max_row=last_row
     )
     cats = Reference(
         ws, min_col=_PIE_SEGMENT_COL, max_col=_PIE_SEGMENT_COL, min_row=first_row, max_row=last_row

@@ -68,7 +68,9 @@ _SHEET_TITLE = "Financial Summary"
 _DEFAULT_LTM_SHEET = "ltm-metrics"
 
 _METRIC_COUNT = 4  # the deck shows exactly four tiles
-_VALUE_FORMAT = "#,##0.0"
+# Currency value format for the metric cells (FY values, the LTM literal fallback,
+# and the LTM link cell): "$#,##0.0" positive, "($#,##0.0)" negative, "--" zero.
+_VALUE_FORMAT = '$#,##0.0_);($#,##0.0);"--"'
 
 
 @dataclass(frozen=True)

@@ -93,6 +93,17 @@ def test_suppression_drops_ltm_column_and_links_latest_fy(tmp_path: Path):
     assert ws["F9"].value == 12500.0
 
 
+def test_value_cells_use_currency_number_format(tmp_path: Path):
+    # v0.5.19: metric value cells carry the "$#,##0.0" currency format (FY values,
+    # the flow-metric LTM link cell, and the non-flow LTM literal).
+    ws = load_workbook(_build(tmp_path)).active
+    expected = '$#,##0.0_);($#,##0.0);"--"'
+    for c in range(2, 7):  # FY values B..F on the Revenue row
+        assert ws.cell(row=6, column=c).number_format == expected
+    assert ws["G6"].number_format == expected  # flow-metric LTM link cell
+    assert ws["G9"].number_format == expected  # non-flow LTM literal
+
+
 def test_no_merged_cells_in_data_block(tmp_path: Path):
     ws = load_workbook(_build(tmp_path)).active
     assert list(ws.merged_cells.ranges) == []

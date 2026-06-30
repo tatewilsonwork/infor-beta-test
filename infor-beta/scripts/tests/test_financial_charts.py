@@ -257,7 +257,11 @@ def test_make_openpyxl_pie_applies_infor_formatting(tmp_path: Path):
     assert pie.legend.position == "t"  # legend at the TOP
     fills = [dp.graphicalProperties.solidFill.srgbClr for dp in pie.series[0].data_points]
     assert fills == INFOR_ACCENTS[:n]  # INFOR theme accents, in order
-    assert pie.dataLabels.showPercent is True
+    # v0.5.19: the series charts the "% of Total" column (C), not the $ column (B),
+    # and the data labels show VALUE only (not the recomputed percentage).
+    assert "$C$" in pie.series[0].val.numRef.f
+    assert pie.dataLabels.showVal is True
+    assert pie.dataLabels.showPercent in (False, None)
 
 
 def test_pie_slice_fills_cycle_past_six(tmp_path: Path):
@@ -269,6 +273,23 @@ def test_pie_slice_fills_cycle_past_six(tmp_path: Path):
     pie = _make_openpyxl_pie(ws, first, last, n)
     fills = [dp.graphicalProperties.solidFill.srgbClr for dp in pie.series[0].data_points]
     assert fills[6] == INFOR_ACCENTS[0]  # the 7th slice cycles back to accent1
+
+
+def test_pie_data_labels_show_value_only_with_percent_format(tmp_path: Path):
+    # v0.5.19: the pie's data labels show VALUE only (category/series/legend-key and
+    # percentage flags all off) and carry the "%" number format, so the column-C
+    # fraction renders e.g. 0.452 as "45.2%".
+    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    first, last = ltm_revenue_overview_range(ws)
+    pie = _make_openpyxl_pie(ws, first, last, last - first + 1)
+    labels = pie.dataLabels
+    assert labels.showVal is True
+    assert labels.showPercent in (False, None)
+    assert labels.showCatName in (False, None)
+    assert labels.showSerName in (False, None)
+    assert labels.showLegendKey in (False, None)
+    assert labels.numFmt == '#,##0.0%_);(#,##0.0%);"--"'
+    assert labels.numFmt == financial_charts._PIE_LABEL_FORMAT
 
 
 def _deck_with_pie_placeholder(tmp_path: Path) -> Path:
