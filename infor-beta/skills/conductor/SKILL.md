@@ -78,6 +78,14 @@ For each `InputSpec` in `plan.plan_inputs` where `required is True`, prompt the 
 
 Store the collected values as a plain dict `plan_inputs: dict[str, Any]`. Validate types informally — exact pydantic-validation of plan-input values is deferred; in v1 the type field is documentation.
 
+**Optional inputs the analyst didn't supply must stay OUT of `plan_inputs` — do not pre-seed them with `None` or any placeholder.** Instead compute the set of optional plan-input names once and pass it to every `resolve_refs` call in Step 6a:
+
+```python
+optional_plan_inputs = {spec.name for spec in plan.plan_inputs if not spec.required}
+```
+
+A stage that references an unsupplied optional input (`$plan_inputs.<name>`) then resolves to `None` automatically; a missing *required* input — or any missing `$deal.*` / `$stages.*` reference — still raises and halts the run.
+
 ### Step 5 — Create the run directory
 
 ```python
@@ -103,7 +111,7 @@ Each wave is a list of stage ids with **no dependency between them**, so the who
 Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage id. For each wave, in order:
 
 **6a — Prepare every stage in the wave.** For each stage id in the wave, look up its `Stage` and:
-1. **Resolve inputs.** `resolve_refs(stage.inputs, plan_inputs=..., deal_context=ctx, stage_outputs=stage_outputs)`. Every `$stages.*` reference a wave member needs is already in `stage_outputs` — the scheduler guarantees its producer ran in an earlier wave.
+1. **Resolve inputs.** `resolve_refs(stage.inputs, plan_inputs=plan_inputs, deal_context=ctx, stage_outputs=stage_outputs, optional_plan_inputs=optional_plan_inputs)`. Every `$stages.*` reference a wave member needs is already in `stage_outputs` — the scheduler guarantees its producer ran in an earlier wave. Passing `optional_plan_inputs` (from Step 4) lets an unsupplied optional plan input resolve to `None` instead of crashing the run.
 2. **Persist inputs.** `write_stage_inputs(run_dir, stage.id, resolved_inputs)`.
 3. **Render envelope.** Load `references/stage-envelope.md`, substitute its placeholders, prepare the prompt for the Agent tool.
 

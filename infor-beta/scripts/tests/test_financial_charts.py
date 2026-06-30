@@ -108,6 +108,12 @@ def test_make_openpyxl_chart_applies_infor_formatting(tmp_path: Path):
     # Data labels on every bar, Outside End.
     assert chart.dataLabels.showVal is True
     assert chart.dataLabels.dLblPos == "outEnd"
+    # P1.2: VALUE only — category/series/legend-key/percent flags off, so the
+    # LibreOffice render shows "589.8", not "FY2025; Row 2; 589.808".
+    assert chart.dataLabels.showCatName in (False, None)
+    assert chart.dataLabels.showSerName in (False, None)
+    assert chart.dataLabels.showLegendKey in (False, None)
+    assert chart.dataLabels.showPercent in (False, None)
     # Value axis hidden (no line/label), no gridlines; category axis kept.
     assert chart.y_axis.delete is True
     assert chart.y_axis.majorGridlines is None
@@ -186,6 +192,12 @@ def test_single_value_chart_has_black_axis_and_no_border(tmp_path: Path):
     assert chart.x_axis.spPr.line.solidFill.srgbClr == "000000"
     # v0.5.18: visible baseline width in the LibreOffice single-value renderer too.
     assert chart.x_axis.spPr.line.width == financial_charts._AXIS_LINE_WIDTH_EMU
+    # P1.2: the LibreOffice single-value renderer also shows VALUE only.
+    assert chart.dataLabels.showVal is True
+    assert chart.dataLabels.showCatName in (False, None)
+    assert chart.dataLabels.showSerName in (False, None)
+    assert chart.dataLabels.showLegendKey in (False, None)
+    assert chart.dataLabels.showPercent in (False, None)
 
 
 # --- LTM revenue pie (overview slide) ---------------------------------------

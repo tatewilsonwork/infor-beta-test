@@ -45,6 +45,27 @@ helper returns `None` for the deck step (the slide keeps its placeholders) inste
 stage — when that happens, **say so explicitly** in the handoff; never substitute a hand-drawn
 image.
 
+## ⛔ NEVER re-run `deck-assembler` (or any skill) from this stage
+
+**This stage MUST NOT invoke `deck-assembler` — or any other INFOR skill — via the `Task`/`Agent`
+tool. It never re-assembles, re-clones, or re-saves a fresh deck.** It only opens the
+**already-assembled** deck at `deck_path`, inserts the chart/pie pictures into the existing
+placeholders, and saves it back in place. Its `allowed-tools` are `[Read, Write, Bash]` precisely
+so it *cannot* dispatch another skill — do not work around that by shelling out to one.
+
+**Why this is load-bearing:** this stage runs **after `workbook-aggregation`**, which folds the
+standalone `captable` / `ownership` source workbooks into the combined `pitch-<codename>.xlsx` and
+then **deletes them**. The `deck-assembler` rebuilds the deck from the slide library and re-pastes
+the cap-table and ownership tables from those *standalone* workbooks — which no longer exist. So
+re-running it here re-saves a clean deck and **reverts the cap-table and ownership tables to empty
+placeholders** (the exact regression seen in a live run). Building charts is the *last* mutation of
+the deck; nothing may re-assemble it afterward.
+
+**If a table ever genuinely needs re-inserting** (it should not — `deck` already did it), read it
+from the **combined workbook's `captable` / `Ownership` tabs** (the standalone sources are gone
+post-aggregation) and paste it with `excel_to_powerpoint.insert_excel_into_placeholder`. Never call
+the assembler to do it.
+
 ## Why it runs after `workbook-aggregation`
 
 Each **flow** metric's LTM cell on the `financial-summary` tab is a label-keyed lookup
