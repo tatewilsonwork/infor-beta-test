@@ -27,6 +27,11 @@ class FilingType(str, Enum):
     MDA = "MD&A"
     MANAGEMENT_CIRCULAR = "management-circular"
     ANNUAL_REPORT = "annual-report"
+    # Generic (jurisdiction-neutral) statement types — INFOR's core market is
+    # Canadian, where issuers file "annual / interim financial statements" rather
+    # than US-form 10-Ks / 10-Qs. Use these when no US form label applies.
+    ANNUAL_FINANCIAL_STATEMENTS = "annual-financial-statements"
+    INTERIM_FINANCIAL_STATEMENTS = "interim-financial-statements"
     ARS = "ARS"
     PROSPECTUS = "prospectus"
     PRESS_RELEASE = "press-release"
