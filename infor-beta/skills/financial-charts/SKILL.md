@@ -7,7 +7,7 @@ description: >
   renders them into the slide's four chart placeholders. It also builds the overview slide's LTM
   revenue-by-segment pie on the combined workbook's `ltm-metrics` tab and drops it into the
   "[Pie Chart Placeholder]". Runs after `workbook-aggregation`.
-version: 0.5.17
+version: 0.5.18
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -21,6 +21,29 @@ drops them into the slide's four chart placeholders.
 It also fills the **overview** slide's deferred **LTM revenue pie** — see the section below. Both
 the FS charts and the pie ride this single post-aggregation stage because the data live on the same
 combined workbook (FS charts off the `financial-summary` tab, the pie off the `ltm-metrics` tab).
+
+## Mandatory: build the charts with the helper (no hand-rolling)
+
+This stage **must** build every chart by calling the two `scripts/financial_charts.py`
+orchestrators — `render_financial_summary_charts_into_deck(...)` for the four Financial Summary
+charts and `render_ltm_revenue_pie_into_deck(...)` for the overview pie (see the Reference
+command). Do **not** hand-roll charts with `matplotlib`, `plotly`, Pillow, or any other plotting
+library, and do not draw the chart images yourself — the analyst needs real, editable Excel
+charts on the workbook, not flat pictures.
+
+Each helper does two things that are both required and must not be split apart:
+
+1. **Persists native chart objects on the combined workbook** — the four clustered-column charts
+   on the `financial-summary` tab and the pie on the `ltm-metrics` tab — so opening
+   `pitch-<codename>.xlsx` shows real Excel chart objects.
+2. **Inserts the rendered charts into the deck** — the four chart placeholders on the Financial
+   Summary slide and the `[Pie Chart Placeholder]` on the overview slide.
+
+The helpers save the native charts to the workbook **first**, then render the deck images. If
+LibreOffice (`soffice`/`libreoffice`) is unavailable, the workbook charts are still saved and the
+helper returns `None` for the deck step (the slide keeps its placeholders) instead of aborting the
+stage — when that happens, **say so explicitly** in the handoff; never substitute a hand-drawn
+image.
 
 ## Why it runs after `workbook-aggregation`
 
@@ -53,7 +76,11 @@ One **clustered-column** chart per metric (4 total): a single data series = that
 
 - Font: **Palatino Linotype 9 pt, black** (data labels + category-axis labels)
 - **No** chart title
+- **No** chart border
 - **No** major gridlines
+- Horizontal (category) axis: a **visible solid black baseline line** beneath the bars — an
+  explicit width, never a hairline (a width-less line is dropped by the LibreOffice render, so
+  the bars float with no baseline)
 - Vertical (value) axis: **hidden** — no line, no label
 - Gap width: **50%**
 - Data labels on **all** bars, position = **Outside End**
@@ -101,8 +128,8 @@ skipped and the placeholder is left in place (the null path).
    - **Overview (slide 6):** the pie filled the placeholder; legend at top; INFOR accent slice
      fills; no title / no border; reads legibly in the wide/short box.
    - **Financial Summary (slide 7):** all four charts landed; INFOR formatting (bars `46566E`, data
-     labels outside-end, **no border**, **black** category-axis line, no value axis / gridlines /
-     title, Palatino 9);
+     labels outside-end, **no border**, a **visible solid black** category-axis baseline line under
+     the bars, no value axis / gridlines / title, Palatino 9);
    - the combined-metric and LTM bars use the **same scale** as the fiscal-year bars (no 10⁶
      mismatch — a symptom of a units mismatch between the `financial-summary` and `ltm-metrics`
      tabs; both must be in millions with an `"MM"` suffix).

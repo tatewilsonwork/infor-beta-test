@@ -59,6 +59,15 @@ def test_earnings_update_plan_waves():
     ]
 
 
+def test_financial_charts_depends_on_deck_and_aggregation():
+    """`financial-charts` edits the assembled deck and charts the combined workbook,
+    so it must depend on BOTH `deck` and `workbook-aggregation`. This is the contract
+    the post-aggregation chart + LTM-pie rendering (and its graceful-degradation path)
+    relies on — lock it so a future plan edit can't reorder the stage ahead of either."""
+    deps = stage_dependencies(_load_plan("pitch.yaml"))
+    assert {"deck", "workbook-aggregation"} <= deps["financial-charts"]
+
+
 def test_every_stage_scheduled_exactly_once():
     for name in ("pitch.yaml", "earnings-update.yaml"):
         plan = _load_plan(name)

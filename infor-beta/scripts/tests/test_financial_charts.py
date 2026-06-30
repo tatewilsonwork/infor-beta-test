@@ -6,8 +6,10 @@ LibreOffice render backends are environmental (per repo convention) and are
 exercised by the skill's mandatory QA render, not here.
 """
 
+import zipfile
 from pathlib import Path
 
+import financial_charts
 from openpyxl import load_workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -23,8 +25,24 @@ from financial_charts import (
     insert_png_into_placeholder,
     ltm_revenue_overview_range,
     period_axis_columns,
+    render_financial_summary_charts_into_deck,
     render_ltm_revenue_pie_into_deck,
 )
+
+
+def _chart_part_count(xlsx_path: Path) -> int:
+    """Count the native chart XML parts persisted inside an .xlsx (zip) file."""
+    with zipfile.ZipFile(xlsx_path) as z:
+        return sum(
+            1
+            for n in z.namelist()
+            if n.startswith("xl/charts/chart") and n.endswith(".xml")
+        )
+
+
+def _raise_runtime(*_args, **_kwargs):
+    """A stand-in backend that mimics 'Excel COM unavailable' (RuntimeError)."""
+    raise RuntimeError("excel COM unavailable in test")
 
 # A valid 1x1 transparent PNG — avoids a PIL dependency in the test.
 _PNG_1X1 = (
@@ -97,6 +115,10 @@ def test_make_openpyxl_chart_applies_infor_formatting(tmp_path: Path):
     # v0.5.17: no chart-area border, black category-axis line.
     assert chart.graphical_properties.line.noFill is True
     assert chart.x_axis.spPr.line.solidFill.srgbClr == "000000"
+    # v0.5.18: the black axis line carries a visible (non-hairline) width so the
+    # LibreOffice render shows a baseline beneath the bars (Issue 2).
+    assert chart.x_axis.spPr.line.width == financial_charts._AXIS_LINE_WIDTH_EMU
+    assert chart.x_axis.spPr.line.width > 0
 
 
 def test_add_openpyxl_charts_yields_four_charts(tmp_path: Path):
@@ -162,6 +184,8 @@ def test_single_value_chart_has_black_axis_and_no_border(tmp_path: Path):
     chart = _make_single_value_chart(ws, 6)
     assert chart.graphical_properties.line.noFill is True
     assert chart.x_axis.spPr.line.solidFill.srgbClr == "000000"
+    # v0.5.18: visible baseline width in the LibreOffice single-value renderer too.
+    assert chart.x_axis.spPr.line.width == financial_charts._AXIS_LINE_WIDTH_EMU
 
 
 # --- LTM revenue pie (overview slide) ---------------------------------------
@@ -296,3 +320,73 @@ def test_render_pie_returns_none_without_ltm_tab(tmp_path: Path):
         s.text_frame.text for s in prs.slides[0].shapes if s.has_text_frame
     )
     assert "[Pie Chart Placeholder]" in text
+
+
+# --- graceful degradation when LibreOffice is unavailable (Issue 1b / Issue 3) ---
+
+
+def test_fs_charts_persist_when_libreoffice_missing(tmp_path: Path, monkeypatch):
+    """Issue 1b: the four native charts are saved on the `financial-summary` tab even
+    when LibreOffice is absent. The backend returns ``{}`` (no deck PNGs) instead of
+    raising, so the stage degrades gracefully rather than aborting."""
+    path = _fs_workbook(tmp_path)
+    wb = load_workbook(path)
+    wb.active.title = "financial-summary"
+    wb.save(path)
+    # Pretend soffice / libreoffice is not on PATH.
+    monkeypatch.setattr(financial_charts.shutil, "which", lambda *a, **k: None)
+
+    pngs = financial_charts._build_charts_openpyxl_libreoffice(path, "financial-summary", 2, 7)
+
+    assert pngs == {}  # degraded: no deck PNGs, but no exception
+    assert _chart_part_count(path) == 4  # native charts persisted regardless
+
+
+def test_fs_orchestrator_degrades_to_none_when_render_unavailable(tmp_path: Path, monkeypatch):
+    """Issue 1b glue: when the backend persists the workbook charts but cannot render
+    their PNGs (LibreOffice missing), the orchestrator returns None and leaves the deck
+    untouched rather than crashing on a missing PNG."""
+    path = _fs_workbook(tmp_path)
+    wb = load_workbook(path)
+    wb.active.title = "financial-summary"
+    wb.save(path)
+    deck = _deck_with_placeholder(tmp_path)
+    before = deck.read_bytes()
+    # Force both backends to the "charts saved, no PNGs" outcome on any platform.
+    monkeypatch.setattr(financial_charts, "_build_charts_com", _raise_runtime)
+    monkeypatch.setattr(financial_charts, "_build_charts_openpyxl_libreoffice", lambda *a, **k: {})
+
+    out = render_financial_summary_charts_into_deck(deck_path=deck, combined_workbook_path=path)
+
+    assert out is None
+    assert deck.read_bytes() == before  # deck untouched — placeholders preserved
+
+
+def test_pie_persists_when_libreoffice_missing(tmp_path: Path, monkeypatch):
+    """Issue 3 parity: the native pie is saved on the `ltm-metrics` tab even when
+    LibreOffice is absent. The backend returns None (no PNG) instead of raising."""
+    path = _ltm_workbook(tmp_path)
+    first, last = ltm_revenue_overview_range(load_workbook(path).active)
+    monkeypatch.setattr(financial_charts.shutil, "which", lambda *a, **k: None)
+
+    png = financial_charts._build_pie_openpyxl_libreoffice(path, "ltm-metrics", first, last)
+
+    assert png is None  # degraded: no PNG, but no exception
+    assert _chart_part_count(path) == 1  # native pie persisted regardless
+
+
+def test_pie_orchestrator_degrades_to_none_when_render_unavailable(tmp_path: Path, monkeypatch):
+    """Issue 3 glue: when the pie backend persists the workbook but cannot render the
+    PNG, the orchestrator returns None and leaves the overview placeholder."""
+    path = _ltm_workbook(tmp_path)
+    deck = _deck_with_pie_placeholder(tmp_path)
+    before = deck.read_bytes()
+    monkeypatch.setattr(financial_charts, "_build_pie_com", _raise_runtime)
+    monkeypatch.setattr(financial_charts, "_build_pie_openpyxl_libreoffice", lambda *a, **k: None)
+
+    out = render_ltm_revenue_pie_into_deck(
+        deck_path=deck, combined_workbook_path=path, slide_index=0
+    )
+
+    assert out is None
+    assert deck.read_bytes() == before  # overview placeholder preserved
