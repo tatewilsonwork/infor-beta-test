@@ -15,6 +15,22 @@ from openpyxl import Workbook, load_workbook
 from excel_to_powerpoint import _soffice_convert, _write_lo_recalc_profile
 
 
+def test_soffice_convert_timeout_raises_runtime_error(tmp_path: Path, monkeypatch):
+    """v0.5.20: a wedged LibreOffice (TimeoutExpired) must surface as RuntimeError
+    like every other soffice failure, so callers' graceful-degradation nets
+    (``except RuntimeError``) engage instead of the stage aborting raw."""
+    import subprocess
+
+    import excel_to_powerpoint as e2p
+
+    def _hang(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="soffice", timeout=180)
+
+    monkeypatch.setattr(e2p.subprocess, "run", _hang)
+    with pytest.raises(RuntimeError, match="timed out"):
+        _soffice_convert("soffice", tmp_path / "x.xlsx", "pdf", tmp_path)
+
+
 def test_write_lo_recalc_profile_forces_always_recalc(tmp_path: Path):
     """The throwaway profile must set OOXML recalc-on-load to 0 (Always)."""
     uri = _write_lo_recalc_profile(tmp_path)

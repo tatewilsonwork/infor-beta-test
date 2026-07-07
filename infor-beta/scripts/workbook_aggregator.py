@@ -45,9 +45,11 @@ shares, and the comps (`F3`) / precedents (`C2`) output-currency cells point at
 the cap table's output currency (`F5`) so the whole workbook shows one currency.
 See `_relink_cross_tab_openpyxl` / `_relink_cross_tab_com`.
 
-Hyperlinks: the openpyxl merge copies each cell's hyperlink alongside its value
-and style (`_copy_sheet`), so the precedents source links on `AB`–`AG` survive
-the off-Windows merge; the COM backend preserves them natively via Excel's copy.
+Hyperlinks + comments: the openpyxl merge copies each cell's hyperlink and
+comment alongside its value and style (`_copy_sheet`), so the precedents source
+links on `AB`–`AG` and the cap table's commented CapIQ refresh formulas
+(`F7`/`F16`) survive the off-Windows merge; the COM backend preserves both
+natively via Excel's copy.
 
 Tab naming: a single-sheet source becomes one tab named after the skill
 (`captable`, `ltm-metrics`); a multi-sheet source contributes one tab per
@@ -420,8 +422,17 @@ def _relink_cross_tab_com(combined, skill_to_tab: dict[str, str]) -> None:
                     rng.Font.Size = size
                     rng.Font.Color = bgr
         _relink_financial_summary_com(combined, skill_to_tab)
-    except Exception:
-        pass
+    except Exception as exc:
+        # Best-effort by design — a relink failure must not lose the successfully
+        # merged workbook — but never silent: an unrelinked financial-summary tab
+        # is the v0.5.16 blank-LTM-bar symptom, so leave a diagnostic trace.
+        print(
+            f"[workbook-aggregator] cross-tab relink failed ({exc}); the combined "
+            f"workbook is saved, but its cap-table LTM / ownership-denominator / "
+            f"currency / financial-summary links may still point at the deleted "
+            f"source files.",
+            file=sys.stderr,
+        )
 
 
 def _open_workbook(excel, path: Path, *, read_only: bool):
@@ -581,6 +592,14 @@ def _combine_via_com(
             output_path.unlink()
         combined.SaveAs(str(output_path), FileFormat=_XL_OPEN_XML_WORKBOOK)
         combined.Close(SaveChanges=False)
+    except RuntimeError:
+        raise  # already normalized (e.g. _open_workbook, the partial-append bail)
+    except Exception as exc:
+        # COM failures surface as pywintypes.com_error (no Excel install, a dead
+        # instance, a failed Copy/SaveAs), not RuntimeError — normalize so the
+        # caller's `except RuntimeError` fallback to the openpyxl merge actually
+        # engages, matching the documented "or Windows without Excel" behaviour.
+        raise RuntimeError(f"Excel COM workbook aggregation failed: {exc}") from exc
     finally:
         if excel is not None:
             excel.Quit()
@@ -644,6 +663,13 @@ def _copy_sheet(src_ws, dst_ws) -> None:
             # any other linked cell) are silently dropped on the openpyxl merge.
             if cell.hyperlink is not None:
                 dst.hyperlink = copy(cell.hyperlink)
+            # Carry the cell's comment across too — the cap-table template stores
+            # the analyst's CapIQ refresh formulas as comments on F7/F16 and
+            # ownership annotates its F35 denominator; openpyxl does not copy
+            # comments with the style either (an openpyxl Comment binds to one
+            # cell, so it must be copied, not shared).
+            if cell.comment is not None:
+                dst.comment = copy(cell.comment)
 
     for merged_range in src_ws.merged_cells.ranges:
         dst_ws.merge_cells(str(merged_range))

@@ -1,20 +1,20 @@
 ---
 name: workbook-aggregator
 description: >
-  Use this skill as the final consolidation stage of a conductor plan to merge every Excel (.xlsx)
+  Use this skill as the workbook-consolidation stage of a conductor plan to merge every Excel (.xlsx)
   workbook produced during the deliverable into a single combined workbook. Each producing skill's
   workbook becomes a tab named after that skill (captable, ltm-metrics, comps, ...). The combined
   file is named <deliverable>-<deal name>.xlsx — e.g. earningsupdate-Project Atlas.xlsx,
   pitch-Project Atlas.xlsx. Activates as the plan stage `workbook-aggregation`. Preserves formulas,
   CapIQ links, charts, and formatting via Excel COM on Windows; falls back to a best-effort openpyxl
   merge off-Windows. The individual source workbooks are replaced by the combined file.
-version: 0.5.19
+version: 0.5.20
 allowed-tools: [Read, Write, Bash]
 ---
 
 # Workbook Aggregator — Workflow
 
-This is the last stage of a deliverable run. By the time it executes, every workbook-producing stage (cap table, LTM metrics, comps, …) has already emitted a standalone `.xlsx` under the deal's `artefacts/`, and the deck stage has already consumed whatever it needed from them. This stage merges those workbooks into one combined file and removes the individual sources, so the analyst is left with a single workbook per deal.
+This stage consolidates the run's workbooks. By the time it executes, every workbook-producing stage (cap table, LTM metrics, comps, …) has already emitted a standalone `.xlsx` under the deal's `artefacts/`, and the deck stage has already consumed whatever it needed from them. This stage merges those workbooks into one combined file and removes the individual sources, so the analyst is left with a single workbook per deal. It is the last stage of the earnings-update plan; in the pitch plan the post-aggregation `financial-charts` stage runs after it, drawing the deck's charts on the combined workbook (the only place the financial-summary tab's LTM links resolve).
 
 This skill does **not** read filings, compute figures, or touch PowerPoint. It only consolidates files that earlier stages produced.
 
@@ -55,6 +55,8 @@ Once every workbook is one file, a **relink** pass rewrites the skills' standalo
 
 - Cap table `D47` / `D48` (LTM Revenue / Adj. EBITDA) → `='ltm-metrics'!B<row>*F7`, where `<row>` is found by the `(=) LTM Revenue` / `(=) LTM Adj. EBITDA` bridge-total label (the bridge rows are dynamic). Units already match (millions); `*F7` keeps the existing FX conversion.
 - Ownership `F35` (% denominator) → `='captable'!F17*1000000` (the cap table is in millions; ownership share counts are full units).
+- Comps `F3` and precedents `C2` (output currency) → `='captable'!F5`, so the combined workbook shows one consistent currency and updating `F5` flows through (restyled to Palatino 9 blue to match).
+- Financial-summary LTM link cells — each `=INDEX('ltm-metrics'!…)` formula is re-assigned so it re-binds to the sibling `ltm-metrics` tab (the COM sheet-copy leaves it bound to an *external* workbook relationship that Excel's `.Formula` getter masks as internal, resolving `#N/A`; see v0.5.16).
 
 The relink is best-effort and only fires when the relevant tabs are present; it is a no-op otherwise. On the openpyxl fallback the formulas are still written, but CapIQ links are already lost on that path.
 

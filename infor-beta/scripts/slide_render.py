@@ -110,6 +110,12 @@ def _libreoffice_render(
             raise RuntimeError(
                 f"LibreOffice PDF conversion failed: {exc.stderr.decode(errors='replace')}"
             ) from exc
+        except subprocess.TimeoutExpired as exc:
+            # Callers' degradation nets catch RuntimeError only — a wedged
+            # soffice must degrade like a missing one, not abort the stage.
+            raise RuntimeError(
+                f"LibreOffice PDF conversion timed out after {exc.timeout:.0f}s"
+            ) from exc
 
         pdf_path = next(Path(tmp_dir).glob("*.pdf"), None)
         if pdf_path is None:

@@ -411,3 +411,52 @@ def test_pie_orchestrator_degrades_to_none_when_render_unavailable(tmp_path: Pat
 
     assert out is None
     assert deck.read_bytes() == before  # overview placeholder preserved
+
+
+# --- both chart steps on ONE combined workbook (v0.5.20 regression) ----------
+
+
+def _combined_workbook(dir_path: Path) -> Path:
+    """A combined pitch workbook carrying BOTH the `financial-summary` and
+    `ltm-metrics` tabs — the real financial-charts input, where the FS-chart and
+    pie steps run back-to-back against the same file."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    fs = load_workbook(_fs_workbook(dir_path))
+    fs.active.title = "financial-summary"
+    ltm_ws = load_workbook(_ltm_workbook(dir_path)).active
+    dst = fs.create_sheet("ltm-metrics")
+    for row in ltm_ws.iter_rows():
+        for cell in row:
+            dst.cell(row=cell.row, column=cell.column, value=cell.value)
+    combined = dir_path / "pitch-SampleCo.xlsx"
+    fs.save(combined)
+    return combined
+
+
+def test_fs_charts_and_pie_coexist_on_combined_workbook(tmp_path: Path, monkeypatch):
+    """Regression (v0.5.20): both chart steps persist via a load→save of the SAME
+    combined workbook. The steps must compose — exactly five charts (4 FS + 1
+    pie) after both run, in either order, with neither step wiping the other's
+    charts (an openpyxl build that drops chart parts on load) nor a re-run
+    accumulating a duplicate set next to the stale one (openpyxl 3.x, which
+    round-trips chart parts — pre-fix a re-run grew 5 → 10)."""
+    monkeypatch.setattr(financial_charts.shutil, "which", lambda *a, **k: None)
+
+    # SKILL.md order: FS charts first, pie second.
+    combined = _combined_workbook(tmp_path / "fs_then_pie")
+    first, last = ltm_revenue_overview_range(load_workbook(combined)["ltm-metrics"])
+    financial_charts._build_charts_openpyxl_libreoffice(combined, "financial-summary", 2, 7)
+    financial_charts._build_pie_openpyxl_libreoffice(combined, "ltm-metrics", first, last)
+    assert _chart_part_count(combined) == 5  # 4 FS charts + 1 pie
+
+    # Re-running either step replaces its charts instead of accumulating.
+    financial_charts._build_charts_openpyxl_libreoffice(combined, "financial-summary", 2, 7)
+    financial_charts._build_pie_openpyxl_libreoffice(combined, "ltm-metrics", first, last)
+    assert _chart_part_count(combined) == 5
+
+    # Reverse order loses nothing either.
+    combined = _combined_workbook(tmp_path / "pie_then_fs")
+    first, last = ltm_revenue_overview_range(load_workbook(combined)["ltm-metrics"])
+    financial_charts._build_pie_openpyxl_libreoffice(combined, "ltm-metrics", first, last)
+    financial_charts._build_charts_openpyxl_libreoffice(combined, "financial-summary", 2, 7)
+    assert _chart_part_count(combined) == 5

@@ -30,7 +30,7 @@ Your resolved inputs are at the path in `$STAGE_INPUTS` (also `{{stage_inputs_pa
 
 When you finish, write your structured outputs as JSON to the path in `$STAGE_OUTPUTS`
 (also `{{stage_outputs_path}}`). The conductor REQUIRES this file to exist before it
-will run the next stage. Output keys must match the named outputs declared by the
+will continue the run. Output keys must match the named outputs declared by the
 plan for this stage:
 
 {{declared_outputs_block}}
@@ -39,13 +39,19 @@ If you cannot complete the work, write `outputs.json` anyway with an `error: <re
 explaining why, then exit. Do NOT exit silently — the conductor cannot resume past a
 missing outputs.json.
 
-# Environment variables already set for you
+# Environment variables — export these yourself, FIRST
 
-- `$STAGE_INPUTS`  — absolute path to your inputs.json
-- `$STAGE_OUTPUTS` — absolute path where you must write outputs.json
-- `$DEAL_DIR`      — absolute path to the deal directory; write any deliverable artefacts
-                     under `$DEAL_DIR/artefacts/` (NOT cwd) so the analyst finds them in
-                     a predictable place.
+These are NOT pre-set in your shell (the Agent tool cannot set environment
+variables on an invocation). The skill's reference commands read them via
+`os.environ`, so before running any of them, export:
+
+    export STAGE_INPUTS="{{stage_inputs_path}}"
+    export STAGE_OUTPUTS="{{stage_outputs_path}}"
+    export DEAL_DIR="{{deal_dir}}"
+
+(Adapt to your shell — e.g. `$env:STAGE_INPUTS = "..."` in PowerShell.) Write any
+deliverable artefacts under `$DEAL_DIR/artefacts/` (NOT cwd) so the analyst finds
+them in a predictable place.
 
 # Constraints
 
@@ -73,12 +79,13 @@ missing outputs.json.
 | `{{stage_outputs_path}}` | Absolute path to `<run_dir>/stages/<stage_id>/outputs.json` |
 | `{{declared_outputs_block}}` | Bulleted list of `OutputSpec` entries for this stage, e.g. `- deck_path: Path`. Empty bulleted line if no outputs declared. |
 
-The conductor must also set the following environment variables on the Agent invocation:
-
-- `STAGE_INPUTS=<absolute path>`
-- `STAGE_OUTPUTS=<absolute path>`
-- `DEAL_DIR=<absolute path>`
-- `CLAUDE_PLUGIN_ROOT=<absolute path>` (if not already inherited)
+The `Task`/`Agent` tool has no environment-variable parameter, so the conductor
+CANNOT pre-set variables on the invocation. The template therefore instructs the
+sub-agent to export `STAGE_INPUTS` / `STAGE_OUTPUTS` / `DEAL_DIR` itself, from
+the literal paths substituted into the template, before running any skill
+reference command (they all read `os.environ`). `CLAUDE_PLUGIN_ROOT` is
+inherited from the session environment; every skill falls back to `./infor-beta`
+when it is unset.
 
 ---
 

@@ -75,5 +75,5 @@ def build_earnings_update_slide_plan(
         deliverable_type="earnings-update",
         deck_title=f"{name} Earnings Update",
         slides=slides,
-        notes="Phase 3 POC fixed structure cloned from INFOR Slide Library.pptx (library slides 1, 7, 8, 14, 15).",
+        notes="Phase 3 POC fixed structure cloned from INFOR Slide Library.pptx (library slides 1, 7, 8, 16, 17).",
     )

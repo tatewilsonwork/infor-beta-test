@@ -10,7 +10,7 @@ description: >
   plan-specific inputs, dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.19
+version: 0.5.20
 allowed-tools: [Read, Write, Bash, Glob, Task]
 ---
 
@@ -96,9 +96,9 @@ Stages run in **dependency waves**, not one at a time. Compute the schedule once
 waves = compute_waves(plan)   # list[list[stage_id]] in execution order
 ```
 
-Each wave is a list of stage ids with **no dependency between them**, so the whole wave is dispatched **concurrently** and the conductor waits for it to finish before starting the next. Dependencies are auto-derived from the `$stages.<id>.<name>` references already in each stage's inputs — the references *are* the DAG, there is no `depends_on` field. The `workbook-aggregator` stage is always scheduled alone in the final wave (it consolidates and deletes the individual workbooks, so nothing may run alongside it). Tell the analyst the wave plan up front, e.g.:
+Each wave is a list of stage ids with **no dependency between them**, so the whole wave is dispatched **concurrently** and the conductor waits for it to finish before starting the next. Dependencies are auto-derived from the `$stages.<id>.<name>` references already in each stage's inputs — the references *are* the DAG, there is no `depends_on` field. The `workbook-aggregator` stage carries one hardcoded extra edge: it depends on **every stage except its own downstream consumers** (it consolidates and deletes the individual workbooks, so nothing that produces or reads them may run alongside it) — so it is always alone in its wave, but a post-aggregation stage that consumes its output (the pitch plan's `financial-charts`) runs in a later wave after it. Tell the analyst the wave plan up front, e.g. for pitch:
 
-> 5 waves: [1] `wireframe`, `ltm-metrics`, `comps`, `precedents` (parallel) → [2] `content`, `captable` → [3] `ownership` → [4] `deck` → [5] `workbook-aggregation`.
+> 7 waves: [1] `wireframe`, `financial-summary`, `comps`, `precedents` (parallel) → [2] `content`, `ltm-metrics` → [3] `captable` → [4] `ownership` → [5] `deck` → [6] `workbook-aggregation` → [7] `financial-charts`.
 
 Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage id. For each wave, in order:
 
@@ -107,7 +107,7 @@ Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage 
 2. **Persist inputs.** `write_stage_inputs(run_dir, stage.id, resolved_inputs)`.
 3. **Render envelope.** Load `references/stage-envelope.md`, substitute its placeholders, prepare the prompt for the Agent tool.
 
-**6b — Dispatch the whole wave concurrently.** Issue one `Task` (Agent) call per stage **in a single message** so they run in parallel. On each call set the env vars `STAGE_INPUTS` and `STAGE_OUTPUTS` (absolute paths to *that stage's* `inputs.json` / `outputs.json`) and `DEAL_DIR` (absolute path to the deal directory). Wait for every sub-agent in the wave to finish before continuing. (A single-stage wave is just one `Task` call — same as the old sequential behaviour.)
+**6b — Dispatch the whole wave concurrently.** Issue one `Task` (Agent) call per stage **in a single message** so they run in parallel. The `Task` tool cannot set environment variables, so the rendered envelope (see `references/stage-envelope.md`) carries *that stage's* absolute `inputs.json` / `outputs.json` / deal-directory paths inline and instructs the sub-agent to export `STAGE_INPUTS` / `STAGE_OUTPUTS` / `DEAL_DIR` itself before running any reference command. Wait for every sub-agent in the wave to finish before continuing. (A single-stage wave is just one `Task` call — same as the old sequential behaviour.)
 
 **6c — Collect the wave.** After all of the wave's sub-agents return, for each stage id in the wave (in listed order):
 4. **Read outputs.** `outputs = read_stage_outputs(run_dir, stage.id)`. This raises `FileNotFoundError` if the sub-skill failed to write outputs.json — surface the failure to the analyst and stop. Do not start the next wave if any stage in this one produced no structured outputs.
@@ -149,5 +149,5 @@ Never silently skip a stage. Never proceed past a missing output. Never overwrit
 
 - Produce slides, models, or copy. That is each sub-skill's job.
 - Make banking decisions. Voice, brand, and source-trust rules live in each stage skill's own SKILL.md / references and its allow-list — not in the conductor.
-- Invent or infer dependencies beyond the references. The wave schedule comes purely from the `$stages.*` references in each stage's inputs plus the fixed `workbook-aggregator`-last barrier (`plan_schedule.compute_waves`). The conductor will not add edges, reorder, or parallelise beyond what those imply — and it never dispatches a stage before everything it references has produced outputs.
+- Invent or infer dependencies beyond the references. The wave schedule comes purely from the `$stages.*` references in each stage's inputs plus the hardcoded aggregator barrier (`workbook-aggregator` depends on every stage except its own downstream consumers; `plan_schedule.compute_waves`). The conductor will not add edges, reorder, or parallelise beyond what those imply — and it never dispatches a stage before everything it references has produced outputs.
 - Emit telemetry beyond per-stage transcripts. `meta.json` (model, tokens, latency) is Phase 5.

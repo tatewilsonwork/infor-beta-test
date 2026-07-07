@@ -456,6 +456,12 @@ def _build_charts_com(
                 excel.ActiveWindow.ScrollColumn = 1
             except Exception:
                 pass
+            # Replace, never accumulate: a re-run must not park a second set of
+            # four charts next to the stale one (mirrors the openpyxl path).
+            try:
+                ws.ChartObjects().Delete()
+            except Exception:
+                pass
             # Every chart is built + exported at the same on-screen "scratch" spot
             # (row 1) and only then moved to its 2x2 grid slot below the data. A
             # chart parked below the rendered viewport exports as a blank/0-byte
@@ -497,6 +503,12 @@ def _build_charts_com(
         finally:
             wb.Close(SaveChanges=False)
         return pngs
+    except Exception as exc:
+        # COM failures surface as pywintypes.com_error (no Excel install, a dead
+        # instance, a failed Open), not RuntimeError — normalize so the caller's
+        # `except RuntimeError` fallback to openpyxl+LibreOffice actually engages
+        # (mirrors slide_render's COM wrapping).
+        raise RuntimeError(f"Excel COM chart build failed: {exc}") from exc
     finally:
         if excel is not None:
             excel.Quit()
@@ -611,6 +623,12 @@ def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: in
                 excel.ActiveWindow.ScrollColumn = 1
             except Exception:
                 pass
+            # Replace, never accumulate: a re-run must not park a second pie
+            # next to the stale one (mirrors the openpyxl path).
+            try:
+                ws.ChartObjects().Delete()
+            except Exception:
+                pass
             scratch_left = ws.Cells(1, 2).Left
             scratch_top = ws.Cells(1, 1).Top
             chart_obj = ws.ChartObjects().Add(
@@ -649,6 +667,11 @@ def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: in
         finally:
             wb.Close(SaveChanges=False)
         return png
+    except Exception as exc:
+        # Normalize COM failures (pywintypes.com_error) to RuntimeError so the
+        # caller's fallback to openpyxl+LibreOffice engages — same as
+        # _build_charts_com.
+        raise RuntimeError(f"Excel COM pie build failed: {exc}") from exc
     finally:
         if excel is not None:
             excel.Quit()
@@ -710,6 +733,75 @@ def _format_com_pie(chart, series, n_points: int) -> None:
 # ---------------------------------------------------------------------------
 # openpyxl + LibreOffice backend (off-Windows) — best-effort
 # ---------------------------------------------------------------------------
+def _persist_native_charts_openpyxl(
+    workbook: Path,
+    *,
+    rebuild: str,
+    fs_sheet: str = _SHEET_DEFAULT,
+    fs_cols: tuple[int, int] | None = None,
+    pie_sheet: str = _PIE_SHEET_DEFAULT,
+    pie_rows: tuple[int, int] | None = None,
+):
+    """Load the combined workbook, (re)create native charts, save. Returns the wb.
+
+    The FS-chart and pie steps run as separate orchestrator calls against the
+    SAME combined workbook, so each save must neither lose the other step's
+    charts nor let a re-run accumulate duplicates:
+
+      - The ``rebuild`` side (``"fs"`` | ``"pie"``) has its sheet's charts
+        cleared and re-created unconditionally, so re-running a step replaces
+        its charts instead of adding a second set next to the stale one.
+        (openpyxl has no public chart-removal API; resetting the private
+        per-sheet list is the accepted idiom.) Raises ``KeyError`` before any
+        mutation when that side's sheet is missing.
+      - The sibling side's charts normally survive untouched: openpyxl 3.x
+        reads existing chart parts on load and round-trips them on save. As a
+        belt-and-braces for any openpyxl build that drops chart parts on load,
+        a sibling tab that is present and chart-ready but carries NO charts
+        gets its set re-created (at openpyxl fidelity) rather than silently
+        lost on this save.
+
+    Geometry is taken from the explicit ``fs_cols`` / ``pie_rows`` when the
+    caller already resolved it, and re-derived from the tab otherwise (the
+    sibling side on a re-create).
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(workbook)
+    need_sheet = fs_sheet if rebuild == "fs" else pie_sheet
+    if need_sheet not in wb.sheetnames:
+        raise KeyError(f"sheet {need_sheet!r} not found in {workbook}")
+
+    if fs_sheet in wb.sheetnames and (rebuild == "fs" or not wb[fs_sheet]._charts):
+        ws = wb[fs_sheet]
+        cols = fs_cols
+        if cols is None:
+            try:
+                cols = period_axis_columns(ws)
+            except ValueError:
+                cols = None  # tab not in the chart-ready layout — skip its charts
+        if cols is not None:
+            ws._charts = []
+            first_col, last_col = cols
+            anchors = ["B11", "I11", "B27", "I27"]
+            for (_placeholder, data_row), anchor in zip(_PLACEHOLDER_MAP, anchors):
+                ws.add_chart(_make_openpyxl_chart(ws, data_row, first_col, last_col), anchor)
+
+    if pie_sheet in wb.sheetnames and (rebuild == "pie" or not wb[pie_sheet]._charts):
+        ws = wb[pie_sheet]
+        rows = pie_rows if pie_rows is not None else ltm_revenue_overview_range(ws)
+        if rows is not None:
+            ws._charts = []
+            first_row, last_row = rows
+            ws.add_chart(
+                _make_openpyxl_pie(ws, first_row, last_row, last_row - first_row + 1),
+                ws.cell(row=last_row + 3, column=1).coordinate,
+            )
+
+    wb.save(workbook)
+    return wb
+
+
 def _build_charts_openpyxl_libreoffice(
     workbook: Path, sheet_name: str, first_col: int, last_col: int
 ) -> dict[int, bytes]:
@@ -725,19 +817,14 @@ def _build_charts_openpyxl_libreoffice(
     render is attempted. If ``soffice``/``libreoffice`` (or ``pypdfium2``) is
     missing, the workbook charts have already been saved and an empty ``{}`` is
     returned so the caller degrades gracefully (leaves the deck placeholders)
-    rather than aborting the whole stage (Issue 1).
+    rather than aborting the whole stage (Issue 1). Persistence goes through
+    :func:`_persist_native_charts_openpyxl` so a re-run replaces the four charts
+    instead of accumulating a duplicate set, and the pie step's chart on the
+    sibling ``ltm-metrics`` tab survives this save.
     """
-    from openpyxl import load_workbook
-
-    wb = load_workbook(workbook)
-    if sheet_name not in wb.sheetnames:
-        raise KeyError(f"sheet {sheet_name!r} not found in {workbook}")
-    ws = wb[sheet_name]
-    anchors = ["B11", "I11", "B27", "I27"]
-    for (_placeholder, data_row), anchor in zip(_PLACEHOLDER_MAP, anchors):
-        ws.add_chart(_make_openpyxl_chart(ws, data_row, first_col, last_col), anchor)
-    # Persist the native charts on the tab FIRST — independent of LibreOffice.
-    wb.save(workbook)
+    _persist_native_charts_openpyxl(
+        workbook, rebuild="fs", fs_sheet=sheet_name, fs_cols=(first_col, last_col)
+    )
 
     try:
         resolved = _libreoffice_recalc_values(workbook, sheet_name, first_col, last_col)
@@ -989,22 +1076,16 @@ def _build_pie_openpyxl_libreoffice(
     after. If ``soffice``/``libreoffice`` (or ``pypdfium2``) is missing, the pie has
     already been saved on the tab and ``None`` is returned so the caller leaves the
     overview placeholder instead of aborting the stage (Issue 3 parity with Issue 1).
+    Persistence goes through :func:`_persist_native_charts_openpyxl` so a re-run
+    replaces the pie instead of accumulating a duplicate, and the FS step's four
+    charts on the sibling ``financial-summary`` tab survive this save.
     """
-    from openpyxl import load_workbook
-
-    wb = load_workbook(workbook)
-    if sheet_name not in wb.sheetnames:
-        raise KeyError(f"sheet {sheet_name!r} not found in {workbook}")
-    ws = wb[sheet_name]
-    n = last_row - first_row + 1
-    ws.add_chart(
-        _make_openpyxl_pie(ws, first_row, last_row, n),
-        ws.cell(row=last_row + 3, column=1).coordinate,
+    wb = _persist_native_charts_openpyxl(
+        workbook, rebuild="pie", pie_sheet=sheet_name, pie_rows=(first_row, last_row)
     )
+    ws = wb[sheet_name]
     labels = [ws.cell(row=r, column=_PIE_SEGMENT_COL).value for r in range(first_row, last_row + 1)]
     amounts = [ws.cell(row=r, column=_PIE_VALUE_COL).value for r in range(first_row, last_row + 1)]
-    # Persist the native pie on the tab FIRST — independent of LibreOffice.
-    wb.save(workbook)
 
     try:
         # The render workbook charts literal cells, but the real tab's "% of Total"
