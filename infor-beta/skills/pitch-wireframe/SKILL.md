@@ -1,7 +1,7 @@
 ---
 name: pitch-wireframe
 description: Builds the typed SlidePlan for the INFOR slide-library pitch deck, using the blank INFOR Slide Library order as canonical; the market-entry section expands to two targets per slide.
-version: 0.5.20
+version: 0.5.21
 allowed-tools:
   - Read
   - Write
@@ -29,10 +29,11 @@ side_effects:
 
 # pitch-wireframe
 
-Builds the `SlidePlan` for the slide-library pitch deck. The blank library is 15
-slides (including the insider-ownership slide); the market-entry section grows to
-`ceil(market_entry_target_count / 2)` slides (two targets per slide), so a deck
-with 8 targets has 4 market-entry slides (18 slides total).
+Builds the `SlidePlan` for the slide-library pitch deck. The blank library is 16
+slides (including the insider-ownership and precedent-transactions slides — the
+canonical order lives in `scripts/slide_library_registry.py`); the market-entry
+section grows to `ceil(market_entry_target_count / 2)` slides (two targets per
+slide), so a deck with 8 targets has 4 market-entry slides (19 slides total).
 
 Rules:
 - Use `/templates/INFOR Slide Library.pptx` names/order as canonical.

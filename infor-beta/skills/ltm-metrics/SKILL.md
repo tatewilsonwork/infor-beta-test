@@ -7,7 +7,7 @@ description: >
   (or EBITDA) bridge. Activates as the earnings-update plan stage `ltm-metrics`, supplying the
   companion data behind the overview slide's LTM revenue pie placeholder. Segment by service /
   product line when disclosed, else by geography.
-version: 0.5.20
+version: 0.5.21
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -82,7 +82,7 @@ unchanged: only the Revenue and EBITDA bridges are built.
 }
 ```
 
-`ltm_revenue` and `ltm_adj_ebitda` are the bridge totals **in millions, in the filing's reporting currency** — the same currency as the bridge components. The downstream `captable` stage reads them and writes them to the cap table's LTM column (D47 / D48), applying the cap table's FX rate F7 to convert into the output currency, so emit them unconverted here. Use `bridge_total(...)` to compute each from the same component list you pass to the workbook (omit a key when its bridge is absent).
+`ltm_revenue` and `ltm_adj_ebitda` are the bridge totals **in millions, in the filing's reporting currency** — the same currency as the bridge components. The downstream `captable` stage reads them and writes them to the cap table's LTM column (D47 / D48), applying the cap table's FX rate F7 to convert into the output currency, so emit them unconverted here. Use `bridge_total(...)` to compute each from the same component list you pass to the workbook. When a bridge is absent, emit the key as **`null` — never omit it**: the plans reference `$stages.ltm-metrics.ltm_revenue` / `.ltm_adj_ebitda`, and a missing key halts the conductor's reference resolution, whereas a `null` flows through to captable's CapIQ-formula fallback.
 
 When `$STAGE_OUTPUTS` is unset (direct invocation), write the workbook to cwd and skip the JSON handoff.
 
@@ -144,14 +144,15 @@ workbook_path = build_ltm_metrics_workbook(
     output_dir=out_dir,
 )
 
-# Mirror the workbook's bridge formulas for the typed handoff (filing-currency millions).
-handoff = {"workbook_path": str(workbook_path)}
-ltm_revenue = bridge_total(revenue_bridge)
-ltm_adj_ebitda = bridge_total(ebitda_bridge)
-if ltm_revenue is not None:
-    handoff["ltm_revenue"] = ltm_revenue
-if ltm_adj_ebitda is not None:
-    handoff["ltm_adj_ebitda"] = ltm_adj_ebitda
+# Mirror the workbook's bridge formulas for the typed handoff (filing-currency
+# millions). An absent bridge emits null — never omit the key, or the plans'
+# $stages.ltm-metrics.* references fail to resolve and the run halts instead of
+# reaching captable's CapIQ-formula fallback.
+handoff = {
+    "workbook_path": str(workbook_path),
+    "ltm_revenue": bridge_total(revenue_bridge),
+    "ltm_adj_ebitda": bridge_total(ebitda_bridge),
+}
 Path(os.environ["STAGE_OUTPUTS"]).write_text(json.dumps(handoff, indent=2) + "\n")
 ```
 

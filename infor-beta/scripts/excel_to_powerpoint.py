@@ -117,7 +117,15 @@ def _excel_com_range_to_png(workbook: Path, sheet_name: str, source_range: str) 
     excel = None
     tmp_png_path: str | None = None
     try:
-        excel = win32com.client.DispatchEx("Excel.Application")
+        try:
+            excel = win32com.client.DispatchEx("Excel.Application")
+        except Exception as exc:
+            # No Excel install — the COM class isn't registered, which surfaces
+            # as pywintypes.com_error, not RuntimeError. Normalize it so the
+            # caller's documented fall-through to LibreOffice engages. (Failures
+            # PAST this point stay raw by design — see the retry loop below —
+            # so a mid-operation Excel error is not mistaken for "no Excel".)
+            raise RuntimeError(f"Excel COM unavailable: {exc}") from exc
         # CopyPicture(xlScreen) captures what the instance renders, and the
         # recalc below invalidates the render buffer of an invisible instance
         # (producing a blank picture). So run visible — but parked far
@@ -260,6 +268,15 @@ def _soffice_convert(soffice: str, src: Path, out_fmt: str, out_dir: Path) -> No
             raise RuntimeError(
                 f"LibreOffice {out_fmt!r} conversion failed: "
                 f"{exc.stderr.decode(errors='replace')}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            # A wedged soffice must degrade like a missing one: every caller's
+            # graceful-degradation net catches RuntimeError only, so a raw
+            # TimeoutExpired would abort the whole stage even though the durable
+            # artefacts (e.g. the native workbook charts) are already saved.
+            raise RuntimeError(
+                f"LibreOffice {out_fmt!r} conversion timed out after "
+                f"{exc.timeout:.0f}s"
             ) from exc
 
 

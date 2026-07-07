@@ -225,8 +225,9 @@ def _fill_market_entry_targets(
     `targets` holds the 1-2 targets for THIS slide. The table is the fixed
     12-row structure (Overview / HQ / Year Founded → 7 consistent industry
     metrics → Scale KPIs / Strategic Rationale): the label column (col 0) is
-    written white at 11 pt and the target value columns at 10 pt, matching the
-    library style. Each populated column's logo box is relabelled
+    written white at 11 pt and the target value columns at `_ME_VALUE_SIZE`
+    (9 pt — deliberately below the library's 10 pt so the 5.71" table clamp
+    holds; see the constant's comment). Each populated column's logo box is relabelled
     '[<target name> Logo]' (generic '[Company Name Logo]' when the target has no
     name); the unused box is blanked on an odd final slide so a single-target
     slide shows no stray logo box.

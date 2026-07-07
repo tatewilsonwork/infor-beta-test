@@ -139,6 +139,33 @@ def test_merge_preserves_values_and_formulas(tmp_path: Path):
     assert ws["B2"].value == "=B1*2"
 
 
+def test_merge_preserves_comments_and_hyperlinks(tmp_path: Path):
+    # v0.5.21: the cap-table template stores the analyst's CapIQ refresh formulas
+    # as cell COMMENTS (F7/F16), and openpyxl copies neither comments nor
+    # hyperlinks with the style — both must be carried across explicitly or the
+    # documented refresh workflow silently breaks on the off-Windows merge.
+    from openpyxl.comments import Comment
+
+    a = tmp_path / "cap.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cap"
+    ws["F7"] = 1.36
+    ws["F7"].comment = Comment("=IQ_FX_RATE(...)", "INFOR")
+    ws["B2"] = "Source"
+    ws["B2"].hyperlink = "https://example.com/filing"
+    wb.save(a)
+
+    out = tmp_path / "out.xlsx"
+    _combine_via_openpyxl([("captable", a)], out)
+    ws2 = load_workbook(out)["captable"]
+    assert ws2["F7"].comment is not None
+    assert ws2["F7"].comment.text == "=IQ_FX_RATE(...)"
+    assert ws2["F7"].comment.author == "INFOR"
+    assert ws2["B2"].hyperlink is not None
+    assert ws2["B2"].hyperlink.target == "https://example.com/filing"
+
+
 # --- combine_workbooks end-to-end (openpyxl path off-Windows) ---------------
 
 

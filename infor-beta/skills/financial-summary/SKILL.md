@@ -7,7 +7,7 @@ description: >
   target (industry-aware: operating company vs. financial institution), gathers their last five
   fiscal years from the latest 10-Ks plus an LTM column, and emits the four metric labels the deck
   tiles use. The single source of truth for the deck's four financial metrics.
-version: 0.5.20
+version: 0.5.21
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 

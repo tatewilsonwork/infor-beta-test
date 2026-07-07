@@ -2,7 +2,7 @@
 
 INFOR Financial Group's next-generation analyst workflow platform — a Claude Code plugin that orchestrates investment-banking deliverables (earnings updates, pitches, and — soon — overview decks) through a conductor meta-skill, specialised sub-skills, a typed I/O contract, and a shared slide library.
 
-**Status: Phase 3 (proof-of-concept), plugin v0.5.20.** The conductor, the decomposed earnings-update plan, and the 16-slide pitch slide-library plan (including the insider-ownership slide, a public-comparables companion workbook, a precedent-transactions companion workbook, a chart-ready financial-summary data tab with native Excel charts rendered onto the Financial Summary slide, and an LTM-revenue-by-segment pie on the overview slide) all run end-to-end. The production plugin today is still the existing `infor-workflows` repo; this repo is a clean-break rebuild and will supersede it when ready.
+**Status: Phase 3 (proof-of-concept), plugin v0.5.21.** The conductor, the decomposed earnings-update plan, and the 16-slide pitch slide-library plan (including the insider-ownership slide, a public-comparables companion workbook, a precedent-transactions companion workbook, a chart-ready financial-summary data tab with native Excel charts rendered onto the Financial Summary slide, and an LTM-revenue-by-segment pie on the overview slide) all run end-to-end. The production plugin today is still the existing `infor-workflows` repo; this repo is a clean-break rebuild and will supersede it when ready.
 
 ## Vision
 
@@ -16,8 +16,9 @@ infor-beta/
 ├── skills/                        One directory per skill (SKILL.md + references/)
 ├── plans/                         Conductor plan YAMLs (earnings-update, pitch, overview)
 ├── scripts/                       Shared helpers, typed schemas (pydantic), and tests
-├── templates/                     Excel + PowerPoint templates
-│                                  (INFOR Slide Library.pptx, INFOR Cap Table Template.xlsx)
+├── templates/                     Excel + PowerPoint templates + brand theme
+│                                  (INFOR Slide Library.pptx; Cap Table / Comps /
+│                                  Precedents / Ownership .xlsx templates; INFORFG.thmx)
 README.md
 CLAUDE.md                          Contributor brief (loaded by Claude Code)
 CHANGELOG.md
@@ -34,14 +35,14 @@ The full design lives in Obsidian at `Hermes-L1/INFOR Platform Architecture/`. N
 The conductor runs one plan per deliverable, resolved as `plans/<deliverable>.yaml`:
 
 - **`earnings-update.yaml`** — decomposed quarterly earnings update: `wireframe → content → ltm-metrics → captable → deck → workbook-aggregation`. Clones the shared slide library and emits a companion cap table.
-- **`pitch.yaml`** — the 15-slide INFOR Slide Library pitch deck: `wireframe → content → ltm-metrics → captable → ownership → comps → deck → workbook-aggregation`. Clones the shared library; emits companion cap-table, LTM-metrics, ownership (Canadian targets), and comps workbooks.
+- **`pitch.yaml`** — the 16-slide INFOR Slide Library pitch deck, 11 stages scheduled into 7 dependency waves: `wireframe` / `financial-summary` / `comps` / `precedents` (parallel) → `content` / `ltm-metrics` → `captable` → `ownership` → `deck` → `workbook-aggregation` → `financial-charts` (post-aggregation, draws the Financial Summary charts + overview LTM-revenue pie on the combined workbook and inserts them into the deck). Clones the shared library; emits companion cap-table, LTM-metrics, ownership (Canadian targets), comps, precedents, and financial-summary workbooks, folded into one combined workbook.
 - **`overview.yaml`** — stub; the overview deck is registered as a deliverable but not yet implemented.
 
 ## Skills
 
-**Implemented:** `conductor`, `earningsupdate-wireframe`, `earningsupdate-content`, `pitch-wireframe`, `pitch-content`, `captable`, `ltm-metrics`, `comps`, `ownership`, `deck-assembler`, `workbook-aggregator`.
+**Implemented:** `conductor`, `earningsupdate-wireframe`, `earningsupdate-content`, `pitch-wireframe`, `pitch-content`, `captable`, `ltm-metrics`, `comps`, `precedents`, `ownership`, `financial-summary`, `financial-charts`, `deck-assembler`, `workbook-aggregator`.
 
-**Roadmap (not yet built):** `precedents`, `buyerslist`, `lbo-model`, `deck-writing`, `deckcheck` (QA), `brand-guidelines` (library), `valuation` (football field), company / industry profiles.
+**Roadmap (not yet built):** `buyerslist`, `lbo-model`, `deck-writing`, `deckcheck` (QA), `brand-guidelines` (library), `valuation` (football field), company / industry profiles.
 
 **Removed from scope:** management presentations, diligence support, research pipelines.
 

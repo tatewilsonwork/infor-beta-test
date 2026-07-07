@@ -10,7 +10,7 @@ description: >
   plan-specific inputs, dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.20
+version: 0.5.21
 allowed-tools: [Read, Write, Bash, Glob, Task]
 ---
 
@@ -107,9 +107,9 @@ Stages run in **dependency waves**, not one at a time. Compute the schedule once
 waves = compute_waves(plan)   # list[list[stage_id]] in execution order
 ```
 
-Each wave is a list of stage ids with **no dependency between them**, so the whole wave is dispatched **concurrently** and the conductor waits for it to finish before starting the next. Dependencies are auto-derived from the `$stages.<id>.<name>` references already in each stage's inputs — the references *are* the DAG, there is no `depends_on` field. The `workbook-aggregator` stage is always scheduled alone in the final wave (it consolidates and deletes the individual workbooks, so nothing may run alongside it). Tell the analyst the wave plan up front, e.g.:
+Each wave is a list of stage ids with **no dependency between them**, so the whole wave is dispatched **concurrently** and the conductor waits for it to finish before starting the next. Dependencies are auto-derived from the `$stages.<id>.<name>` references already in each stage's inputs — the references *are* the DAG, there is no `depends_on` field. The `workbook-aggregator` stage carries one hardcoded extra edge: it depends on **every stage except its own downstream consumers** (it consolidates and deletes the individual workbooks, so nothing that produces or reads them may run alongside it) — so it is always alone in its wave, but a post-aggregation stage that consumes its output (the pitch plan's `financial-charts`) runs in a later wave after it. Tell the analyst the wave plan up front, e.g. for pitch:
 
-> 5 waves: [1] `wireframe`, `ltm-metrics`, `comps`, `precedents` (parallel) → [2] `content`, `captable` → [3] `ownership` → [4] `deck` → [5] `workbook-aggregation`.
+> 7 waves: [1] `wireframe`, `financial-summary`, `comps`, `precedents` (parallel) → [2] `content`, `ltm-metrics` → [3] `captable` → [4] `ownership` → [5] `deck` → [6] `workbook-aggregation` → [7] `financial-charts`.
 
 > **Driver shortcut.** Rather than hand-coding 6a/6c per wave, persist the collected `plan_inputs` once with `write_plan_inputs(run_dir, plan_inputs)` and drive each wave with the `conductor_cli` helpers: `prep_wave(run_dir, n)` resolves every reference (passing `optional_plan_inputs` for you), writes each stage's `inputs.json` through the pydantic/`Path`-safe encoder, and returns the rendered dispatch envelopes; after the wave, `collect_wave(run_dir, n)` reads + validates every `outputs.json`. (Equivalently, `python ${CLAUDE_PLUGIN_ROOT}/scripts/conductor_cli.py prep-wave <run_dir> <n>` / `collect-wave <run_dir> <n>`.) You still issue the `Task` calls and run the checkpoints yourself. The manual steps below are the contract these helpers implement.
 
@@ -162,5 +162,5 @@ Never silently skip a stage. Never proceed past a missing output. Never overwrit
 
 - Produce slides, models, or copy. That is each sub-skill's job.
 - Make banking decisions. Voice, brand, and source-trust rules live in each stage skill's own SKILL.md / references and its allow-list — not in the conductor.
-- Invent or infer dependencies beyond the references. The wave schedule comes purely from the `$stages.*` references in each stage's inputs plus the fixed `workbook-aggregator`-last barrier (`plan_schedule.compute_waves`). The conductor will not add edges, reorder, or parallelise beyond what those imply — and it never dispatches a stage before everything it references has produced outputs.
+- Invent or infer dependencies beyond the references. The wave schedule comes purely from the `$stages.*` references in each stage's inputs plus the hardcoded aggregator barrier (`workbook-aggregator` depends on every stage except its own downstream consumers; `plan_schedule.compute_waves`). The conductor will not add edges, reorder, or parallelise beyond what those imply — and it never dispatches a stage before everything it references has produced outputs.
 - Emit telemetry beyond per-stage transcripts. `meta.json` (model, tokens, latency) is Phase 5.

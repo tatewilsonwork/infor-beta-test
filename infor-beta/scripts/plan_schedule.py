@@ -23,9 +23,13 @@ Two kinds of edge feed the DAG:
    those sources (the standalone cap table) before it is folded in, and that
    ordering is a filesystem side-effect, NOT a value reference — so it is
    invisible to the data-edge derivation above. We therefore force the
-   aggregator to depend on *every* other stage, making it a strict final
-   barrier. This matches its semantics (it consolidates everything) and keeps
-   both shipped plans correct without a schema change.
+   aggregator to depend on every other stage EXCEPT its own downstream
+   consumers (stages that reference `$stages.workbook-aggregation.*`, e.g. the
+   pitch plan's post-aggregation `financial-charts`, which must run after it —
+   including them would be a cycle). The aggregator is thus always alone in its
+   wave, with any post-aggregation consumers in later waves; see
+   `stage_dependencies` (generalized in v0.5.16 from the original strict
+   final-barrier form).
 
 The scheduler only *orders* stages. It does not validate references: a typo'd
 `$stages.<id>` is ignored here and left for `plan_refs.resolve_refs` to reject
