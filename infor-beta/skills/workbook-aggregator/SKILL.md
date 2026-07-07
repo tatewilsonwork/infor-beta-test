@@ -8,7 +8,7 @@ description: >
   pitch-Project Atlas.xlsx. Activates as the plan stage `workbook-aggregation`. Preserves formulas,
   CapIQ links, charts, and formatting via Excel COM on Windows; falls back to a best-effort openpyxl
   merge off-Windows. The individual source workbooks are replaced by the combined file.
-version: 0.5.20
+version: 0.5.21
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -59,6 +59,10 @@ Once every workbook is one file, a **relink** pass rewrites the skills' standalo
 - Financial-summary LTM link cells — each `=INDEX('ltm-metrics'!…)` formula is re-assigned so it re-binds to the sibling `ltm-metrics` tab (the COM sheet-copy leaves it bound to an *external* workbook relationship that Excel's `.Formula` getter masks as internal, resolving `#N/A`; see v0.5.16).
 
 The relink is best-effort and only fires when the relevant tabs are present; it is a no-op otherwise. On the openpyxl fallback the formulas are still written, but CapIQ links are already lost on that path.
+
+## LibreOffice recalc (openpyxl path only)
+
+The openpyxl copy writes formula **strings** with no cached values, so the cross-tab links above — and the `financial-summary` tab's `=INDEX('ltm-metrics'!…)` LTM lookups — sit **un-evaluated** in the merged file until something recalculates them. A downstream stage that reads those cells programmatically (e.g. `financial-charts`) would otherwise get `None`. So after the openpyxl merge the helper re-saves the combined workbook through **headless LibreOffice** (recalc-on-load), caching the evaluated values **while preserving the formulas** (Excel does the math; the analyst still sees live formulas). This is automatic inside `combine_workbooks` — no extra step in this skill. It is best-effort: when `soffice`/`libreoffice` is absent the workbook simply keeps its un-evaluated formulas (the analyst's Excel recalcs on open) rather than the stage failing. The COM path needs no recalc — Excel evaluates natively on save.
 
 ## Workflow
 

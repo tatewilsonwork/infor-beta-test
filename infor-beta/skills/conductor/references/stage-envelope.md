@@ -1,8 +1,10 @@
 # Stage envelope — Agent prompt template
 
-The conductor renders this template once per stage and passes it as the prompt to the `Task` (Agent) tool. The sub-agent reads `STAGE_INPUTS`, does its work, and writes `STAGE_OUTPUTS` before finishing. The conductor parses `outputs.json`, not the sub-agent's reply text.
+The conductor renders this template once per stage and passes it as the prompt to the `Task` (Agent) tool. The sub-agent exports the handoff paths from the prompt body, reads `STAGE_INPUTS`, does its work, and writes `STAGE_OUTPUTS` before finishing. The conductor parses `outputs.json`, not the sub-agent's reply text.
 
 Placeholders enclosed in `{{double_braces}}` are substituted by the conductor at render time.
+
+> **The `Task`/`Agent` tool cannot set environment variables on the sub-agent.** So the conductor does **not** pass `STAGE_INPUTS` / `STAGE_OUTPUTS` / `DEAL_DIR` / `CLAUDE_PLUGIN_ROOT` as env vars — there is no parameter for that. Instead it renders their **absolute paths into the prompt body** (via the `{{…path}}` / `{{deal_dir}}` / `{{plugin_root}}` placeholders), and the sub-agent's **first step** is to `export` them itself so its SKILL.md reference commands (which read `os.environ[...]`) find them.
 
 ---
 
@@ -10,6 +12,26 @@ Placeholders enclosed in `{{double_braces}}` are substituted by the conductor at
 
 ```
 You are running stage `{{stage_id}}` of the `{{deliverable_type}}` plan for deal `{{codename}}`.
+
+# First step — export your handoff paths (do this before anything else)
+
+The Task tool could not set environment variables for you, so set them yourself
+first. Run this exact block in your shell (bash/zsh):
+
+    export STAGE_INPUTS="{{stage_inputs_path}}"
+    export STAGE_OUTPUTS="{{stage_outputs_path}}"
+    export DEAL_DIR="{{deal_dir}}"
+    export CLAUDE_PLUGIN_ROOT="{{plugin_root}}"
+
+On Windows PowerShell use instead:
+
+    $env:STAGE_INPUTS  = "{{stage_inputs_path}}"
+    $env:STAGE_OUTPUTS = "{{stage_outputs_path}}"
+    $env:DEAL_DIR      = "{{deal_dir}}"
+    $env:CLAUDE_PLUGIN_ROOT = "{{plugin_root}}"
+
+Your SKILL.md reference commands read these from the environment (`os.environ[...]`),
+so they must be exported in the same session before you run them.
 
 # Deal context
 
@@ -26,11 +48,11 @@ Load and follow the workflow in:
     {{plugin_root}}/skills/{{skill_name}}/SKILL.md
 
 The conductor has already collected analyst inputs and resolved any references.
-Your resolved inputs are at the path in `$STAGE_INPUTS` (also `{{stage_inputs_path}}`).
+Your resolved inputs are at `{{stage_inputs_path}}` (also `$STAGE_INPUTS` once exported).
 
-When you finish, write your structured outputs as JSON to the path in `$STAGE_OUTPUTS`
-(also `{{stage_outputs_path}}`). The conductor REQUIRES this file to exist before it
-will continue the run. Output keys must match the named outputs declared by the
+When you finish, write your structured outputs as JSON to `{{stage_outputs_path}}`
+(also `$STAGE_OUTPUTS`). The conductor REQUIRES this file to exist before it
+will run the next stage. Output keys must match the named outputs declared by the
 plan for this stage:
 
 {{declared_outputs_block}}
@@ -39,19 +61,8 @@ If you cannot complete the work, write `outputs.json` anyway with an `error: <re
 explaining why, then exit. Do NOT exit silently — the conductor cannot resume past a
 missing outputs.json.
 
-# Environment variables — export these yourself, FIRST
-
-These are NOT pre-set in your shell (the Agent tool cannot set environment
-variables on an invocation). The skill's reference commands read them via
-`os.environ`, so before running any of them, export:
-
-    export STAGE_INPUTS="{{stage_inputs_path}}"
-    export STAGE_OUTPUTS="{{stage_outputs_path}}"
-    export DEAL_DIR="{{deal_dir}}"
-
-(Adapt to your shell — e.g. `$env:STAGE_INPUTS = "..."` in PowerShell.) Write any
-deliverable artefacts under `$DEAL_DIR/artefacts/` (NOT cwd) so the analyst finds
-them in a predictable place.
+Write any deliverable artefacts under `{{deal_dir}}/artefacts/` (NOT cwd) so the analyst
+finds them in a predictable place.
 
 # Constraints
 
@@ -79,13 +90,17 @@ them in a predictable place.
 | `{{stage_outputs_path}}` | Absolute path to `<run_dir>/stages/<stage_id>/outputs.json` |
 | `{{declared_outputs_block}}` | Bulleted list of `OutputSpec` entries for this stage, e.g. `- deck_path: Path`. Empty bulleted line if no outputs declared. |
 
-The `Task`/`Agent` tool has no environment-variable parameter, so the conductor
-CANNOT pre-set variables on the invocation. The template therefore instructs the
-sub-agent to export `STAGE_INPUTS` / `STAGE_OUTPUTS` / `DEAL_DIR` itself, from
-the literal paths substituted into the template, before running any skill
-reference command (they all read `os.environ`). `CLAUDE_PLUGIN_ROOT` is
-inherited from the session environment; every skill falls back to `./infor-beta`
-when it is unset.
+The conductor renders all four handoff paths **into the prompt body** (the export block in
+the template) — it does **not** set them as environment variables on the `Task`/`Agent`
+invocation, because that tool has no parameter for env vars. Render absolute paths:
+
+- `{{stage_inputs_path}}`  → `<run_dir>/stages/<stage_id>/inputs.json` (absolute)
+- `{{stage_outputs_path}}` → `<run_dir>/stages/<stage_id>/outputs.json` (absolute)
+- `{{deal_dir}}`           → `DealContext.deal_dir` (absolute)
+- `{{plugin_root}}`        → `CLAUDE_PLUGIN_ROOT` (or the `./infor-beta` default), absolute
+
+The sub-agent exports them itself as its first step (see the template), so its SKILL.md
+reference commands that read `os.environ[...]` resolve correctly.
 
 ---
 

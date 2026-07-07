@@ -16,7 +16,7 @@ from excel_to_powerpoint import _soffice_convert, _write_lo_recalc_profile
 
 
 def test_soffice_convert_timeout_raises_runtime_error(tmp_path: Path, monkeypatch):
-    """v0.5.20: a wedged LibreOffice (TimeoutExpired) must surface as RuntimeError
+    """v0.5.21: a wedged LibreOffice (TimeoutExpired) must surface as RuntimeError
     like every other soffice failure, so callers' graceful-degradation nets
     (``except RuntimeError``) engage instead of the stage aborting raw."""
     import subprocess

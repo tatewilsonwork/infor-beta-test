@@ -40,14 +40,16 @@ What deal is this for?
 5. Sector / industry:         (one line, free-form)
 6. Filings / attachments:     (drop now or "none for now")
                               For pitch and earnings-update deliverables I need
-                              the latest four fiscal-year 10-Ks (they cover five
-                              fiscal years for the financial-summary history),
-                              plus the current-year YTD 10-Q and the prior-year
-                              same-period 10-Q for the LTM bridge (LTM = FY +
-                              current YTD − prior YTD, so a single filing isn't
-                              enough). The cap table is still built off the most
-                              recent statement; the older filings are only for
-                              the 5-year history and the LTM math.
+                              the latest four annual financial statements / 10-Ks
+                              (they cover five fiscal years for the
+                              financial-summary history), plus the current-year
+                              YTD interim statements / 10-Q and the prior-year
+                              same-period interim statements / 10-Q for the LTM
+                              bridge (LTM = full fiscal year + current YTD −
+                              prior-year YTD, so a single filing isn't enough).
+                              The cap table is still built off the most recent
+                              statement; the older filings are only for the
+                              5-year history and the LTM math.
 7. Anything else?:            (optional analyst notes)
 """
 

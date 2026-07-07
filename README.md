@@ -2,7 +2,7 @@
 
 INFOR Financial Group's next-generation analyst workflow platform — a Claude Code plugin that orchestrates investment-banking deliverables (earnings updates, pitches, and — soon — overview decks) through a conductor meta-skill, specialised sub-skills, a typed I/O contract, and a shared slide library.
 
-**Status: Phase 3 (proof-of-concept), plugin v0.5.20.** The conductor, the decomposed earnings-update plan, and the 16-slide pitch slide-library plan (including the insider-ownership slide, a public-comparables companion workbook, a precedent-transactions companion workbook, a chart-ready financial-summary data tab with native Excel charts rendered onto the Financial Summary slide, and an LTM-revenue-by-segment pie on the overview slide) all run end-to-end. The production plugin today is still the existing `infor-workflows` repo; this repo is a clean-break rebuild and will supersede it when ready.
+**Status: Phase 3 (proof-of-concept), plugin v0.5.21.** The conductor, the decomposed earnings-update plan, and the 16-slide pitch slide-library plan (including the insider-ownership slide, a public-comparables companion workbook, a precedent-transactions companion workbook, a chart-ready financial-summary data tab with native Excel charts rendered onto the Financial Summary slide, and an LTM-revenue-by-segment pie on the overview slide) all run end-to-end. The production plugin today is still the existing `infor-workflows` repo; this repo is a clean-break rebuild and will supersede it when ready.
 
 ## Vision
 

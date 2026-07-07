@@ -13,7 +13,7 @@ hand and attaches the PDF:
 > English → **Access Public Filings** → **View Summary Reports** → **Insider information by issuer** →
 > type the issuer name in the search bar → **View** → **Download PDF Report**
 
-The resulting PDF (URL `SVTIIBIviewResults`) is fully text-extractable — no OCR needed.
+The resulting PDF (URL `SVTIIBIviewResults`) is normally fully text-extractable — no OCR needed. On the rare occasion a download comes through garbled, fall back to the shared `scripts/pdf_extract.py` helper (text → garble-detect → render + tesseract OCR), the same fallback the other filing-reading skills use.
 
 There is **no US equivalent** wired into this skill: US insider holdings live in SEC Forms 3/4/5 on
 EDGAR. The ownership slide therefore applies only to **Canadian reporting issuers**.

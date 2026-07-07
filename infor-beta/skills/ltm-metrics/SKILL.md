@@ -7,7 +7,7 @@ description: >
   (or EBITDA) bridge. Activates as the earnings-update plan stage `ltm-metrics`, supplying the
   companion data behind the overview slide's LTM revenue pie placeholder. Segment by service /
   product line when disclosed, else by geography.
-version: 0.5.20
+version: 0.5.21
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -65,7 +65,7 @@ unchanged: only the Revenue and EBITDA bridges are built.
 
 1. Read `$STAGE_INPUTS`.
 2. Confirm you have the three input sets above (FY base + current YTD stub + prior-year YTD stub). If not, surface the gap (see "Inputs you must have").
-3. From the attached filings (10-K / 10-Q / MD&A / annual report), find the revenue disaggregation note for the **revenue overview**.
+3. From the attached filings (annual / interim financial statements, 10-K / 10-Q, MD&A, annual report), find the revenue disaggregation note for the **revenue overview**. If a filing's text comes through garbled (CID-font scramble, U+FFFD characters, or blank pages), read it via the shared `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/pdf_extract.py` helper (`from pdf_extract import extract_pdf_text`), which detects garble and falls back to rendering + tesseract OCR — never transcribe scrambled glyphs.
    - **Preferred basis:** service / product line (e.g. Cloud Services & Subscriptions, Customer Support, License, Professional Service). Usually in the MD&A revenue discussion or the revenue-recognition footnote.
    - **Fallback basis:** geography (Americas / EMEA / Asia-Pacific) or any other disclosed segmentation, in that order of preference.
 4. Build the **revenue bridge** components: FY revenue (additive), current-year YTD revenue (additive), prior-year YTD revenue (subtractive). The workbook computes the LTM total via a formula.
