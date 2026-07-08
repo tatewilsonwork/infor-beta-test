@@ -105,9 +105,14 @@ def test_make_openpyxl_chart_applies_infor_formatting(tmp_path: Path):
     assert len(chart.series) == 1
     fill = chart.series[0].graphicalProperties.solidFill
     assert getattr(fill, "srgbClr", fill) == "46566E"
-    # Data labels on every bar, Outside End.
+    # Data labels on every bar, Outside End, in the SAME currency format as the
+    # tab's value cells (so a bar reads "$102.7" exactly like its cell).
     assert chart.dataLabels.showVal is True
     assert chart.dataLabels.dLblPos == "outEnd"
+    import financial_summary_workbook
+
+    assert chart.dataLabels.numFmt == '$#,##0.0_);($#,##0.0);"--"'
+    assert chart.dataLabels.numFmt == financial_summary_workbook._VALUE_FORMAT
     # P1.2: VALUE only — category/series/legend-key/percent flags off, so the
     # LibreOffice render shows "589.8", not "FY2025; Row 2; 589.808".
     assert chart.dataLabels.showCatName in (False, None)
@@ -198,6 +203,8 @@ def test_single_value_chart_has_black_axis_and_no_border(tmp_path: Path):
     assert chart.dataLabels.showSerName in (False, None)
     assert chart.dataLabels.showLegendKey in (False, None)
     assert chart.dataLabels.showPercent in (False, None)
+    # ... and in the tab's currency format.
+    assert chart.dataLabels.numFmt == financial_charts._VALUE_FORMAT
 
 
 # --- LTM revenue pie (overview slide) ---------------------------------------
@@ -266,14 +273,37 @@ def test_make_openpyxl_pie_applies_infor_formatting(tmp_path: Path):
 
     assert isinstance(pie, PieChart)
     assert pie.title is None
-    assert pie.legend.position == "t"  # legend at the TOP
+    # v0.5.22: legend docked on the RIGHT (was top), not overlaying the plot.
+    assert pie.legend.position == "r"
+    assert pie.legend.overlay is False
+    # v0.5.22: no chart-area border (the openpyxl mirror of the COM strip — the
+    # default outline used to frame the pie picture on the slide).
+    assert pie.graphical_properties.line.noFill is True
     fills = [dp.graphicalProperties.solidFill.srgbClr for dp in pie.series[0].data_points]
     assert fills == INFOR_ACCENTS[:n]  # INFOR theme accents, in order
     # v0.5.19: the series charts the "% of Total" column (C), not the $ column (B),
-    # and the data labels show VALUE only (not the recomputed percentage).
+    # and the data labels show VALUE only (not the recomputed percentage). The
+    # label config lives on the SERIES-level dLbls (v0.5.22 — the only level where
+    # the per-point >3% suppression overrides are honored).
     assert "$C$" in pie.series[0].val.numRef.f
-    assert pie.dataLabels.showVal is True
-    assert pie.dataLabels.showPercent in (False, None)
+    assert pie.series[0].dLbls.showVal is True
+    assert pie.series[0].dLbls.showPercent in (False, None)
+
+
+def test_make_openpyxl_pie_pins_plot_area_left_of_legend(tmp_path: Path):
+    # v0.5.22: the pie's plot area is pinned to the LEFT of the chart box via a
+    # manual layout so it sits clear of the right-docked legend.
+    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    first, last = ltm_revenue_overview_range(ws)
+    pie = _make_openpyxl_pie(ws, first, last, last - first + 1)
+    manual = pie.layout.manualLayout
+    assert manual.x == financial_charts._PIE_PLOT_X
+    assert manual.y == financial_charts._PIE_PLOT_Y
+    assert manual.w == financial_charts._PIE_PLOT_W
+    assert manual.h == financial_charts._PIE_PLOT_H
+    # The pie stays in the left portion of the box, clear of the right legend.
+    assert manual.x + manual.w < 0.7
+    assert manual.xMode == "edge" and manual.yMode == "edge"
 
 
 def test_pie_slice_fills_cycle_past_six(tmp_path: Path):
@@ -290,11 +320,12 @@ def test_pie_slice_fills_cycle_past_six(tmp_path: Path):
 def test_pie_data_labels_show_value_only_with_percent_format(tmp_path: Path):
     # v0.5.19: the pie's data labels show VALUE only (category/series/legend-key and
     # percentage flags all off) and carry the "%" number format, so the column-C
-    # fraction renders e.g. 0.452 as "45.2%".
+    # fraction renders e.g. 0.452 as "45.2%". Since v0.5.22 the config lives on the
+    # series-level dLbls.
     ws = load_workbook(_ltm_workbook(tmp_path)).active
     first, last = ltm_revenue_overview_range(ws)
     pie = _make_openpyxl_pie(ws, first, last, last - first + 1)
-    labels = pie.dataLabels
+    labels = pie.series[0].dLbls
     assert labels.showVal is True
     assert labels.showPercent in (False, None)
     assert labels.showCatName in (False, None)
@@ -302,6 +333,62 @@ def test_pie_data_labels_show_value_only_with_percent_format(tmp_path: Path):
     assert labels.showLegendKey in (False, None)
     assert labels.numFmt == '#,##0.0%_);(#,##0.0%);"--"'
     assert labels.numFmt == financial_charts._PIE_LABEL_FORMAT
+    # The default segments (47.6/36.4/8.9/7.1%) are all above the 3% threshold —
+    # no per-point suppression entries.
+    assert not labels.dLbl
+
+
+def _assert_label_suppressed(label):
+    """A per-point all-show-flags-off override — nothing rendered for the slice."""
+    assert label.showVal is False
+    assert label.showPercent is False
+    assert label.showCatName is False
+    assert label.showSerName is False
+    assert label.showLegendKey is False
+
+
+def test_pie_labels_only_on_slices_above_3pct(tmp_path: Path):
+    # v0.5.22: slices at or below 3% of the total carry NO data label (they overlap
+    # each other in the short overview box). 600/270/100/30 of 1000 → 60% / 27% /
+    # 10% / 3.0% — the 3.0% slice is not ABOVE the threshold, so it is suppressed.
+    segs = [
+        RevenueSegment("Cloud", 600.0),
+        RevenueSegment("Support", 270.0),
+        RevenueSegment("License", 100.0),
+        RevenueSegment("Other", 30.0),
+    ]
+    ws = load_workbook(_ltm_workbook(tmp_path, segments=segs)).active
+    first, last = ltm_revenue_overview_range(ws)
+    pie = _make_openpyxl_pie(ws, first, last, last - first + 1)
+    suppressed = pie.series[0].dLbls.dLbl
+    assert [d.idx for d in suppressed] == [3]
+    _assert_label_suppressed(suppressed[0])
+
+
+def test_single_pie_chart_suppresses_small_slices():
+    # The throwaway LibreOffice render workbook charts literal fractions; the same
+    # >3% rule applies to it directly.
+    from openpyxl import Workbook
+
+    from financial_charts import _make_single_pie_chart
+
+    wb = Workbook()
+    ws = wb.active
+    fractions = [0.60, 0.27, 0.105, 0.025]
+    for i, frac in enumerate(fractions, start=1):
+        ws.cell(row=i, column=1, value=f"Segment {i}")
+        ws.cell(row=i, column=2, value=frac)
+    pie = _make_single_pie_chart(ws, len(fractions))
+    suppressed = pie.series[0].dLbls.dLbl
+    assert [d.idx for d in suppressed] == [3]
+    _assert_label_suppressed(suppressed[0])
+
+
+def test_suppressed_pie_label_indices_threshold():
+    # Strictly ABOVE 3% keeps a label; 3% exactly, below, and non-numeric do not.
+    assert financial_charts._suppressed_pie_label_indices(
+        [0.5, 0.03, 0.031, 0.029, None]
+    ) == [1, 3, 4]
 
 
 def _deck_with_pie_placeholder(tmp_path: Path) -> Path:
