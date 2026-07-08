@@ -7,7 +7,7 @@ description: >
   renders them into the slide's four chart placeholders. It also builds the overview slide's LTM
   revenue-by-segment pie on the combined workbook's `ltm-metrics` tab and drops it into the
   "[Pie Chart Placeholder]". Runs after `workbook-aggregation`.
-version: 0.5.21
+version: 0.5.22
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -104,7 +104,9 @@ One **clustered-column** chart per metric (4 total): a single data series = that
   the bars float with no baseline)
 - Vertical (value) axis: **hidden** — no line, no label
 - Gap width: **50%**
-- Data labels on **all** bars, position = **Outside End**
+- Data labels on **all** bars, position = **Outside End**, in the **same `$` currency format as
+  the tab's value cells** (`$#,##0.0_);($#,##0.0);"--"`) — a bar reads `$102.7` exactly like its
+  cell, never a bare `102.7`
 - All bars fill **RGB(70, 86, 110)** (hex `46566E`)
 
 ## Placeholder ↔ metric mapping (Financial Summary slide = `prs.slides[7]`)
@@ -131,11 +133,14 @@ labels read the segment share. (Off-Windows, openpyxl can't evaluate the `=B/Bto
 the PNG render recomputes the fractions from the literal $ column — the analyst's workbook still
 charts the live formula column.)
 
-- Legend at the **TOP**; **no** chart title; **no** chart border
+- Legend docked on the **RIGHT**; the pie's plot area is **pinned to the left** of the chart box
+  (manual layout) so the pie sits clear of the legend; **no** chart title; **no** chart border
 - Slice fills from the **INFOR theme accent palette** (`pptx_helpers.INFOR_ACCENTS`:
   `0E213F, 46566E, ADB9CA, A4844B, 767171, E5E3E3`), in order, cycled past six
 - Palatino 9 labels/legend; **value-only** data labels (percentage / category / series / legend-key
   flags off), number format `#,##0.0%_);(#,##0.0%);"--"` so the fraction reads e.g. `45.2%`
+- Data labels **only on slices larger than 3%** of the total — smaller slices carry no label
+  (their labels overlap each other in the short box); the slice itself still renders
 
 When the combined workbook has no `ltm-metrics` tab or no "LTM Revenue Overview" block, the pie is
 skipped and the placeholder is left in place (the null path).
@@ -151,11 +156,14 @@ skipped and the placeholder is left in place (the null path).
 4. **Chart QA — mandatory, do not skip.** Render the overview slide **and** the Financial Summary
    slide to PNG with `render_deck_to_png(deck_path, out, slide_indices=[6, 7])`, read the PNGs, and
    confirm:
-   - **Overview (slide 6):** the pie filled the placeholder; legend at top; INFOR accent slice
-     fills; no title / no border; reads legibly in the wide/short box.
+   - **Overview (slide 6):** the pie filled the placeholder; legend on the **right** with the pie
+     sitting **clear of it** (no overlap); INFOR accent slice fills; labels read as percentages
+     (`45.2%`) and appear **only on slices above 3%**; no title / no border; reads legibly in the
+     wide/short box.
    - **Financial Summary (slide 7):** all four charts landed; INFOR formatting (bars `46566E`, data
-     labels outside-end, **no border**, a **visible solid black** category-axis baseline line under
-     the bars, no value axis / gridlines / title, Palatino 9);
+     labels outside-end reading **`$102.7`-style currency** exactly like the tab's cells, **no
+     border**, a **visible solid black** category-axis baseline line under the bars, no value
+     axis / gridlines / title, Palatino 9);
    - the combined-metric and LTM bars use the **same scale** as the fiscal-year bars (no 10⁶
      mismatch — a symptom of a units mismatch between the `financial-summary` and `ltm-metrics`
      tabs; both must be in millions with an `"MM"` suffix).

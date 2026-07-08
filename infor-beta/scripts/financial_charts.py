@@ -33,16 +33,20 @@ black (data labels + category-axis labels); no chart title; no chart border; the
 category (horizontal) axis rendered as a **solid black baseline line of visible
 width** (a hairline / width-less line is dropped by the LibreOffice PNG render, so
 the width is explicit); no major gridlines; the value (vertical) axis hidden — no
-line, no label; gap width 50%; data labels on every bar at Outside End; all bars
-filled RGB(70, 86, 110) = hex ``46566E``.
+line, no label; gap width 50%; data labels on every bar at Outside End, in the
+same ``$`` currency format as the tab's value cells (so a bar reads ``$102.7``
+exactly like its cell); all bars filled RGB(70, 86, 110) = hex ``46566E``.
 
 The same module also builds the overview slide's **LTM revenue pie**
 (``render_ltm_revenue_pie_into_deck``): a by-segment pie over the combined
 workbook's ``ltm-metrics`` tab "LTM Revenue Overview" block. The pie series is the
 **"% of Total" column** (the ``=B/Btotal`` fraction), so its data labels show the
-segment share (value-only, ``#,##0.0%`` format) rather than the dollar amounts; the
-legend at the TOP carries the segment names, no title/border, and slice fills from
-the INFOR theme accent palette (``pptx_helpers.INFOR_ACCENTS``). It rides the same
+segment share (value-only, ``#,##0.0%`` format) rather than the dollar amounts —
+and only slices whose share is **above 3%** carry a label (smaller ones overlap
+each other in the short overview box). The legend is docked on the RIGHT with the
+segment names, and the pie's plot area is pinned to the left of the chart box so
+it sits clear of the legend; no title/border, and slice fills from the INFOR theme
+accent palette (``pptx_helpers.INFOR_ACCENTS``). It rides the same
 post-aggregation stage and is dropped into the overview slide's "Rectangle 4"
 placeholder.
 """
@@ -68,7 +72,10 @@ _FONT_NAME = "Palatino Linotype"
 _FONT_SIZE_PT = 9
 _FONT_SIZE_HUNDREDTHS = _FONT_SIZE_PT * 100  # openpyxl drawing fonts use 1/100 pt
 _GAP_WIDTH = 50
-_VALUE_FORMAT = "#,##0.0"
+# Data-label number format for the four metric charts — the SAME currency format
+# as the financial-summary tab's value cells (financial_summary_workbook
+# ._VALUE_FORMAT), so a bar's label reads "$102.7" exactly like its cell.
+_VALUE_FORMAT = '$#,##0.0_);($#,##0.0);"--"'
 
 # Category (horizontal) axis baseline: an explicit, visible solid-black line.
 # Without an explicit width the openpyxl ``<a:ln>`` defaults to a hairline that the
@@ -113,6 +120,17 @@ _PIE_PCT_COL = 3      # column C — "% of Total" (=B/Btotal fraction); the char
 # Data-label number format for the pie: the series is the column-C fraction, so a
 # value-only "%" format renders e.g. 0.452 as "45.2%".
 _PIE_LABEL_FORMAT = '#,##0.0%_);(#,##0.0%);"--"'
+# Only slices whose share of the total is ABOVE this threshold carry a data
+# label — the tiny-slice labels overlap each other in the short overview box.
+_PIE_LABEL_MIN_FRACTION = 0.03
+# Pie plot-area manual layout, as fractions of the chart area: pin the pie to
+# the LEFT of the chart box so it sits clear of the right-docked legend (the
+# auto-layout centers the pie in this wide/short box, where it can collide with
+# the legend). Shared by the COM and openpyxl builders.
+_PIE_PLOT_X = 0.02
+_PIE_PLOT_Y = 0.05
+_PIE_PLOT_W = 0.58
+_PIE_PLOT_H = 0.90
 # Overview slide in the assembled pitch deck (slides[6] after the earnings slide
 # at raw library index 7 is deleted).
 _OVERVIEW_SLIDE_INDEX = 6
@@ -132,7 +150,7 @@ _XL_CATEGORY = 1
 _XL_VALUE = 2
 _XL_LABEL_OUTSIDE_END = 2
 _XL_LABEL_BEST_FIT = 5
-_XL_LEGEND_TOP = -4160
+_XL_LEGEND_RIGHT = -4152
 _MSO_FALSE = 0
 _MSO_TRUE = -1
 
@@ -219,6 +237,37 @@ def _hex_to_com_bgr(hex_rgb: str) -> int:
     g = int(hex_rgb[2:4], 16)
     b = int(hex_rgb[4:6], 16)
     return r + g * 256 + b * 65536
+
+
+def _fractions_from_amounts(amounts: list) -> list:
+    """Convert a list of $ amounts to fractions of their total (None-safe).
+
+    Used two ways: the off-Windows PNG render charts literal cells, but the pie's
+    "% of Total" column on the real tab is the formula ``=B/Btotal`` that openpyxl
+    cannot evaluate, so the throwaway render workbook charts fractions recomputed
+    here from the column-B ``$`` literals; and BOTH builders (COM and openpyxl)
+    use the same recomputed fractions to decide which slices are above the 3%
+    data-label threshold — deterministic regardless of recalc state.
+    """
+    numeric = [a for a in amounts if isinstance(a, (int, float))]
+    total = sum(numeric)
+    if not total:
+        return [None for _ in amounts]
+    return [(a / total if isinstance(a, (int, float)) else None) for a in amounts]
+
+
+def _suppressed_pie_label_indices(fractions: list) -> list[int]:
+    """0-based slice indices whose share is NOT above ``_PIE_LABEL_MIN_FRACTION``.
+
+    Only slices larger than 3% of the total carry a data label — smaller ones
+    overlap each other in the short overview box. A non-numeric fraction (``None``
+    from an empty/zero total) is suppressed too.
+    """
+    return [
+        i
+        for i, f in enumerate(fractions)
+        if not (isinstance(f, (int, float)) and f > _PIE_LABEL_MIN_FRACTION)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -673,7 +722,18 @@ def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: in
             series.XValues = ws.Range(
                 ws.Cells(first_row, _PIE_SEGMENT_COL), ws.Cells(last_row, _PIE_SEGMENT_COL)
             )
-            _format_com_pie(chart, series, last_row - first_row + 1)
+            # Which slices are above the 3% label threshold: recompute the shares
+            # in Python from the column-B $ amounts (same rule as the openpyxl
+            # builder, deterministic regardless of recalc state).
+            amounts = [
+                ws.Cells(r, _PIE_VALUE_COL).Value for r in range(first_row, last_row + 1)
+            ]
+            _format_com_pie(
+                chart,
+                series,
+                last_row - first_row + 1,
+                _fractions_from_amounts(amounts),
+            )
 
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 tmp = f.name
@@ -707,19 +767,32 @@ def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: in
                 os.unlink(tmp)
 
 
-def _format_com_pie(chart, series, n_points: int) -> None:
-    """Apply INFOR pie formatting: legend at top, no title/border, accent slice fills."""
+def _format_com_pie(chart, series, n_points: int, fractions: list) -> None:
+    """Apply INFOR pie formatting: right-docked legend with the pie pinned left of
+    it, no title/border, accent slice fills, and labels only on >3% slices."""
     chart.HasTitle = False
     _com_strip_chart_border(chart)
 
-    # Legend at the TOP, Palatino 9 black.
+    # Legend docked on the RIGHT, Palatino 9 black.
     chart.HasLegend = True
     legend = chart.Legend
-    legend.Position = _XL_LEGEND_TOP
+    legend.Position = _XL_LEGEND_RIGHT
     try:
         legend.Font.Name = _FONT_NAME
         legend.Font.Size = _FONT_SIZE_PT
         legend.Font.Color = 0
+    except Exception:
+        pass
+
+    # Pin the plot area to the left of the chart box so the pie sits clear of the
+    # right-docked legend (mirrors the openpyxl manual layout). After the legend
+    # is docked, so this manual position is not reflowed by the dock.
+    try:
+        plot = chart.PlotArea
+        plot.Left = _PIE_PLOT_X * chart.ChartArea.Width
+        plot.Top = _PIE_PLOT_Y * chart.ChartArea.Height
+        plot.Width = _PIE_PLOT_W * chart.ChartArea.Width
+        plot.Height = _PIE_PLOT_H * chart.ChartArea.Height
     except Exception:
         pass
 
@@ -754,6 +827,15 @@ def _format_com_pie(chart, series, n_points: int) -> None:
         labels.Font.Color = 0
     except Exception:
         pass
+
+    # Only slices above the 3% share threshold keep their label — the tiny-slice
+    # labels overlap each other in the short overview box. Per-point, after the
+    # series-level HasDataLabels above (COM points are 1-based).
+    for i in _suppressed_pie_label_indices(fractions):
+        try:
+            series.Points(i + 1).HasDataLabel = False
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1013,7 +1095,11 @@ def _render_single_chart_png(labels: list, values: list) -> bytes:
     n = len(labels)
     for j in range(n):
         ws.cell(row=1, column=2 + j, value=labels[j])
-        ws.cell(row=2, column=2 + j, value=values[j])
+        cell = ws.cell(row=2, column=2 + j, value=values[j])
+        # Match the data-label format on the source cells too: a renderer that
+        # source-links label formats (numFmt without sourceLinked="0") then still
+        # shows "$102.7", not the raw literal.
+        cell.number_format = _VALUE_FORMAT
     # Anchor the chart well below the data and print only its footprint, so the
     # data cells in rows 1-2 do not bleed into the rendered image.
     ws.add_chart(_make_single_value_chart(ws, n), "A5")
@@ -1083,22 +1169,6 @@ def _make_single_value_chart(ws, n: int):
 # ---------------------------------------------------------------------------
 # openpyxl + LibreOffice backend for the LTM revenue pie — best-effort
 # ---------------------------------------------------------------------------
-def _fractions_from_amounts(amounts: list) -> list:
-    """Convert a list of $ amounts to fractions of their total (None-safe).
-
-    The off-Windows PNG render charts literal cells, but the pie's "% of Total"
-    column on the real tab is the formula ``=B/Btotal`` that openpyxl cannot
-    evaluate. So for the throwaway render workbook we recompute the same fractions
-    in Python from the column-B ``$`` literals, so the rendered slices and value
-    labels match the native pie's column-C series.
-    """
-    numeric = [a for a in amounts if isinstance(a, (int, float))]
-    total = sum(numeric)
-    if not total:
-        return [None for _ in amounts]
-    return [(a / total if isinstance(a, (int, float)) else None) for a in amounts]
-
-
 def _build_pie_openpyxl_libreoffice(
     workbook: Path, sheet_name: str, first_row: int, last_row: int
 ) -> bytes | None:
@@ -1141,22 +1211,50 @@ def _build_pie_openpyxl_libreoffice(
         return None
 
 
-def _style_openpyxl_pie(chart, n_points: int) -> None:
-    """INFOR pie formatting: no title, accent slice fills, legend at top, value-only
-    "%" labels (the series is the column-C "% of Total" fraction, so a value label
-    with a "%" number format reads e.g. "45.2%")."""
-    from openpyxl.chart.label import DataLabelList
+def _style_openpyxl_pie(chart, n_points: int, fractions: list | None = None) -> None:
+    """INFOR pie formatting: no title, accent slice fills, right-docked legend with
+    the pie's plot area pinned to the left of the chart box (clear of the legend),
+    and value-only "%" labels (the series is the column-C "% of Total" fraction, so
+    a value label with a "%" number format reads e.g. "45.2%") on the slices whose
+    share is above the 3% threshold — ``fractions`` decides which; smaller slices
+    get a per-point all-show-flags-off override (openpyxl 3.1 does not model
+    CT_DLbl's ``<c:delete>``, and unlike that shape this one survives the
+    load→save round-trip in :func:`_persist_native_charts_openpyxl`). The label
+    config lives on the SERIES-level ``dLbls`` — where Excel itself writes it and
+    the only level where per-point overrides are honored."""
+    from openpyxl.chart.label import DataLabel, DataLabelList
+    from openpyxl.chart.layout import Layout, ManualLayout
     from openpyxl.chart.series import DataPoint
     from openpyxl.chart.shapes import GraphicalProperties
+    from openpyxl.drawing.line import LineProperties
 
     chart.title = None
     chart.width = _PIE_W_CM
     chart.height = _PIE_H_CM
+    # No chart-area border — the openpyxl mirror of _com_strip_chart_border (the
+    # default chart outline otherwise frames the pie picture on the slide).
+    chart.graphical_properties = GraphicalProperties(ln=LineProperties(noFill=True))
     chart.series[0].data_points = [
         DataPoint(idx=i, spPr=GraphicalProperties(solidFill=INFOR_ACCENTS[i % len(INFOR_ACCENTS)]))
         for i in range(n_points)
     ]
-    chart.legend.position = "t"
+    # Legend docked on the RIGHT (segment names), Palatino 9; the plot area is
+    # pinned to the left of the chart box via a manual layout so the pie cannot
+    # overlap the legend.
+    chart.legend.position = "r"
+    chart.legend.overlay = False
+    chart.legend.txPr = _palatino_text()
+    chart.layout = Layout(
+        manualLayout=ManualLayout(
+            layoutTarget="inner",
+            xMode="edge",
+            yMode="edge",
+            x=_PIE_PLOT_X,
+            y=_PIE_PLOT_Y,
+            w=_PIE_PLOT_W,
+            h=_PIE_PLOT_H,
+        )
+    )
     labels = DataLabelList()
     labels.showVal = True
     labels.showPercent = False
@@ -1165,7 +1263,19 @@ def _style_openpyxl_pie(chart, n_points: int) -> None:
     labels.showLegendKey = False
     labels.numFmt = _PIE_LABEL_FORMAT
     labels.txPr = _palatino_text()
-    chart.dataLabels = labels
+    if fractions is not None:
+        labels.dLbl = [
+            DataLabel(
+                idx=i,
+                showVal=False,
+                showPercent=False,
+                showCatName=False,
+                showSerName=False,
+                showLegendKey=False,
+            )
+            for i in _suppressed_pie_label_indices(fractions)
+        ]
+    chart.series[0].dLbls = labels
 
 
 def _make_openpyxl_pie(ws, first_row: int, last_row: int, n_points: int):
@@ -1174,7 +1284,9 @@ def _make_openpyxl_pie(ws, first_row: int, last_row: int, n_points: int):
     The series is the **"% of Total" column** (column C, the ``=B/Btotal`` fraction)
     so the data labels read the segment share; Excel evaluates the formula. Slice
     geometry is identical to charting the $ amounts. Categories (legend) = the
-    Segment column.
+    Segment column. openpyxl cannot evaluate the column-C formula, so the 3%
+    data-label threshold is decided from fractions recomputed in Python off the
+    column-B ``$`` literals — the same shares Excel computes into column C.
     """
     from openpyxl.chart import PieChart, Reference
 
@@ -1187,12 +1299,19 @@ def _make_openpyxl_pie(ws, first_row: int, last_row: int, n_points: int):
     )
     chart.add_data(data, titles_from_data=False)
     chart.set_categories(cats)
-    _style_openpyxl_pie(chart, n_points)
+    amounts = [
+        ws.cell(row=r, column=_PIE_VALUE_COL).value for r in range(first_row, last_row + 1)
+    ]
+    _style_openpyxl_pie(chart, n_points, fractions=_fractions_from_amounts(amounts))
     return chart
 
 
 def _make_single_pie_chart(ws, n: int):
-    """A pie over a literal block: categories A1:A{n}, values B1:B{n}."""
+    """A pie over a literal block: categories A1:A{n}, values B1:B{n}.
+
+    The literal values ARE the fractions (recomputed by the caller), so they
+    decide the 3% data-label threshold directly.
+    """
     from openpyxl.chart import PieChart, Reference
 
     chart = PieChart()
@@ -1200,7 +1319,8 @@ def _make_single_pie_chart(ws, n: int):
     cats = Reference(ws, min_col=1, max_col=1, min_row=1, max_row=n)
     chart.add_data(data, titles_from_data=False)
     chart.set_categories(cats)
-    _style_openpyxl_pie(chart, n)
+    fractions = [ws.cell(row=r, column=2).value for r in range(1, n + 1)]
+    _style_openpyxl_pie(chart, n, fractions=fractions)
     return chart
 
 
@@ -1227,7 +1347,10 @@ def _render_single_pie_png(labels: list, values: list) -> bytes:
     n = len(labels)
     for i in range(n):
         ws.cell(row=1 + i, column=1, value=labels[i])
-        ws.cell(row=1 + i, column=2, value=values[i])
+        cell = ws.cell(row=1 + i, column=2, value=values[i])
+        # Match the "%" label format on the source cells (see the single-chart
+        # renderer): a source-linking renderer then still shows "60.0%".
+        cell.number_format = _PIE_LABEL_FORMAT
     # Anchor the chart away from the data and print only its footprint.
     ws.add_chart(_make_single_pie_chart(ws, n), "D2")
     ws.print_area = "D2:N28"
