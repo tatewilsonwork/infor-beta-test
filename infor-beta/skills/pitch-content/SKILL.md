@@ -1,7 +1,7 @@
 ---
 name: pitch-content
 description: Drafts the broad typed content bundle for the 16-slide INFOR slide-library POC deck from analyst notes and optional supporting sources.
-version: 0.5.22
+version: 0.5.23
 allowed-tools:
   - Read
   - Write
@@ -34,7 +34,7 @@ Drafts the single broad `PitchDeckContent` handoff for the Phase 3 slide-library
 
 Scope:
 - Executive Summary bullets: flexible count; choose main/sub-bullets.
-- Public-company overview bullets: concise description of who the company is and what it does.
+- Public-company overview bullets: concise description of who the company is and what it does. **Budget ≈ 950 characters / ≤ 7 bullets total** — the box shares the overview slide with the LTM revenue pie, and the assembler shrinks over-long copy to fit the band (a fit is guaranteed, but past the budget the text renders noticeably smaller than the rest of the deck).
 - Financial Summary metric labels: **not your job** — the `financial-summary` stage selects the four metrics and emits their labels, so the deck reads them from that stage, not from this content bundle. Do not draft them here.
 - Acquirer risks/mitigants: **draft five rows** — the slide-10 table has five body rows, so five consideration/mitigant pairs fill it (the schema allows 1–5; fewer leaves blank rows at the bottom, which is what we're avoiding). Each row has exactly three mitigants. Each mitigant should be **one very short sentence** (roughly one line, up to ~160 chars) — not a terse fragment, but not a paragraph either.
 - Comps takeaway: one sentence.
@@ -49,6 +49,7 @@ Scope:
     11. `Scale KPIs` — the best available benchmark of scale (revenue if available, else number of transactions / loans / customers / merchants, etc.)
     12. `Strategic Rationale` — why the target is a good acquisition for the Company
   - Rows 1–3 and 11–12 use those exact labels; only the middle seven are deck-specific. Each target's `cells` must supply all 12 values in order. The schema rejects any other row count or fixed-label text.
+  - **Keep the seven metric labels short — ≤ ~18 characters.** The label column is 1.66" wide; a longer label (e.g. `Geographic Footprint`) no longer fits at 11 pt and the assembler steps its font down so it can't wrap the row taller. Prefer `Geography` over `Geographic Footprint`, `Capital Raised` over `Total Capital Raised`.
   - **Keep each cell tight.** The table is clamped to a fixed height; PowerPoint grows a row to fit its text, so verbose cells push the table off the slide. Aim for ≤ ~90 characters in the wordy rows (`Overview`, `Strategic Rationale`) — a crisp phrase, not a sentence — and a few words in the metric rows.
 
 Required source:

@@ -7,7 +7,7 @@ description: >
   renders them into the slide's four chart placeholders. It also builds the overview slide's LTM
   revenue-by-segment pie on the combined workbook's `ltm-metrics` tab and drops it into the
   "[Pie Chart Placeholder]". Runs after `workbook-aggregation`.
-version: 0.5.22
+version: 0.5.23
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -124,21 +124,29 @@ Each placeholder is 4.53" × 2.51"; the rendered chart is stretched to its box.
 
 The overview ("Introduction to {company}") slide carries a deferred `[Pie Chart Placeholder]`
 (shape `Rectangle 4`, box 4.51" × 1.77") under the "LTM Revenue Breakdown" label. This stage fills
-it with a by-segment pie built on the combined workbook's **`ltm-metrics`** tab, over the
-**"LTM Revenue Overview"** block (categories / legend = the Segment column, series = the
-**"% of Total"** column — the `=B/Btotal` fraction Excel computes; the **Total** row is
-excluded). The block is located by its section title — no hardcoded row numbers. Charting the
-fraction column rather than the dollar amounts gives identical slice geometry but lets the data
-labels read the segment share. (Off-Windows, openpyxl can't evaluate the `=B/Btotal` formula, so
-the PNG render recomputes the fractions from the literal $ column — the analyst's workbook still
-charts the live formula column.)
+it with a by-segment pie built on the combined workbook's **`ltm-metrics`** tab, off the
+**"LTM Revenue Overview"** block (located by its section title — no hardcoded row numbers; the
+**Total** row is excluded).
 
-- Legend docked on the **RIGHT**; the pie's plot area is **pinned to the left** of the chart box
-  (manual layout) so the pie sits clear of the legend; **no** chart title; **no** chart border
+The pie charts **at most 5 slices**: the **4 largest segments** (descending by LTM revenue) plus
+an **"Other"** slice grouping the remainder — charting every segment overflowed the legend into
+the pie. Both builders write a **"Pie Chart Source"** block in columns **E:G** beside the overview
+block (name `=A{r}` / $ amount `=B{r}` / fraction `=F/Btotal`; "Other" = `=Btotal − SUM(top 4)`),
+and the chart's categories/series reference that block — Excel charts literal cells, and the
+in-cell formulas keep the pie live when the analyst edits a segment $. Five or fewer segments
+chart as-is (descending), with no "Other". Charting the fraction column rather than the dollar
+amounts gives identical slice geometry but lets the data labels read the slice share.
+(Off-Windows, openpyxl can't evaluate the block's formulas, so the PNG render recomputes the
+grouped fractions from the literal $ column — the analyst's workbook still charts the live block.)
+
+- Legend docked on the **RIGHT** at **Palatino 8** (one point under the chart text), **pinned to
+  the full remaining right side** of the chart box; the pie's plot area is **pinned to the left**
+  (manual layouts on both) so pie and legend cannot overlap and Excel cannot silently drop legend
+  entries that its undersized auto-layout box wouldn't fit; **no** chart title; **no** chart border
 - Slice fills from the **INFOR theme accent palette** (`pptx_helpers.INFOR_ACCENTS`:
-  `0E213F, 46566E, ADB9CA, A4844B, 767171, E5E3E3`), in order, cycled past six
-- Palatino 9 labels/legend; **value-only** data labels (percentage / category / series / legend-key
-  flags off), number format `#,##0.0%_);(#,##0.0%);"--"` so the fraction reads e.g. `45.2%`
+  `0E213F, 46566E, ADB9CA, A4844B, 767171, E5E3E3`), in order
+- Palatino 9 data labels; **value-only** (percentage / category / series / legend-key flags off),
+  number format `#,##0.0%_);(#,##0.0%);"--"` so the fraction reads e.g. `45.2%`
 - Data labels **only on slices larger than 3%** of the total — smaller slices carry no label
   (their labels overlap each other in the short box); the slice itself still renders
 
@@ -156,10 +164,11 @@ skipped and the placeholder is left in place (the null path).
 4. **Chart QA — mandatory, do not skip.** Render the overview slide **and** the Financial Summary
    slide to PNG with `render_deck_to_png(deck_path, out, slide_indices=[6, 7])`, read the PNGs, and
    confirm:
-   - **Overview (slide 6):** the pie filled the placeholder; legend on the **right** with the pie
-     sitting **clear of it** (no overlap); INFOR accent slice fills; labels read as percentages
-     (`45.2%`) and appear **only on slices above 3%**; no title / no border; reads legibly in the
-     wide/short box.
+   - **Overview (slide 6):** the pie filled the placeholder; **at most 5 slices** (top 4 +
+     "Other"); legend on the **right** showing **every** slice's entry (including "Other") with
+     the pie sitting **clear of it** (no overlap); INFOR accent slice fills; labels read as
+     percentages (`45.2%`) and appear **only on slices above 3%**; no title / no border; reads
+     legibly in the wide/short box.
    - **Financial Summary (slide 7):** all four charts landed; INFOR formatting (bars `46566E`, data
      labels outside-end reading **`$102.7`-style currency** exactly like the tab's cells, **no
      border**, a **visible solid black** category-axis baseline line under the bars, no value

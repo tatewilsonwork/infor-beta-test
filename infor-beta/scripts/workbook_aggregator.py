@@ -291,6 +291,7 @@ def _recalc_with_libreoffice(workbook_path: Path) -> bool:
                 )
                 return False
             shutil.copyfile(recalced, workbook_path)
+        _strip_lo_union_operators(workbook_path)
         return True
     except RuntimeError as exc:
         print(
@@ -299,6 +300,84 @@ def _recalc_with_libreoffice(workbook_path: Path) -> bool:
             file=sys.stderr,
         )
         return False
+
+
+# Formula elements in a worksheet part. Formula text never contains a raw '<',
+# so a non-'<' body match is exact.
+_SHEET_FORMULA_RE = re.compile(r"(<f\b[^>]*>)([^<]*)(</f>)")
+
+
+def _excel_union_commas(formula: str) -> str:
+    """Rewrite LibreOffice's ``~`` range-union operator to Excel's ``,``.
+
+    Skips string literals (between double quotes, where ``~`` is Excel's
+    wildcard-escape character and must survive). The formula text comes straight
+    from sheet XML, so a quote may appear raw (``"``) or entity-escaped
+    (``&quot;``) depending on the writer.
+    """
+    parts = re.split(r'("|&quot;)', formula)
+    in_string = False
+    out: list[str] = []
+    for part in parts:
+        if part in ('"', "&quot;"):
+            in_string = not in_string
+            out.append(part)
+        else:
+            out.append(part if in_string else part.replace("~", ","))
+    return "".join(out)
+
+
+def _strip_lo_union_operators(workbook_path: Path) -> int:
+    """Fix LibreOffice's ``~`` union operator in every sheet formula, in place.
+
+    LibreOffice's ``.xlsx`` export writes a multi-area union inside a
+    parenthesized reference argument with its own ``~`` operator — e.g. the
+    comps / precedents quartile rows come back as
+    ``PERCENTILE.INC((L10:L15~L20:L25~L30:L35),0.25)`` — which Excel cannot
+    parse: it opens the workbook with a "Removed Records: Formula from
+    /xl/worksheets/sheetN.xml" repair that strips every such formula. Rewrites
+    ``~`` to ``,`` at the XML level (string literals excluded) so the recalc's
+    cached values are preserved byte-for-byte. Returns the number of sheet
+    parts rewritten.
+    """
+    with zipfile.ZipFile(workbook_path) as zin:
+        if not any(
+            b"~" in zin.read(item.filename)
+            for item in zin.infolist()
+            if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", item.filename)
+        ):
+            return 0
+        entries = []
+        fixed = 0
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", item.filename) and b"~" in data:
+                xml = data.decode("utf-8")
+                new_xml = _SHEET_FORMULA_RE.sub(
+                    lambda m: m.group(1) + _excel_union_commas(m.group(2)) + m.group(3), xml
+                )
+                if new_xml != xml:
+                    data = new_xml.encode("utf-8")
+                    fixed += 1
+            entries.append((item, data))
+    with tempfile.NamedTemporaryFile(
+        suffix=".xlsx", dir=workbook_path.parent, delete=False
+    ) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item, data in entries:
+                zout.writestr(item, data)
+        shutil.move(tmp_path, workbook_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    if fixed:
+        print(
+            f"[workbook-aggregator] rewrote LibreOffice '~' range unions to ',' in "
+            f"{fixed} sheet part(s) so Excel opens the combined workbook without repair.",
+            file=sys.stderr,
+        )
+    return fixed
 
 
 # ─── Cross-tab relink ────────────────────────────────────────────────────────

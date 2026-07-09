@@ -6,7 +6,7 @@ import yaml
 from openpyxl import Workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.util import Inches, Pt
+from pptx.util import Emu, Inches, Pt
 from pydantic import ValidationError
 import pytest
 
@@ -531,15 +531,49 @@ def test_market_entry_table_formatting_no_blank_rows(tmp_path: Path):
     table = next(
         s for s in Presentation(deck_path).slides[13].shapes if getattr(s, "has_table", False)
     ).table
-    # 12 data rows (rows 1-12); every one populated, label white@11, values @9.
+    # 12 data rows (rows 1-12); every one populated, label white@11 (a long
+    # label may step down one size so it can't wrap the row taller), values @9.
     for row in range(1, 13):
         label_run = table.cell(row, 0).text_frame.paragraphs[0].runs[0]
-        assert label_run.font.size == Pt(11), "label column must be 11 pt"
+        assert label_run.font.size in (Pt(11), Pt(10), Pt(9)), "label column must be 9-11 pt"
         assert str(label_run.font.color.rgb) == "FFFFFF", "label column must be white"
         for col in (1, 2):
             cell = table.cell(row, col)
             assert cell.text.strip(), f"data cell ({row},{col}) must be populated"
             assert cell.text_frame.paragraphs[0].runs[0].font.size == Pt(9), "values must be 9 pt"
+    # Short labels keep the template 11 pt; only an over-wide label steps down.
+    assert table.cell(2, 0).text_frame.paragraphs[0].runs[0].font.size == Pt(11)  # 'Headquarters'
+
+
+def test_market_entry_long_label_steps_down_instead_of_wrapping(tmp_path: Path):
+    """'Geographic Footprint' is wider than the 1.457" label column at 11 pt; a
+    wrapped label re-grows its 0.28" row at render time and pushed the whole
+    table to 5.91" in the live run. The assembler steps such a label down one
+    size so every declared row height stays achievable and the rendered table
+    lands on the 5.71" clamp."""
+    from pptx_helpers import palatino_text_width_in
+
+    deck_path = _assemble(tmp_path, _sample_content())
+    table_shape = next(
+        s for s in Presentation(deck_path).slides[13].shapes if getattr(s, "has_table", False)
+    )
+    table = table_shape.table
+    labels = _sample_content().market_entry_row_labels
+    usable_in = Emu(table.columns[0].width).inches - 0.2  # minus 2 x 0.1" side insets
+    for i, label in enumerate(labels):
+        run = table.cell(i + 1, 0).text_frame.paragraphs[0].runs[0]
+        size_pt = run.font.size.pt
+        assert palatino_text_width_in(label, size_pt) <= usable_in, (
+            f"label {label!r} must fit its column on one line at the written size"
+        )
+        if palatino_text_width_in(label, 11) <= usable_in:
+            assert size_pt == 11, f"label {label!r} fits at 11 pt and must stay 11 pt"
+        else:
+            assert size_pt < 11, f"over-wide label {label!r} must step down"
+    # Every declared row height covers a single 11 pt line + insets — the floor
+    # PowerPoint renders even an empty row at (so declared == rendered).
+    for r in table.rows:
+        assert Emu(r.height).inches >= 0.283 - 1e-3
 
 
 def test_market_entry_odd_count_blanks_unused_column_and_logo(tmp_path: Path):
@@ -656,3 +690,55 @@ def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
     assert "[Placeholder for Insider Ownership]" not in text, "insider placeholder replaced"
     # The institutional / Bloomberg side stays a placeholder (SEDI fills only insiders).
     assert "[Placeholder for Institutional Ownership]" in text
+
+
+# ─── Overview bullets stay above the LTM revenue section ─────────────────────
+
+def _overview_font_scale(shape):
+    from pptx.oxml.ns import qn
+
+    bodyPr = shape.text_frame._txBody.find(qn("a:bodyPr"))
+    autofit = bodyPr.find(qn("a:normAutofit")) if bodyPr is not None else None
+    if autofit is None or autofit.get("fontScale") is None:
+        return None
+    return int(autofit.get("fontScale")) / 1000.0
+
+
+def test_slide7_overview_bullets_fitted_above_ltm_band(tmp_path: Path):
+    """An over-long overview block must be boxed to the band above the 'LTM
+    Revenue Breakdown' header and carry an explicit autofit fontScale —
+    PowerPoint ignores a scale-less <a:normAutofit/> on open, which is how live
+    runs rendered overview copy straight through the pie section."""
+    base = _sample_content().model_dump()
+    base["company_overview_bullets"] = [
+        {
+            "text": (
+                f"Bullet {i + 1}: long-form company overview copy describing brands, "
+                "funding programs, growth rates and guidance in enough detail to "
+                "overflow the library's overview band when rendered at full size"
+            ),
+            "level": 0,
+        }
+        for i in range(8)
+    ]
+    content = PitchDeckContent.model_validate(base)
+    deck_path = _assemble(tmp_path, content)
+
+    slide7 = Presentation(deck_path).slides[6]
+    box = find_shape(slide7, "TextBox 9")
+    header = next(s for s in slide7.shapes if getattr(s, "has_text_frame", False)
+                  and "LTM Revenue" in s.text_frame.text)
+    band_avail = Emu(header.top).inches - 0.12 - Emu(box.top).inches
+    assert abs(Emu(box.height).inches - band_avail) < 0.02, (
+        "overview box must be sized to the band above the LTM revenue header"
+    )
+    scale = _overview_font_scale(box)
+    assert scale is not None and scale < 100.0, (
+        "over-long overview copy must ship an explicit normAutofit fontScale"
+    )
+
+
+def test_slide7_short_overview_keeps_full_size(tmp_path: Path):
+    deck_path = _assemble(tmp_path, _sample_content())
+    box = find_shape(Presentation(deck_path).slides[6], "TextBox 9")
+    assert _overview_font_scale(box) is None  # short copy — no downscale

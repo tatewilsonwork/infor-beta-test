@@ -486,3 +486,76 @@ def test_recalc_returns_false_when_conversion_yields_nothing(tmp_path: Path, mon
     monkeypatch.setattr("excel_to_powerpoint._soffice_convert", lambda *a, **k: None)
     assert _recalc_with_libreoffice(wb_path) is False
     assert load_workbook(wb_path)["S"]["B1"].value == "=1+1"
+
+
+# --- LibreOffice '~' union-operator fix ---------------------------------------
+
+
+def test_excel_union_commas_rewrites_unions_outside_strings():
+    from workbook_aggregator import _excel_union_commas
+
+    assert (
+        _excel_union_commas("_xlfn.PERCENTILE.INC((L10:L15~L20:L25~L30:L35),0.25)")
+        == "_xlfn.PERCENTILE.INC((L10:L15,L20:L25,L30:L35),0.25)"
+    )
+    # '~' inside string literals is Excel's wildcard escape — it must survive.
+    assert (
+        _excel_union_commas('COUNTIF(A:A,"x~*")&(B1:B2~C1:C2)')
+        == 'COUNTIF(A:A,"x~*")&(B1:B2,C1:C2)'
+    )
+    # Entity-escaped quotes (writer-dependent) delimit strings too.
+    assert (
+        _excel_union_commas("IF(A1=&quot;a~b&quot;,(A1~A2),0)")
+        == "IF(A1=&quot;a~b&quot;,(A1,A2),0)"
+    )
+
+
+def test_strip_lo_union_operators_fixes_union_formulas(tmp_path: Path):
+    from workbook_aggregator import _strip_lo_union_operators
+
+    # Emulate what LibreOffice's recalc-on-load export does to the comps /
+    # precedents quartile rows: the parenthesized multi-range union comes back
+    # with LibreOffice's '~' operator, which Excel repairs away on open.
+    wb_path = _make_workbook(
+        tmp_path / "c.xlsx",
+        {
+            "comps": [["=_xlfn.PERCENTILE.INC((L10:L15~L20:L25~L30:L35),0.25)"]],
+            "precedents": [['=IFERROR(_xlfn.PERCENTILE.INC((S8:S13~S17:S22),0.75),"n/a ~ ")']],
+            "clean": [["=SUM(A1:A2)"]],
+        },
+    )
+    assert _strip_lo_union_operators(wb_path) == 2  # two sheet parts rewritten
+
+    wb = load_workbook(wb_path)
+    assert wb["comps"]["A1"].value == "=_xlfn.PERCENTILE.INC((L10:L15,L20:L25,L30:L35),0.25)"
+    # Union fixed, but the '~' inside the string literal survives.
+    assert wb["precedents"]["A1"].value == '=IFERROR(_xlfn.PERCENTILE.INC((S8:S13,S17:S22),0.75),"n/a ~ ")'
+    assert wb["clean"]["A1"].value == "=SUM(A1:A2)"
+
+
+def test_strip_lo_union_operators_noop_without_tilde(tmp_path: Path):
+    from workbook_aggregator import _strip_lo_union_operators
+
+    wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["=SUM(A1:A2)", 7]]})
+    before = wb_path.read_bytes()
+    assert _strip_lo_union_operators(wb_path) == 0
+    assert wb_path.read_bytes() == before  # untouched — no rewrite churn
+
+
+def test_recalc_strips_lo_union_operators(tmp_path: Path, monkeypatch):
+    # End-to-end through _recalc_with_libreoffice: the emulated LibreOffice
+    # export re-writes a union formula with '~'; the post-recalc fix restores ','.
+    wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["=AVERAGE(A1:A2)"]]})
+    monkeypatch.setattr(workbook_aggregator.shutil, "which", lambda name: "/usr/bin/soffice")
+
+    def fake_convert(soffice, src, out_fmt, out_dir):
+        wb = load_workbook(src)
+        wb["S"]["B1"] = "=_xlfn.PERCENTILE.INC((A1:A2~A4:A5),0.25)"
+        wb.save(Path(out_dir) / f"{Path(src).stem}.xlsx")
+
+    monkeypatch.setattr("excel_to_powerpoint._soffice_convert", fake_convert)
+    assert _recalc_with_libreoffice(wb_path) is True
+    assert (
+        load_workbook(wb_path)["S"]["B1"].value
+        == "=_xlfn.PERCENTILE.INC((A1:A2,A4:A5),0.25)"
+    )

@@ -8,12 +8,11 @@ five-slide deck and fills them from a typed `EarningsUpdateContent` bundle.
 
 from __future__ import annotations
 
-import math
 import re
 from pathlib import Path
 
 from pptx import Presentation
-from pptx.util import Emu, Inches, Pt
+from pptx.util import Pt
 
 from excel_to_powerpoint import insert_excel_into_placeholder
 from naming import safe_filename
@@ -21,11 +20,11 @@ from pptx_helpers import (
     COLOR_DOWN,
     COLOR_UP,
     delete_slide,
-    enable_normal_autofit,
     fill_footnote_token,
     find_shape,
     find_shape_in_group,
     find_table_shape,
+    fit_overview_textbox,
     iter_all_shapes,
     set_cell_text,
     set_text,
@@ -121,49 +120,12 @@ def _write_flexible_bullets(shape, bullets, items=None) -> None:
     write_bullets_or_plain(shape, tuples, autofit=True)
 
 
-# Empirical layout constants for the overview bullets (Palatino ~10.5 pt, the
-# ~4.5"-wide TextBox 9 with zero side insets). Calibrated against a 1,055-char /
-# 7-bullet block that rendered to ~19 lines and overran the LTM header.
-_OVERVIEW_CHARS_PER_LINE = 64
-_OVERVIEW_LINE_IN = 0.182
-_OVERVIEW_MIN_SCALE = 70.0
-
-
-def _overview_band_bottom_in(slide) -> float | None:
-    """Top edge (inches) of the 'LTM Revenue Breakdown' header — the lower bound
-    the overview bullets must stay above. Returns None if the header is absent."""
-    for shape in slide.shapes:
-        if getattr(shape, "has_text_frame", False) and "LTM Revenue" in shape.text_frame.text:
-            return Emu(shape.top).inches
-    return None
-
-
-def _fit_overview_textbox(slide, shape) -> None:
-    """Keep the overview bullets above the LTM revenue pie header.
-
-    The library ships TextBox 9 one line tall and relies on autofit, but
-    PowerPoint ignores a scale-less ``<a:normAutofit/>`` on open, so an
-    over-long run renders at full size and spills into the 'LTM Revenue
-    Breakdown' header below. Size the box to the available band, and when the
-    copy would still overflow at the template font, write an explicit
-    ``fontScale`` so the shrink actually happens on open.
-    """
-    top_in = Emu(shape.top).inches
-    band_bottom = _overview_band_bottom_in(slide)
-    if band_bottom is not None and band_bottom - top_in > 0.5:
-        avail_in = band_bottom - 0.12 - top_in
-        shape.height = Inches(avail_in)
-    else:
-        avail_in = Emu(shape.height).inches
-
-    paras = [p.text for p in shape.text_frame.paragraphs if p.text.strip()]
-    lines = sum(max(1, math.ceil(len(t) / _OVERVIEW_CHARS_PER_LINE)) for t in paras)
-    needed_in = lines * _OVERVIEW_LINE_IN
-    if needed_in > avail_in:
-        scale = max(_OVERVIEW_MIN_SCALE, (avail_in / needed_in) * 100.0)
-        enable_normal_autofit(shape, font_scale=scale, line_space_reduction=8)
-    else:
-        enable_normal_autofit(shape)
+# The overview-bullets fit (shared with the pitch assembler — the two decks'
+# overview slides are the same library entry) lives in
+# `pptx_helpers.fit_overview_textbox`: it sizes TextBox 9 to the band above the
+# 'LTM Revenue Breakdown' header and writes an explicit normAutofit fontScale
+# when the copy would overflow, since PowerPoint ignores a scale-less
+# `<a:normAutofit/>` on open.
 
 
 def _metric_name_pt(name: str) -> float | None:
@@ -206,7 +168,7 @@ def _set_overview(slide, content: EarningsUpdateContent) -> None:
     set_text(find_shape(slide, "Title 6"), [f"Introduction to {content.company_name}"])
     overview = find_shape(slide, "TextBox 9")
     _write_flexible_bullets(overview, content.company_overview_bullets)
-    _fit_overview_textbox(slide, overview)
+    fit_overview_textbox(slide, overview)
     _fill_footnote(find_shape(slide, "Text Placeholder 1"), content.currency)
 
 

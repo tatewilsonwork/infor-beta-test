@@ -17,7 +17,7 @@ from pathlib import Path
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.util import Inches
+from pptx.util import Emu, Inches
 
 from excel_to_powerpoint import insert_excel_into_placeholder
 from naming import safe_filename
@@ -27,7 +27,9 @@ from pptx_helpers import (
     fill_footnote_token,
     find_shape,
     find_table_shape,
+    fit_overview_textbox,
     iter_all_shapes,
+    palatino_text_width_in,
     set_cell_text,
     set_text,
     write_bullets_or_plain,
@@ -98,7 +100,7 @@ def _rounded_rectangles(slide):
     return [shape for shape in slide.shapes if shape.name == "Rounded Rectangle 19"]
 
 
-def _set_table_height(table_frame, total_height: int) -> None:
+def _set_table_height(table_frame, total_height: int, min_heights: list[int] | None = None) -> None:
     """Resize a table to an exact total height by scaling its row heights.
 
     Mirrors setting a table's height in PowerPoint (drag the bottom handle / set
@@ -106,21 +108,55 @@ def _set_table_height(table_frame, total_height: int) -> None:
     scaled to `total_height` proportionally, so the rows still sum to exactly the
     target (rounding remainder folded into the last row). Call AFTER the cells are
     filled — row heights are only meaningful once content is in place.
+
+    `min_heights` (EMU, one per row) are per-row *content* minimums: a stored row
+    height is only a MINIMUM, so PowerPoint re-grows any row whose text needs more
+    than we declared and the rendered table ends up taller than the clamp (the
+    live-run "5.91-inch table" report — one wrapped label re-grew its 0.28" row).
+    Rows whose proportional share would fall below their minimum are pinned at the
+    minimum and the shortfall is taken from the rows with headroom, so the
+    *rendered* total still lands on `total_height`. If even the minimums exceed
+    the target the minimums win (the table then overflows by the true content
+    excess — content must shrink, not the declared heights).
     """
     table = table_frame.table
     rows = list(table.rows)
-    current = sum(r.height for r in rows)
-    if not rows or current <= 0:
+    if not rows or sum(r.height for r in rows) <= 0:
         return
     target = int(total_height)
-    running = 0
-    for i, row in enumerate(rows):
-        if i < len(rows) - 1:
-            row.height = int(round(row.height * target / current))
-            running += row.height
-        else:
-            row.height = max(0, target - running)  # absorb rounding so rows sum exactly
-    table_frame.height = target
+    mins = [int(m) for m in min_heights] if min_heights is not None else [0] * len(rows)
+
+    # Waterfall: pin rows whose proportional share of the remaining budget would
+    # dip below their content minimum; re-share the rest until stable.
+    free = set(range(len(rows)))
+    budget = target
+    alloc: dict[int, float] = {}
+    while free:
+        base = sum(rows[i].height for i in free)
+        if base <= 0 or budget <= 0:
+            for i in free:
+                alloc[i] = mins[i]
+            break
+        alloc = {i: rows[i].height * budget / base for i in free} | {
+            i: float(mins[i]) for i in range(len(rows)) if i not in free
+        }
+        pinned = [i for i in free if alloc[i] < mins[i]]
+        if not pinned:
+            break
+        for i in pinned:
+            free.discard(i)
+            budget -= mins[i]
+
+    heights = [max(int(round(alloc[i])), mins[i]) for i in range(len(rows))]
+    # Fold the rounding remainder into the last unpinned row so rows sum exactly.
+    spill = target - sum(heights)
+    for i in reversed(range(len(rows))):
+        if heights[i] + spill >= mins[i]:
+            heights[i] += spill
+            break
+    for row, h in zip(rows, heights):
+        row.height = max(0, h)
+    table_frame.height = sum(max(0, h) for h in heights)
 
 
 def _write_flexible_bullets(shape, bullets) -> None:
@@ -161,15 +197,15 @@ def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
                 set_text(shape, [content.investment_highlights_tagline])
 
 
-# Market-entry cell sizing: the label column is white at 11 pt; the target value
-# columns are 9 pt. The value cells carry the long Overview / Strategic Rationale
-# copy, and PowerPoint grows a table row to fit its text (a stored row height is
-# only a MINIMUM). At 10 pt the real per-target copy wrapped tall enough that
-# PowerPoint re-expanded the whole table to ~6.3" on open — past the 5.71" clamp
-# `_set_table_height` writes. 9 pt keeps that copy inside the clamped rows so the
-# rendered table stays at 5.71"; pair it with concise Overview / Strategic
-# Rationale cells (see pitch-content) for headroom.
-_ME_LABEL_SIZE = 11
+# Market-entry cell sizing: the label column is white at 11 pt (stepping down
+# per-label when a long label would wrap — see _me_label_size_pt); the target
+# value columns are 9 pt. The value cells carry the long Overview / Strategic
+# Rationale copy, and PowerPoint grows a table row to fit its text (a stored row
+# height is only a MINIMUM). At 10 pt the real per-target copy wrapped tall
+# enough that PowerPoint re-expanded the whole table to ~6.3" on open — past the
+# 5.71" clamp `_set_table_height` writes. 9 pt keeps that copy inside the
+# clamped rows so the rendered table stays at 5.71"; pair it with concise
+# Overview / Strategic Rationale cells (see pitch-content) for headroom.
 _ME_VALUE_SIZE = 9
 _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
 
@@ -179,6 +215,48 @@ _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
 # (mirrors dragging the table's resize handle in PowerPoint). 5.71" keeps the
 # table's bottom above the slide edge (table top is 1.2" on a 7.5" slide).
 _ME_TABLE_HEIGHT = Inches(5.71)
+
+# Table-cell layout constants for the market-entry row-minimum estimates: the
+# library cells carry 0.1" side / 0.05" top+bottom insets, and a Palatino line
+# is ~1.2× the font size tall (PowerPoint renders a single 11 pt label row at
+# 0.283" = 11/72 × 1.2 + 0.1 — the floor below which no row can be declared,
+# since a stored row height is only a minimum).
+_ME_CELL_SIDE_INSETS_IN = 0.2
+_ME_CELL_TB_INSETS_IN = 0.1
+_ME_LINE_HEIGHT_EM = 1.2
+_ME_MIN_ROW_IN = 11 * _ME_LINE_HEIGHT_EM / 72 + _ME_CELL_TB_INSETS_IN  # ≈ 0.283
+# Word-wrapping wastes some of each line (breaks fall on word boundaries), so
+# widen the estimated text width before dividing by the cell width.
+_ME_WRAP_WASTE = 1.08
+# A label that would wrap in the label column steps down until it fits on one
+# line (a wrapped label is what re-grew the 0.28" rows to 5.91" total in the
+# live run — 'Geographic Footprint' is wider than the 1.457" usable column at
+# 11 pt). Pair with concise row labels from pitch-content (≤ ~18 chars).
+_ME_LABEL_SIZE_STEPS = (11, 10, 9)
+
+
+def _me_label_size_pt(label: str, usable_width_in: float) -> int:
+    """Largest step size at which `label` fits the label column on one line."""
+    for pt in _ME_LABEL_SIZE_STEPS:
+        if palatino_text_width_in(label, pt) <= usable_width_in:
+            return pt
+    return _ME_LABEL_SIZE_STEPS[-1]
+
+
+def _me_cell_min_height_in(
+    text: str, usable_width_in: float, font_pt: float, wrap_waste: float = _ME_WRAP_WASTE
+) -> float:
+    """Estimated rendered height of one filled cell (its row's content minimum).
+
+    `wrap_waste` pads prose for word-boundary wrapping; labels pass 1.0 — the
+    per-label font step-down already guarantees they fit on one line, and the
+    character table's kerning-less sums are the conservative side of that check.
+    """
+    lines = 0
+    for segment in (text.splitlines() or [""]):
+        width = palatino_text_width_in(segment, font_pt) * wrap_waste
+        lines += max(1, math.ceil(width / usable_width_in))
+    return lines * font_pt * _ME_LINE_HEIGHT_EM / 72 + _ME_CELL_TB_INSETS_IN
 
 # Slide 9 Considerations/Mitigants table sizing. The library ships the header row
 # at 12 pt and the body cells at 10 pt; the old code hardcoded 9 pt / 8 pt, which
@@ -225,9 +303,10 @@ def _fill_market_entry_targets(
     `targets` holds the 1-2 targets for THIS slide. The table is the fixed
     12-row structure (Overview / HQ / Year Founded → 7 consistent industry
     metrics → Scale KPIs / Strategic Rationale): the label column (col 0) is
-    written white at 11 pt and the target value columns at `_ME_VALUE_SIZE`
-    (9 pt — deliberately below the library's 10 pt so the 5.71" table clamp
-    holds; see the constant's comment). Each populated column's logo box is relabelled
+    written white at 11 pt (stepping down per-label so no label wraps in the
+    column) and the target value columns at `_ME_VALUE_SIZE` (9 pt —
+    deliberately below the library's 10 pt so the 5.71" table clamp holds; see
+    the constant's comment). Each populated column's logo box is relabelled
     '[<target name> Logo]' (generic '[Company Name Logo]' when the target has no
     name); the unused box is blanked on an odd final slide so a single-target
     slide shows no stray logo box.
@@ -252,17 +331,30 @@ def _fill_market_entry_targets(
     table_frame = find_table_shape(slide)
     table = table_frame.table
     n_cols = len(table.columns)  # label column + target columns (3 in the library)
+    usable = [
+        max(0.5, Emu(col.width).inches - _ME_CELL_SIDE_INSETS_IN) for col in table.columns
+    ]
+    # Per-row rendered content minimums (see _set_table_height): every row floors
+    # at a single 11 pt label line; filled cells raise it by their estimated wrap.
+    row_mins_in = [_ME_MIN_ROW_IN] * len(table.rows)
     # Table row 0 is the blank logo/header row; data labels start at row 1. With
     # the fixed 12-row structure every data row is populated — no blank rows.
     for i, label in enumerate(row_labels):
         row = i + 1
         if row >= len(table.rows):
             break
-        set_cell_text(table.cell(row, 0), label, size_pt=_ME_LABEL_SIZE, color_hex=_ME_LABEL_COLOR)
+        label_pt = _me_label_size_pt(label, usable[0])
+        set_cell_text(table.cell(row, 0), label, size_pt=label_pt, color_hex=_ME_LABEL_COLOR)
+        row_mins_in[row] = max(
+            row_mins_in[row], _me_cell_min_height_in(label, usable[0], label_pt, wrap_waste=1.0)
+        )
         for col in range(1, n_cols):
             target = targets[col - 1] if (col - 1) < len(targets) else None
             value = target.cells[i] if target is not None else ""
             set_cell_text(table.cell(row, col), value, size_pt=_ME_VALUE_SIZE)
+            row_mins_in[row] = max(
+                row_mins_in[row], _me_cell_min_height_in(value, usable[col], _ME_VALUE_SIZE)
+            )
     for row in range(len(row_labels) + 1, len(table.rows)):
         for col in range(n_cols):
             set_cell_text(table.cell(row, col), "", size_pt=_ME_VALUE_SIZE)
@@ -285,8 +377,12 @@ def _fill_market_entry_targets(
             set_text(logo, [""])
 
     # Clamp the now-filled table to a fixed height so long content can't run it
-    # off the slide. Done last, after every cell is populated.
-    _set_table_height(table_frame, _ME_TABLE_HEIGHT)
+    # off the slide. Done last, after every cell is populated; the per-row
+    # content minimums keep the declared heights achievable so PowerPoint's
+    # render-time row growth can't push the total past the clamp.
+    _set_table_height(
+        table_frame, _ME_TABLE_HEIGHT, min_heights=[Inches(m) for m in row_mins_in]
+    )
 
 
 def assemble_pitch_deck(
@@ -382,13 +478,15 @@ def assemble_pitch_deck(
 
     # Slide 7 — public company overview. The cap table is pasted into the
     # 'Rectangle 3' placeholder after save (when a workbook is supplied); the
-    # revenue pie stays a deferred placeholder.
+    # revenue pie stays a deferred placeholder. The bullets box is sized to the
+    # band above the 'LTM Revenue Breakdown' header and gets an explicit
+    # autofit fontScale when over-long, so the copy cannot render into the pie
+    # section (PowerPoint ignores a scale-less autofit on open).
     slide7 = prs.slides[_OVERVIEW_SLIDE_INDEX]
     set_text(find_shape(slide7, "Title 6"), [f"Introduction to {content.client_name}"])
-    _write_flexible_bullets(
-        find_shape(slide7, "TextBox 9"),
-        content.company_overview_bullets,
-    )
+    overview_shape = find_shape(slide7, "TextBox 9")
+    _write_flexible_bullets(overview_shape, content.company_overview_bullets)
+    fit_overview_textbox(slide7, overview_shape)
     if currency_letter is not None:
         fill_footnote_token(find_shape(slide7, "Text Placeholder 1"), currency_letter)
 
