@@ -25,13 +25,14 @@ Tests live in tests/test_pptx_helpers.py and build fresh in-memory
 decks so they don't depend on the INFOR template files.
 """
 
+import math
 from copy import deepcopy
 
 from lxml import etree
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
-from pptx.util import Pt
+from pptx.util import Emu, Inches, Pt
 
 
 # ─── Brand constants ─────────────────────────────────────────────────────────
@@ -44,6 +45,45 @@ COLOR_DOWN = "C00000"  # red   — negative delta / miss
 # fills for pie / segment charts, used in theme order and cycled past six. accent2
 # (46566E) is also the clustered-column bar colour used by the Financial Summary charts.
 INFOR_ACCENTS = ["0E213F", "46566E", "ADB9CA", "A4844B", "767171", "E5E3E3"]
+
+
+# ─── Palatino text measurement ───────────────────────────────────────────────
+# Per-character advance widths for Palatino Linotype (regular), in inches per
+# point of font size, measured from the font file (PIL `getlength`, kerning
+# excluded — so string sums err ~2-5% wide, the safe direction for "does this
+# fit on one line" checks). Used to size table labels / estimate cell wrap
+# without needing the font installed at runtime (the Cowork/Linux runtime has
+# no Palatino).
+_PALATINO_CHAR_WIDTH_PER_PT = {
+    " ": 0.00347, "!": 0.00386, '"': 0.00515, "#": 0.00665, "$": 0.00694,
+    "%": 0.01167, "&": 0.01081, "'": 0.00289, "(": 0.00463, ")": 0.00463,
+    "*": 0.0054, "+": 0.00694, ",": 0.00347, "-": 0.00463, ".": 0.00347,
+    "/": 0.00444, "0": 0.00694, "1": 0.00694, "2": 0.00694, "3": 0.00694,
+    "4": 0.00694, "5": 0.00694, "6": 0.00694, "7": 0.00694, "8": 0.00694,
+    "9": 0.00694, ":": 0.00347, ";": 0.00347, "<": 0.00694, "=": 0.00694,
+    ">": 0.00694, "?": 0.00617, "@": 0.00949, "A": 0.01081, "B": 0.00849,
+    "C": 0.00985, "D": 0.01075, "E": 0.00849, "F": 0.00772, "G": 0.0106,
+    "H": 0.01156, "I": 0.00468, "J": 0.00463, "K": 0.01008, "L": 0.00849,
+    "M": 0.01314, "N": 0.01154, "O": 0.01092, "P": 0.00839, "Q": 0.01092,
+    "R": 0.00928, "S": 0.00729, "T": 0.00851, "U": 0.01081, "V": 0.01003,
+    "W": 0.01389, "X": 0.00926, "Y": 0.00926, "Z": 0.00926, "[": 0.00463,
+    "\\": 0.00842, "]": 0.00463, "^": 0.00694, "_": 0.00694, "`": 0.00463,
+    "a": 0.00694, "b": 0.00768, "c": 0.00617, "d": 0.00849, "e": 0.00665,
+    "f": 0.00463, "g": 0.00772, "h": 0.00808, "i": 0.00404, "j": 0.00325,
+    "k": 0.00772, "l": 0.00404, "m": 0.01226, "n": 0.00808, "o": 0.00758,
+    "p": 0.00835, "q": 0.00778, "r": 0.00549, "s": 0.00589, "t": 0.00453,
+    "u": 0.00838, "v": 0.00785, "w": 0.01158, "x": 0.00717, "y": 0.00772,
+    "z": 0.00694, "{": 0.00463, "|": 0.00694, "}": 0.00463, "~": 0.00694,
+}
+_PALATINO_DEFAULT_CHAR_WIDTH_PER_PT = 0.00712  # lowercase average — non-ASCII fallback
+
+
+def palatino_text_width_in(text, font_pt):
+    """Estimated single-line width (inches) of Palatino text at `font_pt`."""
+    return font_pt * sum(
+        _PALATINO_CHAR_WIDTH_PER_PT.get(ch, _PALATINO_DEFAULT_CHAR_WIDTH_PER_PT)
+        for ch in text
+    )
 
 
 # ─── Shape lookup ────────────────────────────────────────────────────────────
@@ -352,6 +392,110 @@ def enable_normal_autofit(shape, font_scale=None, line_space_reduction=None):
         norm.set("fontScale", str(int(round(font_scale * 1000))))
     if line_space_reduction is not None:
         norm.set("lnSpcReduction", str(int(round(line_space_reduction * 1000))))
+
+
+# ─── Overview-bullets fit (shared by the earnings-update + pitch assemblers) ─
+# Empirical Palatino Linotype layout constants for the shared overview slide's
+# ~4.5"-wide TextBox 9 (zero side insets), calibrated against PowerPoint's own
+# rendered line counts / text extents (TextRange.Lines / BoundHeight on a live
+# 1,235-char 8-bullet block, cross-checked against the 1,055-char / 7-bullet
+# block the earnings-update assembler was originally tuned on):
+#   - average prose character width ≈ 0.485 × the font size;
+#   - a wrapped line is ≈ 1.2 × the font size tall;
+#   - each bullet paragraph adds ≈ 6 pt of paragraph spacing.
+# The pre-v0.5.23 earnings-update constants (64 chars/line, 0.182"/line, no
+# paragraph-spacing term) under-estimated the rendered height by ~15%, which is
+# why a "fitted" overview block could still spill into the LTM revenue section.
+_FIT_CHAR_WIDTH_EM = 0.485
+_FIT_LINE_HEIGHT_EM = 1.2
+_FIT_PARA_SPACING_IN = 0.083
+_FIT_DEFAULT_FONT_PT = 10.5
+_FIT_MIN_SCALE = 70.0
+_FIT_SCALE_STEP = 2.5
+_FIT_BAND_GAP_IN = 0.12
+_OVERVIEW_BAND_PREFIX = "LTM Revenue"
+
+
+def _shape_text_width_in(shape):
+    """Usable text width of a shape in inches (box width minus side insets)."""
+    tf = shape.text_frame
+    left = tf.margin_left if tf.margin_left is not None else Inches(0.1)
+    right = tf.margin_right if tf.margin_right is not None else Inches(0.1)
+    return max(0.5, Emu(shape.width - left - right).inches)
+
+
+def estimate_text_height_in(paragraph_texts, width_in, font_pt):
+    """Estimated rendered height (inches) of Palatino paragraphs in a box.
+
+    Per paragraph: wrapped line count at the average-character-width estimate,
+    times the line height, plus the paragraph-spacing allowance. Deliberately
+    ignores ``lnSpcReduction`` so the estimate errs tall (extra safety margin).
+    """
+    chars_per_line = width_in / (_FIT_CHAR_WIDTH_EM * font_pt / 72.0)
+    height = 0.0
+    for text in paragraph_texts:
+        lines = max(1, math.ceil(len(text) / chars_per_line))
+        height += lines * (font_pt / 72.0) * _FIT_LINE_HEIGHT_EM + _FIT_PARA_SPACING_IN
+    return height
+
+
+def fit_text_scale(paragraph_texts, width_in, avail_in, font_pt=_FIT_DEFAULT_FONT_PT):
+    """Largest normAutofit fontScale (percent) at which the text fits ``avail_in``.
+
+    Walks down from 100% in small steps, re-estimating the wrap at each scale
+    (a smaller font also fits more characters per line, so the height falls
+    faster than linearly). Returns 100.0 when the text already fits, else the
+    first fitting scale, floored at ``_FIT_MIN_SCALE``.
+    """
+    scale = 100.0
+    while scale > _FIT_MIN_SCALE:
+        if estimate_text_height_in(paragraph_texts, width_in, font_pt * scale / 100.0) <= avail_in:
+            break
+        scale -= _FIT_SCALE_STEP
+    return max(scale, _FIT_MIN_SCALE)
+
+
+def fit_overview_textbox(slide, shape, *, band_prefix=_OVERVIEW_BAND_PREFIX):
+    """Keep the overview bullets above the 'LTM Revenue Breakdown' header.
+
+    The shared library ships the overview TextBox 9 one line tall and relies on
+    autofit, but PowerPoint ignores a scale-less ``<a:normAutofit/>`` on open,
+    so an over-long run renders at full size and spills into the LTM revenue
+    section below. Size the box to the available band, and when the copy would
+    still overflow at the template font, write an **explicit** ``fontScale``
+    (plus a modest line-space reduction) so the shrink actually happens on
+    open. Returns the applied scale (100.0 when no shrink was needed).
+
+    Used by both deck assemblers — the pitch and earnings-update overview
+    slides are the same library entry, and both previously relied on autofit
+    alone (the recurring "overview text overlaps the LTM revenue breakdown"
+    analyst report).
+    """
+    top_in = Emu(shape.top).inches
+    band_bottom = None
+    for other in slide.shapes:
+        if getattr(other, "has_text_frame", False) and band_prefix in other.text_frame.text:
+            band_bottom = Emu(other.top).inches
+            break
+    if band_bottom is not None and band_bottom - top_in > 0.5:
+        avail_in = band_bottom - _FIT_BAND_GAP_IN - top_in
+        shape.height = Inches(avail_in)
+    else:
+        avail_in = Emu(shape.height).inches
+
+    paras = [p.text for p in shape.text_frame.paragraphs if p.text.strip()]
+    font_pt = _FIT_DEFAULT_FONT_PT
+    for p in shape.text_frame.paragraphs:
+        run_size = next((r.font.size for r in p.runs if r.font.size is not None), None)
+        if run_size is not None:
+            font_pt = run_size.pt
+            break
+    scale = fit_text_scale(paras, _shape_text_width_in(shape), avail_in, font_pt)
+    if scale < 100.0:
+        enable_normal_autofit(shape, font_scale=scale, line_space_reduction=8)
+    else:
+        enable_normal_autofit(shape)
+    return scale
 
 
 # ─── delete_slide ────────────────────────────────────────────────────────────

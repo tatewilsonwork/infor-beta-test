@@ -114,12 +114,30 @@ _CHART_H_CM = 2.51 * 2.54
 _PIE_SHEET_DEFAULT = "ltm-metrics"
 _PIE_SECTION_LABEL = "LTM Revenue Overview"
 _PIE_TOTAL_LABEL = "Total"
-_PIE_SEGMENT_COL = 1  # column A — segment names (categories / legend)
-_PIE_VALUE_COL = 2    # column B — LTM revenue $ amounts (Python fraction-compute reads this)
-_PIE_PCT_COL = 3      # column C — "% of Total" (=B/Btotal fraction); the chart series
-# Data-label number format for the pie: the series is the column-C fraction, so a
-# value-only "%" format renders e.g. 0.452 as "45.2%".
+_PIE_SEGMENT_COL = 1  # column A — segment names
+_PIE_VALUE_COL = 2    # column B — LTM revenue $ amounts (Python grouping/fractions read this)
+# The pie charts at most 5 slices: the 4 largest segments (descending) plus an
+# "Other" slice grouping the remainder — more slices overflowed the right-docked
+# legend into the pie in the wide/short overview box. Both builders write a
+# "Pie Chart Source" block in columns E:G beside the overview block (name /
+# `=B{r}` $ amount / `=F/Btotal` fraction — Excel charts literal cells, and the
+# in-cell formulas keep the block live when the analyst edits a segment $), and
+# the chart series references that block's fraction column.
+_PIE_MAX_SLICES = 5
+_PIE_OTHER_LABEL = "Other"
+_PIE_SRC_TITLE = "Pie Chart Source"
+_PIE_SRC_NAME_COL = 5   # column E — slice names (categories / legend)
+_PIE_SRC_VALUE_COL = 6  # column F — grouped $ amounts (=B refs; Other = total − top 4)
+_PIE_SRC_FRAC_COL = 7   # column G — grouped "% of Total" fractions; the chart series
+_PIE_SRC_FRAC_FORMAT = "0.0%"
+# Data-label number format for the pie: the series is the source block's fraction
+# column, so a value-only "%" format renders e.g. 0.452 as "45.2%".
 _PIE_LABEL_FORMAT = '#,##0.0%_);(#,##0.0%);"--"'
+# The pie legend runs one point smaller than the 9 pt chart text: five entries
+# with long segment names wrap to two lines each, and at 9 pt Excel drops the
+# entries that no longer fit the 1.77"-tall overview box (the "Other" entry
+# vanished in the live-run render).
+_PIE_LEGEND_FONT_SIZE_PT = 8
 # Only slices whose share of the total is ABOVE this threshold carry a data
 # label — the tiny-slice labels overlap each other in the short overview box.
 _PIE_LABEL_MIN_FRACTION = 0.03
@@ -131,6 +149,15 @@ _PIE_PLOT_X = 0.02
 _PIE_PLOT_Y = 0.05
 _PIE_PLOT_W = 0.58
 _PIE_PLOT_H = 0.90
+# Legend manual layout: the full remaining right side of the chart box. Excel's
+# auto legend in this wide/short box comes out narrower and shorter than the
+# space allows, wraps every entry to two lines and then silently DROPS the
+# entries that no longer fit (the "Other" entry vanished in the live-run
+# render). Pinning the legend to the full height/width keeps all five entries.
+_PIE_LEGEND_X = 0.61
+_PIE_LEGEND_Y = 0.02
+_PIE_LEGEND_W = 0.38
+_PIE_LEGEND_H = 0.96
 # Overview slide in the assembled pitch deck (slides[6] after the earnings slide
 # at raw library index 7 is deleted).
 _OVERVIEW_SLIDE_INDEX = 6
@@ -268,6 +295,44 @@ def _suppressed_pie_label_indices(fractions: list) -> list[int]:
         for i, f in enumerate(fractions)
         if not (isinstance(f, (int, float)) and f > _PIE_LABEL_MIN_FRACTION)
     ]
+
+
+def _pie_grouping(amounts: list) -> tuple[list[int], bool]:
+    """How the overview pie groups the revenue segments into at most 5 slices.
+
+    Returns ``(kept, has_other)``: ``kept`` is the 0-based offsets (into the
+    overview block's segment rows) of the directly-charted segments, largest $
+    first; ``has_other`` is True when the remaining segments collapse into a
+    trailing "Other" slice (i.e. there are more segments than
+    ``_PIE_MAX_SLICES``). Five or fewer segments chart as-is (descending), with
+    no "Other". Non-numeric amounts rank last, so they land in "Other".
+    """
+    order = sorted(
+        range(len(amounts)),
+        key=lambda i: amounts[i] if isinstance(amounts[i], (int, float)) else float("-inf"),
+        reverse=True,
+    )
+    if len(order) <= _PIE_MAX_SLICES:
+        return order, False
+    return order[: _PIE_MAX_SLICES - 1], True
+
+
+def _grouped_pie_labels_amounts(names: list, amounts: list) -> tuple[list, list]:
+    """The pie's slice labels and $ amounts after Top-4 + "Other" grouping.
+
+    Mirrors the source block both builders write on the tab — used for the
+    off-Windows PNG render (which charts literals) and for the >3% data-label
+    threshold on both builders (deterministic regardless of recalc state).
+    """
+    kept, has_other = _pie_grouping(amounts)
+    labels = [names[i] for i in kept]
+    grouped = [amounts[i] for i in kept]
+    if has_other:
+        total = sum(a for a in amounts if isinstance(a, (int, float)))
+        kept_total = sum(a for a in grouped if isinstance(a, (int, float)))
+        labels.append(_PIE_OTHER_LABEL)
+        grouped.append(total - kept_total)
+    return labels, grouped
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +769,15 @@ def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: in
                 ws.ChartObjects().Delete()
             except Exception:
                 pass
+            # Write/refresh the Top-4 + "Other" source block the chart references,
+            # then let Excel resolve its formulas before the chart is exported.
+            src_first, src_last, grouped = _write_pie_source_block_com(
+                ws, first_row, last_row
+            )
+            try:
+                excel.Calculate()
+            except Exception:
+                pass
             scratch_left = ws.Cells(1, 2).Left
             scratch_top = ws.Cells(1, 1).Top
             chart_obj = ws.ChartObjects().Add(
@@ -714,25 +788,22 @@ def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: in
             while chart.SeriesCollection().Count > 0:
                 chart.SeriesCollection(1).Delete()
             series = chart.SeriesCollection().NewSeries()
-            # Chart the column-C "% of Total" fraction (resolved by the CalculateFull
-            # above), not the column-B $ amounts — the value labels then read the share.
+            # Chart the source block's fraction column (grouped Top-4 + "Other"),
+            # not the raw segment rows — the value labels then read each share.
             series.Values = ws.Range(
-                ws.Cells(first_row, _PIE_PCT_COL), ws.Cells(last_row, _PIE_PCT_COL)
+                ws.Cells(src_first, _PIE_SRC_FRAC_COL), ws.Cells(src_last, _PIE_SRC_FRAC_COL)
             )
             series.XValues = ws.Range(
-                ws.Cells(first_row, _PIE_SEGMENT_COL), ws.Cells(last_row, _PIE_SEGMENT_COL)
+                ws.Cells(src_first, _PIE_SRC_NAME_COL), ws.Cells(src_last, _PIE_SRC_NAME_COL)
             )
-            # Which slices are above the 3% label threshold: recompute the shares
-            # in Python from the column-B $ amounts (same rule as the openpyxl
-            # builder, deterministic regardless of recalc state).
-            amounts = [
-                ws.Cells(r, _PIE_VALUE_COL).Value for r in range(first_row, last_row + 1)
-            ]
+            # Which slices are above the 3% label threshold: the grouped shares
+            # recomputed in Python from the column-B $ amounts (same rule as the
+            # openpyxl builder, deterministic regardless of recalc state).
             _format_com_pie(
                 chart,
                 series,
-                last_row - first_row + 1,
-                _fractions_from_amounts(amounts),
+                src_last - src_first + 1,
+                _fractions_from_amounts(grouped),
             )
 
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
@@ -767,20 +838,99 @@ def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: in
                 os.unlink(tmp)
 
 
+def _write_pie_source_block_com(ws, first_row: int, last_row: int) -> tuple[int, int, list]:
+    """COM mirror of :func:`_write_pie_source_block_openpyxl` (same block, same
+    formulas, same footprint clearing); Palatino 11 on the written range.
+
+    Returns ``(src_first_row, src_last_row, grouped_amounts)``.
+    """
+    names = [ws.Cells(r, _PIE_SEGMENT_COL).Value for r in range(first_row, last_row + 1)]
+    amounts = [ws.Cells(r, _PIE_VALUE_COL).Value for r in range(first_row, last_row + 1)]
+    kept, has_other = _pie_grouping(amounts)
+    total_row = last_row + 1
+    value_format = ws.Cells(first_row, _PIE_VALUE_COL).NumberFormat
+
+    footprint = ws.Range(
+        ws.Cells(first_row - 2, _PIE_SRC_NAME_COL), ws.Cells(total_row, _PIE_SRC_FRAC_COL)
+    )
+    footprint.ClearContents()
+    try:
+        footprint.Font.Name = _FONT_NAME
+        footprint.Font.Size = 11
+        footprint.Font.Bold = False
+    except Exception:
+        pass
+
+    title_cell = ws.Cells(first_row - 2, _PIE_SRC_NAME_COL)
+    title_cell.Value = _PIE_SRC_TITLE + (" (Top 4 + Other)" if has_other else "")
+    header_cells = (
+        (_PIE_SRC_NAME_COL, "Segment"),
+        (_PIE_SRC_VALUE_COL, ws.Cells(first_row - 1, _PIE_VALUE_COL).Value),
+        (_PIE_SRC_FRAC_COL, "% of Total"),
+    )
+    for col, text in header_cells:
+        ws.Cells(first_row - 1, col).Value = text
+    try:
+        title_cell.Font.Bold = True
+        ws.Range(
+            ws.Cells(first_row - 1, _PIE_SRC_NAME_COL), ws.Cells(first_row - 1, _PIE_SRC_FRAC_COL)
+        ).Font.Bold = True
+    except Exception:
+        pass
+
+    from openpyxl.utils import get_column_letter
+
+    seg_col = get_column_letter(_PIE_SEGMENT_COL)
+    val_col = get_column_letter(_PIE_VALUE_COL)
+    src_val_col = get_column_letter(_PIE_SRC_VALUE_COL)
+    rows: list[int] = []
+    for j, i in enumerate(kept):
+        r = first_row + j
+        ws.Cells(r, _PIE_SRC_NAME_COL).Formula = f"={seg_col}{first_row + i}"
+        ws.Cells(r, _PIE_SRC_VALUE_COL).Formula = f"={val_col}{first_row + i}"
+        rows.append(r)
+    if has_other:
+        r = first_row + len(kept)
+        ws.Cells(r, _PIE_SRC_NAME_COL).Value = _PIE_OTHER_LABEL
+        ws.Cells(r, _PIE_SRC_VALUE_COL).Formula = (
+            f"={val_col}{total_row}-SUM({src_val_col}{first_row}:{src_val_col}{r - 1})"
+        )
+        rows.append(r)
+    for r in rows:
+        ws.Cells(r, _PIE_SRC_VALUE_COL).NumberFormat = value_format
+        frac = ws.Cells(r, _PIE_SRC_FRAC_COL)
+        frac.Formula = f"={src_val_col}{r}/${val_col}${total_row}"
+        frac.NumberFormat = _PIE_SRC_FRAC_FORMAT
+
+    return first_row, rows[-1], _grouped_pie_labels_amounts(names, amounts)[1]
+
+
 def _format_com_pie(chart, series, n_points: int, fractions: list) -> None:
     """Apply INFOR pie formatting: right-docked legend with the pie pinned left of
     it, no title/border, accent slice fills, and labels only on >3% slices."""
     chart.HasTitle = False
     _com_strip_chart_border(chart)
 
-    # Legend docked on the RIGHT, Palatino 9 black.
+    # Legend docked on the RIGHT, Palatino 8 black (one point under the chart
+    # text), then pinned to the full remaining right side of the chart box —
+    # Excel's auto legend wraps every entry and silently drops the ones that no
+    # longer fit its undersized auto box (see _PIE_LEGEND_*).
     chart.HasLegend = True
     legend = chart.Legend
     legend.Position = _XL_LEGEND_RIGHT
     try:
         legend.Font.Name = _FONT_NAME
-        legend.Font.Size = _FONT_SIZE_PT
+        legend.Font.Size = _PIE_LEGEND_FONT_SIZE_PT
         legend.Font.Color = 0
+    except Exception:
+        pass
+    try:
+        area_w = chart.ChartArea.Width
+        area_h = chart.ChartArea.Height
+        legend.Left = _PIE_LEGEND_X * area_w
+        legend.Top = _PIE_LEGEND_Y * area_h
+        legend.Width = _PIE_LEGEND_W * area_w
+        legend.Height = _PIE_LEGEND_H * area_h
     except Exception:
         pass
 
@@ -807,9 +957,10 @@ def _format_com_pie(chart, series, n_points: int, fractions: list) -> None:
         except Exception:
             pass
 
-    # Value-only data labels, Palatino 9. The series is the column-C "% of Total"
-    # fraction, so ShowValue + a "%" number format renders e.g. 0.452 as "45.2%"
-    # (ShowPercentage is off — we want the cell's own value, not a recomputed share).
+    # Value-only data labels, Palatino 9. The series is the source block's
+    # "% of Total" fraction column, so ShowValue + a "%" number format renders
+    # e.g. 0.452 as "45.2%" (ShowPercentage is off — we want the cell's own
+    # value, not a recomputed share).
     # Set the flags directly on the DataLabels object: under late-binding COM,
     # ApplyDataLabels(ShowValue=...) keyword args silently do nothing.
     try:
@@ -901,8 +1052,11 @@ def _persist_native_charts_openpyxl(
         if rows is not None:
             ws._charts = []
             first_row, last_row = rows
+            # _make_openpyxl_pie also (re)writes the Top-4 + "Other" source
+            # block the chart references, so the sibling re-create path gets
+            # the block too.
             ws.add_chart(
-                _make_openpyxl_pie(ws, first_row, last_row, last_row - first_row + 1),
+                _make_openpyxl_pie(ws, first_row, last_row),
                 ws.cell(row=last_row + 3, column=1).coordinate,
             )
 
@@ -1017,8 +1171,9 @@ def _openpyxl_no_border_black_axis(chart) -> None:
     )
 
 
-def _palatino_text():
-    """A RichText carrying Palatino Linotype 9 pt black default run properties."""
+def _palatino_text(size_hundredths: int = _FONT_SIZE_HUNDREDTHS):
+    """A RichText carrying Palatino Linotype black default run properties
+    (9 pt unless overridden — the pie legend passes 8 pt)."""
     from openpyxl.chart.text import RichText
     from openpyxl.drawing.text import (
         CharacterProperties,
@@ -1029,7 +1184,7 @@ def _palatino_text():
 
     cp = CharacterProperties(
         latin=DrawingFont(typeface=_FONT_NAME),
-        sz=_FONT_SIZE_HUNDREDTHS,
+        sz=size_hundredths,
         solidFill="000000",
     )
     return RichText(p=[Paragraph(pPr=ParagraphProperties(defRPr=cp), endParaRPr=cp)])
@@ -1174,11 +1329,12 @@ def _build_pie_openpyxl_libreoffice(
 ) -> bytes | None:
     """Persist a native openpyxl pie on the ltm-metrics tab, then render its PNG.
 
-    The native pie's series is the **"% of Total" column** (column C, a ``=B/Btotal``
-    formula). openpyxl cannot evaluate that formula, so the throwaway render workbook
-    charts the equivalent fractions recomputed in Python from the column-B ``$``
-    literals (``frac = b / sum(b)``) — the slices and value labels then match the
-    native pie without a LibreOffice recalc of the source tab.
+    The native pie's series is the Top-4 + "Other" **source block's fraction
+    column** (``=F/Btotal`` formulas, written beside the overview block).
+    openpyxl cannot evaluate those formulas, so the throwaway render workbook
+    charts the equivalent grouped fractions recomputed in Python from the
+    column-B ``$`` literals — the slices and value labels then match the native
+    pie without a LibreOffice recalc of the source tab.
 
     Like the FS chart path, the native pie is added and the workbook saved **first**
     so its persistence does not depend on LibreOffice; the PNG render is attempted
@@ -1193,15 +1349,16 @@ def _build_pie_openpyxl_libreoffice(
         workbook, rebuild="pie", pie_sheet=sheet_name, pie_rows=(first_row, last_row)
     )
     ws = wb[sheet_name]
-    labels = [ws.cell(row=r, column=_PIE_SEGMENT_COL).value for r in range(first_row, last_row + 1)]
+    names = [ws.cell(row=r, column=_PIE_SEGMENT_COL).value for r in range(first_row, last_row + 1)]
     amounts = [ws.cell(row=r, column=_PIE_VALUE_COL).value for r in range(first_row, last_row + 1)]
+    labels, grouped = _grouped_pie_labels_amounts(names, amounts)
 
     try:
-        # The render workbook charts literal cells, but the real tab's "% of Total"
-        # column is a formula openpyxl can't evaluate — recompute the fractions from
-        # the $ literals so the rendered slices/labels match the native pie's column-C
-        # series.
-        return _render_single_pie_png(labels, _fractions_from_amounts(amounts))
+        # The render workbook charts literal cells, but the real tab's source-block
+        # fractions are formulas openpyxl can't evaluate — recompute the grouped
+        # Top-4 + "Other" fractions from the column-B $ literals so the rendered
+        # slices/labels match the native pie's source-block series.
+        return _render_single_pie_png(labels, _fractions_from_amounts(grouped))
     except RuntimeError as exc:
         print(
             f"[financial-charts] overview pie render skipped ({exc}); the native "
@@ -1214,7 +1371,7 @@ def _build_pie_openpyxl_libreoffice(
 def _style_openpyxl_pie(chart, n_points: int, fractions: list | None = None) -> None:
     """INFOR pie formatting: no title, accent slice fills, right-docked legend with
     the pie's plot area pinned to the left of the chart box (clear of the legend),
-    and value-only "%" labels (the series is the column-C "% of Total" fraction, so
+    and value-only "%" labels (the series is the source block's "% of Total" fraction, so
     a value label with a "%" number format reads e.g. "45.2%") on the slices whose
     share is above the 3% threshold — ``fractions`` decides which; smaller slices
     get a per-point all-show-flags-off override (openpyxl 3.1 does not model
@@ -1238,12 +1395,23 @@ def _style_openpyxl_pie(chart, n_points: int, fractions: list | None = None) -> 
         DataPoint(idx=i, spPr=GraphicalProperties(solidFill=INFOR_ACCENTS[i % len(INFOR_ACCENTS)]))
         for i in range(n_points)
     ]
-    # Legend docked on the RIGHT (segment names), Palatino 9; the plot area is
-    # pinned to the left of the chart box via a manual layout so the pie cannot
-    # overlap the legend.
+    # Legend docked on the RIGHT (segment names), Palatino 8 (one point under
+    # the chart text), pinned to the full remaining right side of the chart box
+    # (see _PIE_LEGEND_*); the plot area is pinned to the left via a manual
+    # layout so the pie cannot overlap the legend.
     chart.legend.position = "r"
     chart.legend.overlay = False
-    chart.legend.txPr = _palatino_text()
+    chart.legend.txPr = _palatino_text(_PIE_LEGEND_FONT_SIZE_PT * 100)
+    chart.legend.layout = Layout(
+        manualLayout=ManualLayout(
+            xMode="edge",
+            yMode="edge",
+            x=_PIE_LEGEND_X,
+            y=_PIE_LEGEND_Y,
+            w=_PIE_LEGEND_W,
+            h=_PIE_LEGEND_H,
+        )
+    )
     chart.layout = Layout(
         manualLayout=ManualLayout(
             layoutTarget="inner",
@@ -1278,31 +1446,110 @@ def _style_openpyxl_pie(chart, n_points: int, fractions: list | None = None) -> 
     chart.series[0].dLbls = labels
 
 
-def _make_openpyxl_pie(ws, first_row: int, last_row: int, n_points: int):
-    """Build an INFOR-formatted PieChart over the "LTM Revenue Overview" block.
+def _write_pie_source_block_openpyxl(ws, first_row: int, last_row: int) -> tuple[int, int, list]:
+    """Write the pie's Top-4 + "Other" source block in columns E:G, in place.
 
-    The series is the **"% of Total" column** (column C, the ``=B/Btotal`` fraction)
-    so the data labels read the segment share; Excel evaluates the formula. Slice
-    geometry is identical to charting the $ amounts. Categories (legend) = the
-    Segment column. openpyxl cannot evaluate the column-C formula, so the 3%
-    data-label threshold is decided from fractions recomputed in Python off the
-    column-B ``$`` literals — the same shares Excel computes into column C.
+    Sits beside the "LTM Revenue Overview" block, row-aligned with it (title on
+    the section-title row, headers on the header row, slices from the first
+    segment row). The kept slices reference their segment rows live (``=A{r}`` /
+    ``=B{r}``) and "Other" is ``=B{total} - SUM(top slices)``, so the block —
+    and the chart on it — follows analyst edits to the segment $ after an Excel
+    recalc. The block's footprint is cleared first so a re-run (or a shrunk
+    segment list) never leaves stale slice rows behind.
+
+    Returns ``(src_first_row, src_last_row, grouped_amounts)`` — the chart range
+    and the Python-side grouped $ amounts (for the >3% label threshold).
+    """
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    names = [ws.cell(row=r, column=_PIE_SEGMENT_COL).value for r in range(first_row, last_row + 1)]
+    amounts = [ws.cell(row=r, column=_PIE_VALUE_COL).value for r in range(first_row, last_row + 1)]
+    kept, has_other = _pie_grouping(amounts)
+    total_row = last_row + 1  # the overview block's "Total" row (excluded from the range)
+
+    body_font = Font(name=_FONT_NAME, size=11)
+    title_font = Font(name=_FONT_NAME, size=11, bold=True, color="1F3864")
+    header_font = Font(name=_FONT_NAME, size=11, bold=True)
+    value_format = ws.cell(row=first_row, column=_PIE_VALUE_COL).number_format
+
+    for r in range(first_row - 2, total_row + 1):
+        for c in (_PIE_SRC_NAME_COL, _PIE_SRC_VALUE_COL, _PIE_SRC_FRAC_COL):
+            ws.cell(row=r, column=c).value = None
+
+    title = _PIE_SRC_TITLE + (" (Top 4 + Other)" if has_other else "")
+    ws.cell(row=first_row - 2, column=_PIE_SRC_NAME_COL, value=title).font = title_font
+    for col, text in (
+        (_PIE_SRC_NAME_COL, "Segment"),
+        (_PIE_SRC_VALUE_COL, ws.cell(row=first_row - 1, column=_PIE_VALUE_COL).value),
+        (_PIE_SRC_FRAC_COL, "% of Total"),
+    ):
+        ws.cell(row=first_row - 1, column=col, value=text).font = header_font
+
+    seg_col = get_column_letter(_PIE_SEGMENT_COL)
+    val_col = get_column_letter(_PIE_VALUE_COL)
+    src_val_col = get_column_letter(_PIE_SRC_VALUE_COL)
+    rows: list[tuple[int, str, str]] = [
+        (first_row + j, f"={seg_col}{first_row + i}", f"={val_col}{first_row + i}")
+        for j, i in enumerate(kept)
+    ]
+    if has_other:
+        r = first_row + len(kept)
+        rows.append(
+            (r, _PIE_OTHER_LABEL, f"={val_col}{total_row}-SUM({src_val_col}{first_row}:{src_val_col}{r - 1})")
+        )
+    for r, name, value in rows:
+        ws.cell(row=r, column=_PIE_SRC_NAME_COL, value=name).font = body_font
+        v = ws.cell(row=r, column=_PIE_SRC_VALUE_COL, value=value)
+        v.font = body_font
+        v.number_format = value_format
+        p = ws.cell(
+            row=r,
+            column=_PIE_SRC_FRAC_COL,
+            value=f"={src_val_col}{r}/${val_col}${total_row}",
+        )
+        p.font = body_font
+        p.number_format = _PIE_SRC_FRAC_FORMAT
+
+    # Mirror the source columns' widths so the block reads cleanly on the tab.
+    for src_col, dst_col in (
+        (_PIE_SEGMENT_COL, _PIE_SRC_NAME_COL),
+        (_PIE_VALUE_COL, _PIE_SRC_VALUE_COL),
+        (3, _PIE_SRC_FRAC_COL),
+    ):
+        width = ws.column_dimensions[get_column_letter(src_col)].width
+        if width:
+            ws.column_dimensions[get_column_letter(dst_col)].width = width
+
+    return first_row, rows[-1][0], _grouped_pie_labels_amounts(names, amounts)[1]
+
+
+def _make_openpyxl_pie(ws, first_row: int, last_row: int):
+    """Build an INFOR-formatted PieChart over the Top-4 + "Other" source block.
+
+    Writes/refreshes the source block (columns E:G) beside the "LTM Revenue
+    Overview" block, then charts its **fraction column** (``=F/Btotal``) so the
+    data labels read the slice share; Excel evaluates the formulas. Categories
+    (legend) = the block's name column. openpyxl cannot evaluate the fraction
+    formulas, so the 3% data-label threshold is decided from the grouped
+    amounts recomputed in Python off the column-B ``$`` literals — the same
+    shares Excel computes into the block.
     """
     from openpyxl.chart import PieChart, Reference
 
+    src_first, src_last, grouped = _write_pie_source_block_openpyxl(ws, first_row, last_row)
     chart = PieChart()
     data = Reference(
-        ws, min_col=_PIE_PCT_COL, max_col=_PIE_PCT_COL, min_row=first_row, max_row=last_row
+        ws, min_col=_PIE_SRC_FRAC_COL, max_col=_PIE_SRC_FRAC_COL, min_row=src_first, max_row=src_last
     )
     cats = Reference(
-        ws, min_col=_PIE_SEGMENT_COL, max_col=_PIE_SEGMENT_COL, min_row=first_row, max_row=last_row
+        ws, min_col=_PIE_SRC_NAME_COL, max_col=_PIE_SRC_NAME_COL, min_row=src_first, max_row=src_last
     )
     chart.add_data(data, titles_from_data=False)
     chart.set_categories(cats)
-    amounts = [
-        ws.cell(row=r, column=_PIE_VALUE_COL).value for r in range(first_row, last_row + 1)
-    ]
-    _style_openpyxl_pie(chart, n_points, fractions=_fractions_from_amounts(amounts))
+    _style_openpyxl_pie(
+        chart, src_last - src_first + 1, fractions=_fractions_from_amounts(grouped)
+    )
     return chart
 
 

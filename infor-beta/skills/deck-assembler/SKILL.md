@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.22
+version: 0.5.23
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -58,14 +58,14 @@ When invoked by the conductor, read:
 - Slide 2: executive summary bullets — square main / dash sub bullets, template body colour (not the navy list default).
 - Slides 3–5: static credentials, do not touch.
 - Slide 6: section divider labels.
-- Slide 7: company overview bullets; the cap table is pasted into the `Rectangle 3` placeholder when `captable_workbook_path` is supplied (`slide_index=6`, range `B15:F40`), and the `[x]$MM` footnote token is set to the cap table's output currency (`US` / `C`, read from `F5`). The LTM revenue pie stays a deferred placeholder.
+- Slide 7: company overview bullets — the assembler sizes the bullets box to the band above the "LTM Revenue Breakdown" header and, when the copy is over-long, writes an **explicit autofit `fontScale`** (`pptx_helpers.fit_overview_textbox`; PowerPoint ignores a scale-less `<a:normAutofit/>` on open, which is how live runs rendered overview copy through the pie section). Do not hand-resize this box or hand-tune its scale — the fit is deterministic. The cap table is pasted into the `Rectangle 3` placeholder when `captable_workbook_path` is supplied (`slide_index=6`, range `B15:F40`), and the `[x]$MM` footnote token is set to the cap table's output currency (`US` / `C`, read from `F5`). The LTM revenue pie stays a deferred placeholder.
 - Slide 8: financial metric **NAME** labels only, taken from the `financial_metric_labels` stage input (the `financial-summary` stage's output, not the content bundle). The four chart placeholders are left as-is here; they are filled by the downstream **`financial-charts`** stage, which runs after `workbook-aggregation` (the charts can only be drawn once the combined workbook's `financial-summary` LTM links resolve against the folded-in `ltm-metrics` tab).
 - Slide 9: ownership slide (Canadian public targets) — **follows the Financial Summary slide**. When `ownership_workbook_path` is supplied, the left **"Insiders"** placeholder (`Rectangle 1`) is replaced by a picture of the ownership workbook's Select-Insiders block (sheet `Ownership`, range `B4:G17`, fixed `slide_index = _OWNERSHIP_SLIDE_INDEX = 8`). The right **"Institutions"** side stays a Bloomberg-sourced placeholder.
 - Slide 10: concise risks/mitigants + tagline.
 - Slide 11: comps takeaway; chart placeholder stays unless insertion replaces it later.
 - Slide 12: precedent-transactions takeaway (`precedents_takeaway` from the content bundle); the chart area stays a placeholder like comps (no Excel→PowerPoint while CapIQ can't be refreshed).
 - Slide 13: key investment highlights (filled when content supplies them).
-- Slides 14+: potential market-entry targets — the fixed 12-row comparison table (Overview / HQ / Year Founded → 7 industry metrics → Scale KPIs / Strategic Rationale), **two targets per slide**. The assembler clones the library's market-entry slide to `ceil(len(market_entry_targets) / 2)` slides, titles them `(N of M)`, writes the label column white at 11 pt and target values at 10 pt, blanks the unused column + logo on an odd final slide, and — after the cells are filled — clamps each table to a fixed **5.71"** total height (frame + proportional row heights) so long content can't run the table off the slide. Disclaimer/contact follow.
+- Slides 14+: potential market-entry targets — the fixed 12-row comparison table (Overview / HQ / Year Founded → 7 industry metrics → Scale KPIs / Strategic Rationale), **two targets per slide**. The assembler clones the library's market-entry slide to `ceil(len(market_entry_targets) / 2)` slides, titles them `(N of M)`, writes the label column white at 11 pt (an over-wide label steps down to 10/9 pt so it cannot wrap — a wrapped label re-grows its row at render time) and target values at 9 pt, blanks the unused column + logo on an odd final slide, and — after the cells are filled — clamps each table to a fixed **5.71"** total height. The clamp is growth-aware: each row's declared height is floored at its estimated content height (a stored row height is only a render-time MINIMUM), so PowerPoint cannot re-expand the table past 5.71" into the footnotes. Disclaimer/contact follow.
 
 ## Overflow QA (mandatory)
 
@@ -107,9 +107,13 @@ pngs = render_deck_to_png(deck_path, output_dir, slide_indices=[1, 2])  # zero-b
 ```
 
 Read each PNG with the `Read` tool and check for text touching or crossing a
-shape boundary. If a shape overflows, reopen the deck, shrink the offending
-shape with `enable_normal_autofit(shape, font_scale=...)` (start ~0.9 and step
-down), save, re-render, and re-inspect. Repeat until every slide is clean.
+shape boundary. The overview bullets and market-entry tables are fitted
+deterministically by the assembler (`fit_overview_textbox`, the growth-aware
+table clamp) — if one of those still overflows, treat it as a bug to report,
+not something to hand-patch. For any *other* overflowing shape, reopen the
+deck, shrink it with `enable_normal_autofit(shape, font_scale=...)` (start
+~0.9 and step down), save, re-render, and re-inspect until clean. Never
+hand-edit shape geometry (position/size) to force a fit.
 
 The renderer uses PowerPoint COM on Windows and LibreOffice headless elsewhere,
 so it works in Cowork. If neither backend is available it raises `RuntimeError` —

@@ -391,3 +391,83 @@ class TestConstants(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ─── fit_overview_textbox / fit_text_scale ───────────────────────────────────
+
+from pptx.oxml.ns import qn as _qn
+from pptx.util import Emu as _Emu
+
+from pptx_helpers import estimate_text_height_in, fit_overview_textbox, fit_text_scale
+
+
+def _make_overview_slide():
+    """A synthetic overview slide: TextBox 9 up top, the 'LTM Revenue Breakdown'
+    header at 4.747" — the geometry of the shared library's overview slide."""
+    prs = Presentation()
+    prs.slide_width = Inches(10)
+    prs.slide_height = Inches(7.5)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_textbox(Inches(0.375), Inches(1.471), Inches(4.507), Inches(0.575))
+    box.name = "TextBox 9"
+    box.text_frame.margin_left = 0
+    box.text_frame.margin_right = 0
+    header = slide.shapes.add_textbox(Inches(0.365), Inches(4.747), Inches(4.528), Inches(0.341))
+    header.text_frame.paragraphs[0].add_run().text = "LTM Revenue Breakdown"
+    return prs, slide, box
+
+
+def _font_scale_of(shape):
+    bodyPr = shape.text_frame._txBody.find(_qn("a:bodyPr"))
+    autofit = bodyPr.find(_qn("a:normAutofit"))
+    if autofit is None:
+        return None
+    scale = autofit.get("fontScale")
+    return None if scale is None else int(scale) / 1000.0
+
+
+class FitOverviewTextboxTests(unittest.TestCase):
+    def test_estimate_grows_with_text_and_shrinks_with_font(self):
+        short = estimate_text_height_in(["word"] * 2, 4.5, 10.5)
+        long = estimate_text_height_in(["x" * 150] * 8, 4.5, 10.5)
+        self.assertLess(short, long)
+        self.assertLess(estimate_text_height_in(["x" * 150] * 8, 4.5, 8.0), long)
+
+    def test_fit_text_scale_returns_100_when_it_fits(self):
+        self.assertEqual(fit_text_scale(["short line"], 4.5, 3.0), 100.0)
+
+    def test_fit_text_scale_shrinks_overlong_copy_with_floor(self):
+        paras = ["x" * 160] * 8  # ~the PRL17 live-run block
+        scale = fit_text_scale(paras, 4.507, 3.156)
+        self.assertLess(scale, 100.0)
+        self.assertGreaterEqual(scale, 70.0)
+        # A absurdly long block bottoms out at the floor instead of vanishing.
+        self.assertEqual(fit_text_scale(["x" * 500] * 30, 4.507, 3.156), 70.0)
+
+    def test_fit_sizes_box_to_band_and_writes_explicit_scale(self):
+        prs, slide, box = _make_overview_slide()
+        for _ in range(8):
+            p = box.text_frame.add_paragraph()
+            p.add_run().text = "Propel is a Toronto-based fintech that facilitates access to credit for underbanked consumers across three operating brands and multiple funding programs"
+        scale = fit_overview_textbox(slide, box)
+        # Box sized to the band above the LTM header (4.747 - 0.12 - 1.471).
+        self.assertAlmostEqual(_Emu(box.height).inches, 4.747 - 0.12 - 1.471, places=2)
+        # Over-long copy must carry an explicit fontScale so PowerPoint shrinks on open.
+        self.assertLess(scale, 100.0)
+        self.assertEqual(_font_scale_of(box), scale)
+
+    def test_fit_keeps_short_copy_at_full_size(self):
+        prs, slide, box = _make_overview_slide()
+        box.text_frame.paragraphs[0].add_run().text = "One short line"
+        scale = fit_overview_textbox(slide, box)
+        self.assertEqual(scale, 100.0)
+        # autofit enabled, but no explicit downscale
+        self.assertIsNone(_font_scale_of(box))
+
+    def test_fit_without_band_header_keeps_existing_height(self):
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        box = slide.shapes.add_textbox(Inches(0.4), Inches(1.5), Inches(4.5), Inches(2.0))
+        box.text_frame.paragraphs[0].add_run().text = "No band on this slide"
+        fit_overview_textbox(slide, box)
+        self.assertAlmostEqual(_Emu(box.height).inches, 2.0, places=3)
