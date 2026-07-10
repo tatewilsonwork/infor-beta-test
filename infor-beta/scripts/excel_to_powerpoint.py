@@ -42,6 +42,15 @@ _XL_NORMAL = -4143
 _XL_PICTURE = -4147
 
 
+class _ClipboardPasteError(Exception):
+    """Chart.Paste silently pasted nothing (CopyPicture/clipboard race).
+
+    Deliberately NOT a RuntimeError: `_render_range_to_png` treats RuntimeError
+    from the COM path as "Excel unavailable" and falls through to LibreOffice,
+    which would mislabel this transient clipboard race.
+    """
+
+
 def insert_excel_into_placeholder(
     *,
     deck_path: Path | str,
@@ -137,6 +146,14 @@ def _excel_com_range_to_png(workbook: Path, sheet_name: str, source_range: str) 
             excel.Top, excel.Left = 4000, 6000
         except Exception:
             pass
+        try:
+            # CopyPicture(xlScreen) renders cell-comment indicators (the red
+            # corner triangles — e.g. the ownership F35 / cap-table F7/F16
+            # source comments) into the picture. Hide them app-side for this
+            # throwaway instance; the workbook keeps its comments.
+            excel.DisplayCommentIndicator = 0  # xlNoIndicator
+        except Exception:
+            pass
         wb = excel.Workbooks.Open(str(workbook), ReadOnly=True, UpdateLinks=0)
         try:
             # openpyxl drops the cached value of every formula cell when the
@@ -167,6 +184,18 @@ def _excel_com_range_to_png(workbook: Path, sheet_name: str, source_range: str) 
                         chart = chart_obj.Chart
                         chart.ChartArea.Border.LineStyle = 0
                         chart.Paste()
+                        # Chart.Paste silently no-ops when the shared Office
+                        # clipboard hasn't been populated by CopyPicture yet
+                        # (a race — empirically ~1-in-3 on a fast machine), and
+                        # the export is then a blank white picture. A successful
+                        # paste always lands the metafile as a chart Shape, so
+                        # an empty Shapes collection means the paste failed:
+                        # raise to engage this retry loop (fresh CopyPicture).
+                        if chart.Shapes.Count == 0:
+                            raise _ClipboardPasteError(
+                                f"Chart.Paste pasted nothing for {source_range} "
+                                "(Office clipboard not ready)"
+                            )
                         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                             tmp_png_path = f.name
                         chart.Export(Filename=tmp_png_path, FilterName="PNG")

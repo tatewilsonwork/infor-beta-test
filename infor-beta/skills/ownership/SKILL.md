@@ -1,11 +1,13 @@
 ---
 name: ownership
 description: >
-  Use this skill to build the insider-ownership table for a Canadian public company from a SEDI
-  "Insider Information by Issuer" report. Activates on /ownership and as the pitch plan `ownership`
-  stage. Parses the analyst-attached SEDI PDF, keeps only current insiders, sums each one's common
-  shares, looks up roles, and writes the INFOR ownership workbook (companion to the ownership slide).
-version: 0.5.24
+  Use this skill to build the ownership table for a Canadian public company from a SEDI
+  "Insider Information by Issuer" report, plus — when attached — a Bloomberg ownership export for
+  the institutional side. Activates on /ownership and as the pitch plan `ownership` stage. Parses
+  the analyst-attached SEDI PDF, keeps only current insiders, sums each one's common shares, looks
+  up roles, ingests the Bloomberg holders (excluding SEDI duplicates — the SEDI figure always
+  wins), and writes the INFOR ownership workbook (companion to the ownership slide).
+version: 0.5.25
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -14,7 +16,13 @@ allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 This skill populates the INFOR ownership template's **Select Insiders** block from a SEDI
 "Insider Information by Issuer" report, producing the companion workbook whose `B4:G17`
 range the deck-assembler pastes into the pitch deck's ownership slide (left "Insiders" side).
-The right "Institutions" side is Bloomberg-sourced and out of scope for this skill.
+When the analyst also attaches a **Bloomberg ownership export**, the skill fills the
+**Select Institutions** side too (Step 9): the export replaces the workbook's `Bloomberg
+Output` tab, the Ownership tab's pre-wired link rows (68-185) pick it up, Bloomberg rows
+that duplicate a SEDI insider are excluded (**the SEDI figure always wins — only the
+Bloomberg duplicate is flagged out, never the SEDI row**), and the deck-assembler then
+pastes `B19:G35` into the slide's right "Institutions" side. Without a Bloomberg export
+the institutional side stays a placeholder, as before.
 
 Today's date is available from the system context (`currentDate`) — do not shell out to `date`.
 
@@ -32,7 +40,9 @@ When invoked as a stage of a conductor plan, the environment carries `$STAGE_INP
 
 - Read inputs from `$STAGE_INPUTS`: `company` (facts, to confirm Canadian-public + name), `ticker`,
   and `captable_workbook_path` (the companion cap table, for total shares outstanding). The SEDI PDF
-  is an analyst attachment in the chat / deal directory.
+  — and, optionally, the Bloomberg ownership export (`.xlsm`/`.xlsx`) — are analyst attachments in
+  the chat / deal directory. A missing Bloomberg export is **not** an error: build insider-only and
+  note that the institutions side was left as a placeholder.
 - The ownership slide is **optional** — when it can't be produced, emit a **null** workbook so the
   rest of the deck still assembles (the deck-assembler then leaves the slide's placeholders in place).
   Always write a `workbook_path` key (the deck stage references it), null when skipping:
@@ -69,7 +79,7 @@ issuer. If it is not attached, ask for it (cite the manual download path in the 
 
 ### Step 3 — Locate the template and set the output path
 
-The template is resolved **in Python** in Step 9 as
+The template is resolved **in Python** in Step 10 as
 `Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta")) / "templates" / "INFOR Ownership Template.xlsx"`
 — the same primary location `find_template.sh` searches. (Resolving it in Python, rather than via
 `TEMPLATE=$(bash find_template.sh …)`, avoids the Git-Bash `/c/…` path that `pathlib` mis-reads on
@@ -115,7 +125,7 @@ role from the relationship code (4 = Director, 5 = Senior Officer, 3 = 10% Holde
 specific title from the company website / LinkedIn (WebSearch/WebFetch) — e.g. CEO, CFO, Chairman.
 The slide shows only the **top 12 insiders by common shares**, so prioritise role accuracy for the
 largest holders; minor holders' titles can fall back to the relationship-code role. Flag any role you
-could not verify in the Step 10 summary.
+could not verify in the Step 11 summary.
 
 ### Step 8 — Total basic shares outstanding (F35)
 
@@ -130,7 +140,34 @@ This sums the cap table's Section VII basic-share input rows (full units). If it
 (no cap table / unreadable), leave `F35` blank and flag it as a manual step in the summary. Because
 F35 comes from the cap table, this stage must run **after** `captable`.
 
-### Step 9 — Write the workbook
+### Step 9 — Bloomberg institutional side (optional)
+
+Look for an analyst-attached **Bloomberg ownership export** — the BBG Excel add-in "Ownership"
+template (`.xlsm`, sometimes `.xlsx`) whose **Summary View** sheet lists holders from row 14
+(`Holder Name` / `Position` / `Filing Date` / `Insider Status` / …). Like the SEDI PDF, it cannot
+be auto-fetched — the analyst runs the Bloomberg pull and attaches the file. **If none is
+attached, skip this step** (insider-only workbook; the slide's Institutions side stays a
+placeholder) and say so in the summary — do not stop the stage.
+
+When attached:
+
+1. **Parse + review the duplicate matches.** `read_bloomberg_export` parses the file;
+   `match_bloomberg_to_sedi` deterministically maps each Bloomberg holder to the SEDI insider it
+   duplicates (SEDI `Last, First Middle` ↔ BBG `Last First Middle`, initials tolerated; corporate
+   holders match after legal-suffix stripping). Every matched Bloomberg row is excluded (`H=0`)
+   by the builder — **the SEDI figure always wins; never exclude the SEDI row.** Review the
+   report: a Bloomberg row flagged `Insider Status = "Y"` that did **not** match stays *included*
+   (only confirmed SEDI duplicates are excluded) — list those unmatched insiders in the summary
+   for the analyst, and use `bloomberg_include_overrides={"<Holder Name>": 0}` only when the
+   analyst confirms one is a missed duplicate.
+2. **Adjusted names.** The builder defaults each Bloomberg row's display name (col J) to
+   `strip_legal_suffixes` — trailing Inc / Corp / Group / Partners / LP / Ltd / … tokens dropped
+   (`"T Rowe Price Group Inc"` → `"T Rowe Price"`, `"Kelso & Co LP"` → `"Kelso & Co"`; an `"& Co"`
+   brand is kept). Where house style clearly differs, pass
+   `bloomberg_adjusted_names={"<Holder Name>": "<display name>"}` (e.g. restore `"T. Rowe Price"`
+   punctuation). Do not shorten person names.
+
+### Step 10 — Write the workbook
 
 ```python
 import os, sys
@@ -152,21 +189,32 @@ build_ownership_workbook(
     insiders=insiders,
     total_shares_outstanding=total,   # full units, or None
     output_path=OUTPUT,
+    bloomberg_export_path=BBG_PATH,   # or None / omit when no export is attached
+    # bloomberg_adjusted_names={"T Rowe Price Group Inc": "T. Rowe Price"},   # optional
+    # bloomberg_include_overrides={"Some Holder": 0},                         # optional
 )
 ```
 
 The builder writes the SEDI name (B), common shares (F, plain or sum formula), date (G), and adjusted
-name (J) into rows 39-65, and sets `F35`. It does **not** touch the display block (`B4:G17`), the
-include flags (H), the `=H*F` formulas (I), or the institutional side. (The shipped template is
-pre-cleaned of the vestigial external links / legacy defined names that would otherwise make the
-openpyxl output unopenable in Excel for the render — a regression test guards that it stays clean.)
+name (J) into rows 39-65, and sets `F35`. It does **not** touch the display blocks (`B4:G17`,
+`B19:G35`), the insider include flags (H39:H65), or the `=H*F` formulas (I). With a Bloomberg export
+it additionally copies the holder rows into the `Bloomberg Output` tab (values + number formats;
+capped at the template's 118 rows — the Summary View is position-sorted, so any truncated tail is the
+smallest holders), sets `H=0` with an audit comment on each SEDI-duplicate row, writes the adjusted
+names (J68+), and neutralises the unused link rows so the Select-Institutions `LARGE` block computes.
+(The shipped template is pre-cleaned of the vestigial external links / legacy defined names that would
+otherwise make the openpyxl output unopenable in Excel for the render — a regression test guards that
+it stays clean.)
 
-### Step 10 — Summary
+### Step 11 — Summary
 
 Report: output path; number of current insiders written (and how many ceased insiders were dropped);
 the total basic shares used for `F35` and its source (cap table, or "left blank — fill manually");
-any insider roles you could not verify; and the reminder that the **institutional / Bloomberg side of
-the slide is filled separately** (this skill fills only the insider side).
+any insider roles you could not verify; the Bloomberg side — export ingested or not, holders written,
+which rows were excluded as SEDI duplicates, any Bloomberg-flagged insiders that did **not** match a
+SEDI insider (kept included — analyst should confirm), any truncation past 118 holders, and any
+adjusted-name overrides applied. Without an export, remind the analyst the slide's Institutions side
+was left as a placeholder and can be filled by re-running with the Bloomberg attachment.
 
 ---
 
@@ -185,18 +233,24 @@ the slide is filled separately** (this skill fills only the insider side).
 | `G39:G65` | skill | Most recent common-share date |
 | `J39:J65` | skill | **Adjusted name + role** — what the slide shows (via `XLOOKUP`) |
 | `F35` | skill | Total basic shares outstanding (full units) — % denominator, from the cap table |
-| `H39:H65` | template | Include flag (1); analyst toggles to 0 to exclude a row — **do not change** |
-| `I39:I65` | template | `=H*F` helper feeding the top-12 `LARGE`/`XLOOKUP` — **do not change** |
-| `B4:G17` | template | Display block (top-12 insiders by common shares) — the slide picture range |
-| rows 67+ / `Bloomberg Output` | — | Institutional side (Bloomberg) — **out of scope** for this skill |
+| `H39:H65` | template | Insider include flag (1); analyst toggles to 0 to exclude a row — **do not change** |
+| `I39:I185` | template | `=H*F` helper feeding the top-12 `LARGE`/`XLOOKUP` — **do not change** |
+| `B4:G17` | template | Insiders display block (top 12 by common shares) — the slide's left picture range |
+| `B68:G185` | template | Bloomberg link rows — `B` = `='Bloomberg Output'!C14…`, `F`/`G` = `XLOOKUP` into Position / Filing Date — **do not change** (the builder blanks only the unused tail) |
+| `H68:H185` | skill (BBG) | Institution include flag — builder writes **0 + audit comment** on SEDI duplicates and on unused rows; analyst-directed overrides via `bloomberg_include_overrides` |
+| `J68:J185` | skill (BBG) | **Adjusted institution name** — suffix-stripped, or `bloomberg_adjusted_names` override |
+| `B19:G35` | template | Institutions display block (top 12 + subtotal + Other Shareholders + Total) — the slide's right picture range |
+| `Bloomberg Output` `C14:AC131` + info cells | skill (BBG) | The attached Bloomberg export's Summary View rows, copied verbatim (values + number formats) |
 
 ### Known limitations
 
-- The display block shows the **top 12 insiders by common shares**. If fewer than 12 current insiders
-  hold a positive common-share balance, the template's `XLOOKUP(0, …)` repeats the lowest-ranked name
-  in the empty slots. With a full current-insider list this does not occur; if it does, the analyst can
-  blank the surplus display rows.
+- The display blocks show the **top 12** insiders / institutions. If fewer than 12 rows carry a
+  positive included balance, the template's `XLOOKUP(0, …)` renders `0` / `--` in the surplus slots
+  (both sides). With a realistic SEDI list and Bloomberg pull this does not occur; if it does, the
+  analyst can blank the surplus display rows.
+- The `Bloomberg Output` tab holds **118 holders** (`C14:C131`); a longer export is truncated to the
+  118 largest (the Summary View is position-sorted) and the truncation is reported in the summary.
 - **Render fidelity:** the picture render uses Excel COM on Windows (full fidelity, native `XLOOKUP`)
   and LibreOffice headless elsewhere (Cowork). LibreOffice needs a recent build (24.8+) for `XLOOKUP`;
-  on older builds the insider **name** column may render blank — run the ownership stage on Windows +
-  Excel for production decks.
+  on older builds the insider/institution **name** columns may render blank — run the ownership stage
+  on Windows + Excel for production decks.
