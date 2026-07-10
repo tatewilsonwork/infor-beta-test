@@ -150,9 +150,13 @@ stages:
         description: Absolute path to the generated companion cap table .xlsx (with LTM revenue/EBITDA in D47/D48).
     checkpoint: informational
 
-  # Insider ownership (Canadian public targets only). Runs *after* captable so
-  # F35 (the % denominator) can be sourced from the cap table's basic shares.
-  # Parses the analyst-attached SEDI "Insider Information by Issuer" PDF. When
+  # Ownership (Canadian public targets only). Runs *after* captable so F35
+  # (the % denominator) can be sourced from the cap table's basic shares.
+  # Parses the analyst-attached SEDI "Insider Information by Issuer" PDF for
+  # the insider side and, when a Bloomberg ownership export is also attached,
+  # fills the institutional side too (Bloomberg Output tab + SEDI-duplicate
+  # exclusion — the SEDI figure always wins). No Bloomberg export -> insider-
+  # only workbook and the slide's Institutions side stays a placeholder. When
   # the target is not a Canadian issuer or no SEDI PDF is attached, the stage
   # emits a null workbook_path and the deck-assembler leaves the ownership
   # slide's placeholders in place — the rest of the deck still assembles.
@@ -165,7 +169,7 @@ stages:
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the ownership companion .xlsx (Select-Insiders block + F35); null when the target is not a Canadian issuer or no SEDI PDF was attached.
+        description: Absolute path to the ownership companion .xlsx (Select-Insiders block + F35, plus the Bloomberg Output tab when an export was attached); null when the target is not a Canadian issuer or no SEDI PDF was attached.
     checkpoint: informational
 
   # Public comparables (trading comps). Independent of the ltm/captable/ownership

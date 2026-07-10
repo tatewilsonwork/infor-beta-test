@@ -34,7 +34,8 @@ It lists **insiders** only — not the full shareholder base. Relationship codes
 | 8 | Deemed insider — 6 months before becoming an insider |
 
 There is **no sub-10% institutional or retail float** here — that is the Bloomberg-sourced
-institutional side of the slide, filled separately. The report is also **cumulative since ~2003**:
+institutional side of the slide, filled from the analyst-attached Bloomberg ownership export
+(SKILL.md Step 9). The report is also **cumulative since ~2003**:
 it includes long-departed insiders, which is why the current-insider filter (below) is essential.
 Balances are share/unit **counts only** — no prices.
 

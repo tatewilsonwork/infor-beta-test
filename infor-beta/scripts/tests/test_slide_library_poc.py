@@ -749,8 +749,63 @@ def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
     )
     text = _all_slides_text(prs)
     assert "[Placeholder for Insider Ownership]" not in text, "insider placeholder replaced"
-    # The institutional / Bloomberg side stays a placeholder (SEDI fills only insiders).
+    # No Bloomberg export was ingested, so the institutional side stays a placeholder.
     assert "[Placeholder for Institutional Ownership]" in text
+
+
+def test_pitch_deck_inserts_institutions_with_bloomberg(tmp_path: Path):
+    """With a Bloomberg export ingested, the ownership slide's right
+    "Institutions" placeholder (Rectangle 3) is replaced by the
+    Select-Institutions block picture alongside the insider side."""
+    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
+    import pywintypes
+    from openpyxl import Workbook
+
+    from ownership_workbook import build_ownership_workbook, InsiderHolding
+
+    # Minimal BBG Summary View export: one SEDI-duplicate insider + two institutions.
+    bbg_path = tmp_path / "bbg.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary View"
+    ws["E7"] = "Test Co Inc."
+    ws["E9"] = "TST CN EQUITY"
+    for col, header in {"C": "Holder Name", "L": "Position", "N": "Filing Date", "R": "Insider Status"}.items():
+        ws[f"{col}13"] = header
+    for i, (name, position, status) in enumerate(
+        [("Barrenechea Mark James", 1_219_092, "Y"), ("T Rowe Price Group Inc", 150_311, "N-P"), ("Kelso & Co LP", 14_983, "N-P")]
+    ):
+        ws[f"C{14 + i}"] = name
+        ws[f"L{14 + i}"] = position
+        ws[f"R{14 + i}"] = status
+    wb.save(bbg_path)
+
+    own_wb = build_ownership_workbook(
+        template_path=PLUGIN_ROOT / "templates" / "INFOR Ownership Template.xlsx",
+        insiders=[
+            InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),
+            InsiderHolding("Fowlie, Randy", "Randy Fowlie (Director)", [193000, 0], "2025-12-01"),
+        ],
+        total_shares_outstanding=261_000_000,
+        output_path=tmp_path / "Ownership.xlsx",
+        bloomberg_export_path=bbg_path,
+    )
+    try:
+        deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
+    except (pywintypes.com_error, RuntimeError) as exc:  # Excel/LibreOffice unavailable here
+        pytest.skip(f"range render backend unavailable in this environment: {exc}")
+
+    prs = Presentation(deck_path)
+    own_slide = prs.slides[8]
+    for placeholder in ("Rectangle 1", "Rectangle 3"):
+        assert next((s for s in own_slide.shapes if s.name == placeholder), None) is None, (
+            f"ownership placeholder {placeholder} should be replaced by a picture"
+        )
+    pictures = [s for s in own_slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    assert len(pictures) >= 2, "expected insider + institutions pictures on the ownership slide"
+    text = _all_slides_text(prs)
+    assert "[Placeholder for Insider Ownership]" not in text
+    assert "[Placeholder for Institutional Ownership]" not in text
 
 
 # ─── Overview bullets stay above the LTM revenue section ─────────────────────

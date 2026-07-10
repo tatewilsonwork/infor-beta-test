@@ -58,14 +58,19 @@ _CAP_TABLE_SHEET = "Cap with Links"
 _CAP_TABLE_RANGE = "B15:F40"
 
 # Insider-ownership slide. The left "Insiders" placeholder ('Rectangle 1') is
-# replaced by a picture of the ownership workbook's Select-Insiders block; the
-# right "Institutions" side ('Rectangle 3' / 'Picture 9') stays a Bloomberg
-# placeholder. The slide follows the Financial Summary slide, so its deck index
-# is fixed (independent of the market-entry slide count) after the earnings drop.
+# replaced by a picture of the ownership workbook's Select-Insiders block. The
+# right "Institutions" placeholder ('Rectangle 3') is replaced by the
+# Select-Institutions block (top-12 + subtotal + Other Shareholders + Total)
+# when the ownership stage ingested a Bloomberg export (Bloomberg Output C14
+# populated); otherwise it stays a Bloomberg placeholder. The slide follows the
+# Financial Summary slide, so its deck index is fixed (independent of the
+# market-entry slide count) after the earnings drop.
 _OWNERSHIP_SLIDE_INDEX = 8         # slide 9 — insider ownership
 _OWNERSHIP_PLACEHOLDER = "Rectangle 1"
 _OWNERSHIP_SHEET = "Ownership"
 _OWNERSHIP_RANGE = "B4:G17"
+_INSTITUTIONS_PLACEHOLDER = "Rectangle 3"
+_INSTITUTIONS_RANGE = "B19:G35"
 
 
 def _bullet_tuple(bullet) -> tuple[str, int]:
@@ -341,6 +346,29 @@ def _output_currency_letter(workbook_path) -> str:
     return "C"
 
 
+def _ownership_has_bloomberg(workbook_path) -> bool:
+    """True when the ownership workbook carries Bloomberg institutional data.
+
+    The ownership skill only populates the ``Bloomberg Output`` tab (first
+    holder in ``C14``) when the analyst attached a Bloomberg export, so an
+    empty C14 means the Select-Institutions block is uncomputed and the
+    slide's right side must stay a placeholder.
+    """
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(workbook_path, read_only=True)
+        try:
+            if "Bloomberg Output" not in wb.sheetnames:
+                return False
+            value = wb["Bloomberg Output"]["C14"].value
+        finally:
+            wb.close()
+        return value is not None and str(value).strip() != ""
+    except Exception:
+        return False
+
+
 def _fill_market_entry_targets(
     slide,
     *,
@@ -455,7 +483,9 @@ def assemble_pitch_deck(
     ``content.market_entry_targets``. The cap table is pasted into slide 7 when
     ``captable_workbook_path`` is supplied, and the insider-ownership table into
     the ownership slide when ``ownership_workbook_path`` is supplied (both via the
-    ``excel_to_powerpoint`` insertion helper); other chart/table insertions remain
+    ``excel_to_powerpoint`` insertion helper). When the ownership workbook also
+    carries Bloomberg institutional data, the Select-Institutions block is pasted
+    into the slide's right placeholder too; other chart/table insertions remain
     deferred placeholders.
 
     ``financial_metric_labels`` are the four Financial Summary tile labels,
@@ -606,8 +636,11 @@ def assemble_pitch_deck(
 
     # Paste the insider-ownership table into the ownership slide's left
     # "Insiders" placeholder (mirrors the cap-table insertion). The ownership
-    # slide follows the Financial Summary slide at a fixed deck index; the
-    # institutional/right side is left as a Bloomberg placeholder.
+    # slide follows the Financial Summary slide at a fixed deck index. When the
+    # ownership stage also ingested a Bloomberg export (Bloomberg Output C14
+    # populated), the right "Institutions" placeholder gets the
+    # Select-Institutions block too; otherwise it stays a Bloomberg placeholder.
+    institutions_inserted = False
     if ownership_workbook_path is not None:
         insert_excel_into_placeholder(
             deck_path=output_path,
@@ -618,17 +651,33 @@ def assemble_pitch_deck(
             sheet_name=_OWNERSHIP_SHEET,
             source_range=_OWNERSHIP_RANGE,
         )
+        if _ownership_has_bloomberg(ownership_workbook_path):
+            insert_excel_into_placeholder(
+                deck_path=output_path,
+                workbook_path=ownership_workbook_path,
+                output_path=output_path,
+                slide_index=_OWNERSHIP_SLIDE_INDEX,
+                placeholder_name=_INSTITUTIONS_PLACEHOLDER,
+                sheet_name=_OWNERSHIP_SHEET,
+                source_range=_INSTITUTIONS_RANGE,
+            )
+            institutions_inserted = True
 
     _verify_pitch_output(
         output_path,
         cap_table_inserted=captable_workbook_path is not None,
         ownership_inserted=ownership_workbook_path is not None,
+        institutions_inserted=institutions_inserted,
     )
     return output_path
 
 
 def _verify_pitch_output(
-    path: Path, *, cap_table_inserted: bool = False, ownership_inserted: bool = False
+    path: Path,
+    *,
+    cap_table_inserted: bool = False,
+    ownership_inserted: bool = False,
+    institutions_inserted: bool = False,
 ) -> None:
     prs = Presentation(path)
     text = _all_text(prs)
@@ -643,9 +692,6 @@ def _verify_pitch_output(
         # The precedent-transactions slide stays a chart placeholder, like comps
         # (no Excel→PowerPoint while Capital IQ can't be refreshed here).
         "[Placeholder for Precedents Chart]",
-        # The ownership slide's institutional side is always a Bloomberg
-        # placeholder (the SEDI pipeline fills only the insider side).
-        "[Placeholder for Institutional Ownership]",
     ]
     missing = [token for token in required_placeholders if token not in text]
     if missing:
@@ -660,3 +706,10 @@ def _verify_pitch_output(
         raise ValueError("ownership slide insider placeholder was not replaced by the Excel insertion stage")
     if not ownership_inserted and not has_insider_placeholder:
         raise ValueError("ownership slide insider placeholder must remain when no workbook is supplied")
+    # The ownership slide's institutional side is filled only when the ownership
+    # stage ingested a Bloomberg export; otherwise it must stay a placeholder.
+    has_institutions_placeholder = "[Placeholder for Institutional Ownership]" in text
+    if institutions_inserted and has_institutions_placeholder:
+        raise ValueError("ownership slide institutions placeholder was not replaced by the Excel insertion stage")
+    if not institutions_inserted and not has_institutions_placeholder:
+        raise ValueError("ownership slide institutions placeholder must remain without Bloomberg data")
