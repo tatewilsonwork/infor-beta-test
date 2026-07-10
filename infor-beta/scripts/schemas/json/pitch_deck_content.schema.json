@@ -2,13 +2,13 @@
   "$defs": {
     "InvestmentHighlight": {
       "additionalProperties": false,
-      "description": "One numbered quadrant on the Key Investment Highlights slide.",
+      "description": "One numbered quadrant on the Key Investment Highlights slide.\n\nAt most TWO bullets per quadrant (analyst-locked; three crowded the boxes).",
       "properties": {
         "bullets": {
           "items": {
             "type": "string"
           },
-          "maxItems": 3,
+          "maxItems": 2,
           "minItems": 1,
           "title": "Bullets",
           "type": "array"

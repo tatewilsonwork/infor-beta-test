@@ -620,6 +620,67 @@ def test_slide10_risk_table_uses_library_font_sizes(tmp_path: Path):
             assert run.font.size == Pt(10), "risk/mitigant body must be 10 pt"
 
 
+def test_investment_highlights_reject_third_bullet():
+    # v0.5.24: at most TWO bullets per KIH quadrant — three crowded the boxes.
+    base = _sample_content().model_dump()
+    base["investment_highlights"][0]["bullets"] = [
+        "High retention across multi-year contracts",
+        "Predictable cash conversion through cycles",
+        "A third bullet the schema must now reject",
+    ]
+    with pytest.raises(ValidationError):
+        PitchDeckContent.model_validate(base)
+
+
+def _library_risk_table_height() -> int:
+    """The library's shipped slide-10 table height (5.18" — the analyst-locked
+    render height for the Considerations/Mitigants table)."""
+    lib = Presentation(TEMPLATE)
+    frame = next(s for s in lib.slides[10].shapes if getattr(s, "has_table", False))
+    return frame.height
+
+
+def test_slide10_risk_table_clamped_to_library_height(tmp_path: Path):
+    # v0.5.24: the filled table is clamped back to the library's 5.18" — long
+    # mitigant copy re-grew rows past the declared heights (a stored row height
+    # is only a render-time minimum) and a live run rendered 5.36".
+    target = _library_risk_table_height()
+    assert abs(Emu(target).inches - 5.18) < 0.02, "library slide-10 table must ship at ~5.18 in"
+    deck_path = _assemble(tmp_path, _sample_content())
+    frame = next(
+        s for s in Presentation(deck_path).slides[9].shapes if getattr(s, "has_table", False)
+    )
+    assert frame.height == target, "risk table frame must land on the library height"
+    assert sum(r.height for r in frame.table.rows) == target, "row heights must sum to the target"
+
+
+def test_slide10_risk_table_steps_font_down_when_content_over_tall(tmp_path: Path):
+    # Five rows of three near-cap (160-char) mitigants cannot render inside the
+    # 5.18" clamp at the template's 10 pt — the body steps down (header stays
+    # 12 pt) instead of letting PowerPoint re-grow the table past the clamp.
+    long_mitigant = (
+        "Demonstrate the durability of the platform through multi-year cohort retention, "
+        "audited unit economics and a fully documented regulatory compliance record"
+    )
+    base = _sample_content().model_dump()
+    base["risk_mitigants"] = [
+        {"risk": f"Detailed acquiror consideration number {i} on diligence depth", "mitigants": [long_mitigant] * 3}
+        for i in range(1, 6)
+    ]
+    deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(base))
+    frame = next(
+        s for s in Presentation(deck_path).slides[9].shapes if getattr(s, "has_table", False)
+    )
+    table = frame.table
+    header_run = table.cell(0, 0).text_frame.paragraphs[0].runs[0]
+    assert header_run.font.size == Pt(12), "header must stay 12 pt"
+    body_run = table.cell(1, 1).text_frame.paragraphs[0].runs[0]
+    assert body_run.font.size in (Pt(9), Pt(8)), "over-tall body copy must step below 10 pt"
+    target = _library_risk_table_height()
+    assert frame.height == target, "the stepped-down table still lands on the library height"
+    assert sum(r.height for r in table.rows) == target
+
+
 def test_pitch_wireframe_expands_market_entry_slides():
     plan = build_pitch_deck_slide_plan(
         company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),

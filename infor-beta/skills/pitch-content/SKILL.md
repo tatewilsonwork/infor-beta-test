@@ -1,7 +1,7 @@
 ---
 name: pitch-content
 description: Drafts the broad typed content bundle for the 16-slide INFOR slide-library POC deck from analyst notes and optional supporting sources.
-version: 0.5.23
+version: 0.5.24
 allowed-tools:
   - Read
   - Write
@@ -36,10 +36,10 @@ Scope:
 - Executive Summary bullets: flexible count; choose main/sub-bullets.
 - Public-company overview bullets: concise description of who the company is and what it does. **Budget ≈ 950 characters / ≤ 7 bullets total** — the box shares the overview slide with the LTM revenue pie, and the assembler shrinks over-long copy to fit the band (a fit is guaranteed, but past the budget the text renders noticeably smaller than the rest of the deck).
 - Financial Summary metric labels: **not your job** — the `financial-summary` stage selects the four metrics and emits their labels, so the deck reads them from that stage, not from this content bundle. Do not draft them here.
-- Acquirer risks/mitigants: **draft five rows** — the slide-10 table has five body rows, so five consideration/mitigant pairs fill it (the schema allows 1–5; fewer leaves blank rows at the bottom, which is what we're avoiding). Each row has exactly three mitigants. Each mitigant should be **one very short sentence** (roughly one line, up to ~160 chars) — not a terse fragment, but not a paragraph either.
+- Acquirer risks/mitigants: **draft five rows** — the slide-10 table has five body rows, so five consideration/mitigant pairs fill it (the schema allows 1–5; fewer leaves blank rows at the bottom, which is what we're avoiding). Each row has exactly three mitigants. Each mitigant should be **one very short sentence**, and the budget that matters is width: **aim for ≤ ~85 characters per mitigant** (the schema's hard cap is 160). The table is clamped to the template's fixed 5.18" height; a mitigant past ~85 chars wraps to a second line, and once the rows can't fit the assembler steps the body font down from the template's 10 pt — the table stays 5.18" but reads smaller than the rest of the deck.
 - Comps takeaway: one sentence.
 - Precedents takeaway: one sentence — the precedent-transactions slide's one-line takeaway (mirrors the comps takeaway; the chart stays a placeholder).
-- Key investment highlights: up to 4 numbered quadrants, each a short header + 1–3 concise bullets, plus an optional one-line tagline. Optional — omit to leave the slide's placeholders.
+- Key investment highlights: up to 4 numbered quadrants, each a short header + **1–2 concise bullets** (the schema rejects a third — three crowded the quadrant boxes), plus an optional one-line tagline. Optional — omit to leave the slide's placeholders.
 - Market-entry targets: optional `market_entry_market` (fills the title), `market_entry_row_labels`, and the target columns. **When the analyst does not specify how many acquisition targets they want, draft 8** (filling 4 slides, two targets per slide); otherwise draft the number requested, up to a maximum of **8**. Each target carries an optional `name` (the company name) plus `cells` that align 1:1 with the labels. Set `name` from the target's heading in the analyst notes — it labels the slide's logo box as `[<name> Logo]` (e.g. `[Kueski Logo]`) so the analyst knows which logo to drop in; omit it only when the company is unnamed (it then falls back to a generic `[Company Name Logo]`). The deck lays targets out **two per slide** (`ceil(N/2)` market-entry slides, titled `Potential <Market> Market Entry Targets (N of M)`).
   - `market_entry_row_labels` is a **fixed 12-row structure**, in this exact order:
     1. `Overview` — very short description of who the target is

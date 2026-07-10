@@ -2,6 +2,21 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.24] — 2026-07-10
+
+Three formatting fixes from the Project PRL18 Cowork test run (pitch deck), each confirmed against the analyst's actual output file.
+
+### Fixed
+- **Overview LTM-revenue pie data labels sit INSIDE their slices, in white.** The labels used Excel's Best Fit position, which floats a small slice's label outside the pie (the PRL18 render had `8.8%` and `3.4%` outside their sections) — and the black font is unreadable once a label is pinned inside the dark accent fills. Both builders now place labels Inside End in white Palatino 9: COM sets `xlLabelPositionInsideEnd` + a white label font, openpyxl sets the series-level `dLblPos="inEnd"` + a white label `txPr` (verified to survive the `_persist_native_charts_openpyxl` load→save round-trip, alongside the numFmt and the per-point >3% suppression). The legend keeps its black Palatino 8; the value-only "%" label format is unchanged. (`scripts/financial_charts.py`)
+- **The Considerations/Mitigants table renders at the library's 5.18" (PRL18 rendered 5.36").** Same mechanism as the v0.5.23 market-entry fix, previously unfixed on slide 10: a stored row height is only a render-time MINIMUM, and mitigants near ~100+ chars wrap to two lines each at 10 pt, re-growing their rows past the library's declared heights (PRL18's row 2 grew 0.90"→1.12"). The assembler's new `_fill_risk_table` estimates each row's rendered content height, steps the body font down 10→9→8 pt until the rows can fit (the header row stays 12 pt), writes the cells at that size, then clamps the declared rows back to exactly the library's shipped height with the estimates as per-row floors (the growth-aware `_set_table_height`). Verified by assembling the real PRL18 risk content: 5.17" declared (PowerPoint's Size pane reads 5.18"), body 9 pt, every declared row ≥ its content estimate — nothing left for PowerPoint to re-grow. `pitch-content` gains the budget note that keeps a clean run at the template's 10 pt: aim ≤ ~85 chars per mitigant (the schema's 160-char hard cap is unchanged). (`scripts/pitch_deck_assembler.py`, `skills/pitch-content/SKILL.md`, `skills/deck-assembler/SKILL.md`)
+
+### Changed
+- **Key Investment Highlights: at most 2 bullets per quadrant (was 3).** Three bullets crowd the four quadrant boxes — `InvestmentHighlight.bullets` drops `max_length` 3→2, so the schema now rejects a third bullet outright; `pitch-content` guidance updated (1–2 concise bullets) and the JSON-Schema views regenerated. (`scripts/schemas/pitch_deck_content.py`, `scripts/schemas/json/pitch_deck_content.schema.json`, `skills/pitch-content/SKILL.md`)
+
+### Tests
+- `test_financial_charts.py`: `test_pie_labels_inside_end_and_white` (dLblPos `inEnd`, white label `txPr`, legend stays black).
+- `test_slide_library_poc.py`: `test_slide10_risk_table_clamped_to_library_height` (frame + row sum land on the library's ~5.18"), `test_slide10_risk_table_steps_font_down_when_content_over_tall` (near-cap mitigants step the body below 10 pt, clamp still holds, header stays 12 pt), `test_investment_highlights_reject_third_bullet`.
+
 ## [0.5.23] — 2026-07-09
 
 Five fixes from the Project PRL17 Cowork test run (pitch deck + combined workbook), each root-caused against the analyst's actual output files and verified empirically (Excel repair-open oracle, PowerPoint-rendered geometry/text extents, real chart PNG exports).
