@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.23
+version: 0.5.24
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -61,7 +61,7 @@ When invoked by the conductor, read:
 - Slide 7: company overview bullets — the assembler sizes the bullets box to the band above the "LTM Revenue Breakdown" header and, when the copy is over-long, writes an **explicit autofit `fontScale`** (`pptx_helpers.fit_overview_textbox`; PowerPoint ignores a scale-less `<a:normAutofit/>` on open, which is how live runs rendered overview copy through the pie section). Do not hand-resize this box or hand-tune its scale — the fit is deterministic. The cap table is pasted into the `Rectangle 3` placeholder when `captable_workbook_path` is supplied (`slide_index=6`, range `B15:F40`), and the `[x]$MM` footnote token is set to the cap table's output currency (`US` / `C`, read from `F5`). The LTM revenue pie stays a deferred placeholder.
 - Slide 8: financial metric **NAME** labels only, taken from the `financial_metric_labels` stage input (the `financial-summary` stage's output, not the content bundle). The four chart placeholders are left as-is here; they are filled by the downstream **`financial-charts`** stage, which runs after `workbook-aggregation` (the charts can only be drawn once the combined workbook's `financial-summary` LTM links resolve against the folded-in `ltm-metrics` tab).
 - Slide 9: ownership slide (Canadian public targets) — **follows the Financial Summary slide**. When `ownership_workbook_path` is supplied, the left **"Insiders"** placeholder (`Rectangle 1`) is replaced by a picture of the ownership workbook's Select-Insiders block (sheet `Ownership`, range `B4:G17`, fixed `slide_index = _OWNERSHIP_SLIDE_INDEX = 8`). The right **"Institutions"** side stays a Bloomberg-sourced placeholder.
-- Slide 10: concise risks/mitigants + tagline.
+- Slide 10: concise risks/mitigants + tagline. After the cells are filled the table is clamped back to the library's **5.18"** total height, growth-aware like the market-entry clamp (declared rows floored at their estimated content heights); when the content can't fit at the template's 10 pt the body font steps down 10→9→8 pt first (header stays 12 pt). Do not hand-resize this table.
 - Slide 11: comps takeaway; chart placeholder stays unless insertion replaces it later.
 - Slide 12: precedent-transactions takeaway (`precedents_takeaway` from the content bundle); the chart area stays a placeholder like comps (no Excel→PowerPoint while CapIQ can't be refreshed).
 - Slide 13: key investment highlights (filled when content supplies them).

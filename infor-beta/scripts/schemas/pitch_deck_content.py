@@ -48,12 +48,15 @@ class RiskMitigantRow(BaseModel):
 
 
 class InvestmentHighlight(BaseModel):
-    """One numbered quadrant on the Key Investment Highlights slide."""
+    """One numbered quadrant on the Key Investment Highlights slide.
+
+    At most TWO bullets per quadrant (analyst-locked; three crowded the boxes).
+    """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     header: str = Field(..., min_length=1, max_length=90)
-    bullets: list[str] = Field(..., min_length=1, max_length=3)
+    bullets: list[str] = Field(..., min_length=1, max_length=2)
 
     @field_validator("bullets")
     @classmethod

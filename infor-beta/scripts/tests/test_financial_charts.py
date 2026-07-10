@@ -427,6 +427,23 @@ def test_pie_data_labels_show_value_only_with_percent_format(tmp_path: Path):
     assert not labels.dLbl
 
 
+def test_pie_labels_inside_end_and_white(tmp_path: Path):
+    # v0.5.24: every pie label sits INSIDE its slice (Best Fit floated the
+    # small-slice labels outside the pie in the live run) and renders white —
+    # black is unreadable inside the dark accent fills. The legend keeps its
+    # black Palatino 8.
+    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    first, last = ltm_revenue_overview_range(ws)
+    pie = _make_openpyxl_pie(ws, first, last)
+    labels = pie.series[0].dLbls
+    assert labels.dLblPos == "inEnd"
+    label_font = labels.txPr.p[0].pPr.defRPr
+    assert label_font.solidFill.srgbClr == "FFFFFF"
+    assert label_font.latin.typeface == "Palatino Linotype"
+    legend_font = pie.legend.txPr.p[0].pPr.defRPr
+    assert legend_font.solidFill.srgbClr == "000000"
+
+
 def _assert_label_suppressed(label):
     """A per-point all-show-flags-off override — nothing rendered for the slice."""
     assert label.showVal is False

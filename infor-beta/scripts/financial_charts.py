@@ -141,6 +141,11 @@ _PIE_LEGEND_FONT_SIZE_PT = 8
 # Only slices whose share of the total is ABOVE this threshold carry a data
 # label — the tiny-slice labels overlap each other in the short overview box.
 _PIE_LABEL_MIN_FRACTION = 0.03
+# Pie data labels sit INSIDE their slice in white: Excel's Best Fit placed the
+# small-slice labels outside the pie (the live-run "8.8% / 3.4% float outside
+# their sections" report), and a label pinned inside a dark accent slice needs
+# white to read. The clustered-column labels stay black/Outside End.
+_PIE_LABEL_COLOR = "FFFFFF"
 # Pie plot-area manual layout, as fractions of the chart area: pin the pie to
 # the LEFT of the chart box so it sits clear of the right-docked legend (the
 # auto-layout centers the pie in this wide/short box, where it can collide with
@@ -176,7 +181,7 @@ _XL_PIE = 5
 _XL_CATEGORY = 1
 _XL_VALUE = 2
 _XL_LABEL_OUTSIDE_END = 2
-_XL_LABEL_BEST_FIT = 5
+_XL_LABEL_INSIDE_END = 3
 _XL_LEGEND_RIGHT = -4152
 _MSO_FALSE = 0
 _MSO_TRUE = -1
@@ -957,10 +962,11 @@ def _format_com_pie(chart, series, n_points: int, fractions: list) -> None:
         except Exception:
             pass
 
-    # Value-only data labels, Palatino 9. The series is the source block's
-    # "% of Total" fraction column, so ShowValue + a "%" number format renders
-    # e.g. 0.452 as "45.2%" (ShowPercentage is off — we want the cell's own
-    # value, not a recomputed share).
+    # Value-only data labels, Palatino 9 white, pinned INSIDE their slice. The
+    # series is the source block's "% of Total" fraction column, so ShowValue +
+    # a "%" number format renders e.g. 0.452 as "45.2%" (ShowPercentage is off —
+    # we want the cell's own value, not a recomputed share). Inside End instead
+    # of Best Fit: Best Fit pushed the small-slice labels outside the pie.
     # Set the flags directly on the DataLabels object: under late-binding COM,
     # ApplyDataLabels(ShowValue=...) keyword args silently do nothing.
     try:
@@ -972,10 +978,10 @@ def _format_com_pie(chart, series, n_points: int, fractions: list) -> None:
         labels.ShowSeriesName = False
         labels.ShowLegendKey = False
         labels.NumberFormat = _PIE_LABEL_FORMAT
-        labels.Position = _XL_LABEL_BEST_FIT
+        labels.Position = _XL_LABEL_INSIDE_END
         labels.Font.Name = _FONT_NAME
         labels.Font.Size = _FONT_SIZE_PT
-        labels.Font.Color = 0
+        labels.Font.Color = _hex_to_com_bgr(_PIE_LABEL_COLOR)
     except Exception:
         pass
 
@@ -1171,9 +1177,10 @@ def _openpyxl_no_border_black_axis(chart) -> None:
     )
 
 
-def _palatino_text(size_hundredths: int = _FONT_SIZE_HUNDREDTHS):
-    """A RichText carrying Palatino Linotype black default run properties
-    (9 pt unless overridden — the pie legend passes 8 pt)."""
+def _palatino_text(size_hundredths: int = _FONT_SIZE_HUNDREDTHS, color: str = "000000"):
+    """A RichText carrying Palatino Linotype default run properties (9 pt black
+    unless overridden — the pie legend passes 8 pt; the pie data labels pass
+    white, since they sit inside the accent-filled slices)."""
     from openpyxl.chart.text import RichText
     from openpyxl.drawing.text import (
         CharacterProperties,
@@ -1185,7 +1192,7 @@ def _palatino_text(size_hundredths: int = _FONT_SIZE_HUNDREDTHS):
     cp = CharacterProperties(
         latin=DrawingFont(typeface=_FONT_NAME),
         sz=size_hundredths,
-        solidFill="000000",
+        solidFill=color,
     )
     return RichText(p=[Paragraph(pPr=ParagraphProperties(defRPr=cp), endParaRPr=cp)])
 
@@ -1372,7 +1379,8 @@ def _style_openpyxl_pie(chart, n_points: int, fractions: list | None = None) -> 
     """INFOR pie formatting: no title, accent slice fills, right-docked legend with
     the pie's plot area pinned to the left of the chart box (clear of the legend),
     and value-only "%" labels (the series is the source block's "% of Total" fraction, so
-    a value label with a "%" number format reads e.g. "45.2%") on the slices whose
+    a value label with a "%" number format reads e.g. "45.2%") — white, pinned
+    Inside End so no label floats outside its slice — on the slices whose
     share is above the 3% threshold — ``fractions`` decides which; smaller slices
     get a per-point all-show-flags-off override (openpyxl 3.1 does not model
     CT_DLbl's ``<c:delete>``, and unlike that shape this one survives the
@@ -1430,7 +1438,10 @@ def _style_openpyxl_pie(chart, n_points: int, fractions: list | None = None) -> 
     labels.showSerName = False
     labels.showLegendKey = False
     labels.numFmt = _PIE_LABEL_FORMAT
-    labels.txPr = _palatino_text()
+    # Inside End in white — Best Fit (the pie default) floats small-slice
+    # labels outside the pie, and inside a dark accent slice black is unreadable.
+    labels.dLblPos = "inEnd"
+    labels.txPr = _palatino_text(color=_PIE_LABEL_COLOR)
     if fractions is not None:
         labels.dLbl = [
             DataLabel(

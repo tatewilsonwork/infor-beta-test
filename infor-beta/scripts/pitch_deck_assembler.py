@@ -258,11 +258,64 @@ def _me_cell_min_height_in(
         lines += max(1, math.ceil(width / usable_width_in))
     return lines * font_pt * _ME_LINE_HEIGHT_EM / 72 + _ME_CELL_TB_INSETS_IN
 
-# Slide 9 Considerations/Mitigants table sizing. The library ships the header row
-# at 12 pt and the body cells at 10 pt; the old code hardcoded 9 pt / 8 pt, which
-# rendered noticeably smaller than the template.
+# Slide 10 Considerations/Mitigants table sizing. The library ships the header
+# row at 12 pt and the body cells at 10 pt; the old code hardcoded 9 pt / 8 pt,
+# which rendered noticeably smaller than the template.
 _RISK_HEADER_SIZE = 12
 _RISK_BODY_SIZE = 10
+# The table must render at the library's shipped height (5.17", PowerPoint's
+# Size pane shows 5.18") — a stored row height is only a render-time MINIMUM,
+# so long mitigant copy re-grows its row and the whole table with it (a live
+# run rendered 5.36"). When the estimated content heights don't fit at 10 pt,
+# the body steps down until they do (the header row stays 12 pt), then the
+# declared rows are clamped back to the library height with the estimates as
+# per-row floors (mirrors the market-entry treatment).
+_RISK_BODY_SIZE_STEPS = (_RISK_BODY_SIZE, 9, 8)
+
+
+def _fill_risk_table(slide, content: PitchDeckContent) -> None:
+    """Fill the Considerations/Mitigants table and clamp it to the library height.
+
+    Estimates each row's rendered height from its widest cell (risk vs. joined
+    mitigants), steps the body font down ``_RISK_BODY_SIZE_STEPS`` until the
+    estimates fit the library's shipped table height, writes the cells at that
+    size, then scales the declared row heights back to exactly the library
+    height with the estimates as per-row content floors — so the rendered
+    table always lands on the library's 5.18".
+    """
+    table_frame = find_table_shape(slide)
+    table = table_frame.table
+    library_height = table_frame.height  # the library ships this table at 5.18"
+
+    header = ("Considerations", "Mitigants")
+    max_rows = min(len(content.risk_mitigants), len(table.rows) - 1)
+    body = [
+        (row.risk, "\n".join(row.mitigants)) for row in content.risk_mitigants[:max_rows]
+    ]
+    body += [("", "")] * (len(table.rows) - 1 - len(body))
+    usable = [Emu(col.width).inches - _ME_CELL_SIDE_INSETS_IN for col in table.columns]
+
+    def row_minimums(body_pt: int) -> list[int]:
+        sized_rows = [(header, _RISK_HEADER_SIZE)] + [(cells, body_pt) for cells in body]
+        return [
+            Inches(max(_me_cell_min_height_in(text, usable[c], pt) for c, text in enumerate(cells)))
+            for cells, pt in sized_rows
+        ]
+
+    body_size = _RISK_BODY_SIZE_STEPS[0]
+    minimums = row_minimums(body_size)
+    for pt in _RISK_BODY_SIZE_STEPS[1:]:
+        if sum(minimums) <= library_height:
+            break
+        body_size = pt
+        minimums = row_minimums(pt)
+
+    set_cell_text(table.cell(0, 0), header[0], size_pt=_RISK_HEADER_SIZE)
+    set_cell_text(table.cell(0, 1), header[1], size_pt=_RISK_HEADER_SIZE)
+    for idx, (risk, mitigants) in enumerate(body):
+        set_cell_text(table.cell(idx + 1, 0), risk, size_pt=body_size)
+        set_cell_text(table.cell(idx + 1, 1), mitigants, size_pt=body_size)
+    _set_table_height(table_frame, library_height, minimums)
 
 
 def _output_currency_letter(workbook_path) -> str:
@@ -498,20 +551,11 @@ def assemble_pitch_deck(
         for shape_name, label in zip(metric_shapes, financial_metric_labels, strict=True):
             set_text(find_shape(slide8, shape_name), [label])
 
-    # Slide 10 — concise acquirer risks and mitigants + tagline.
+    # Slide 10 — concise acquirer risks and mitigants + tagline; the table is
+    # clamped back to the library's 5.18" after fill (see _fill_risk_table).
     slide10 = prs.slides[9]
     set_text(find_shape(slide10, "Text Placeholder 6"), [content.risks_tagline])
-    table = find_table_shape(slide10).table
-    set_cell_text(table.cell(0, 0), "Considerations", size_pt=_RISK_HEADER_SIZE)
-    set_cell_text(table.cell(0, 1), "Mitigants", size_pt=_RISK_HEADER_SIZE)
-    max_rows = min(len(content.risk_mitigants), len(table.rows) - 1)
-    for idx in range(max_rows):
-        row = content.risk_mitigants[idx]
-        set_cell_text(table.cell(idx + 1, 0), row.risk, size_pt=_RISK_BODY_SIZE)
-        set_cell_text(table.cell(idx + 1, 1), "\n".join(row.mitigants), size_pt=_RISK_BODY_SIZE)
-    for idx in range(max_rows + 1, len(table.rows)):
-        set_cell_text(table.cell(idx, 0), "", size_pt=_RISK_BODY_SIZE)
-        set_cell_text(table.cell(idx, 1), "", size_pt=_RISK_BODY_SIZE)
+    _fill_risk_table(slide10, content)
 
     # Slide 11 — comps takeaway; chart placeholder remains unless insertion later replaces it.
     slide11 = prs.slides[10]

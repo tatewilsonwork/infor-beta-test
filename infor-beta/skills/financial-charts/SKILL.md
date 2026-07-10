@@ -7,7 +7,7 @@ description: >
   renders them into the slide's four chart placeholders. It also builds the overview slide's LTM
   revenue-by-segment pie on the combined workbook's `ltm-metrics` tab and drops it into the
   "[Pie Chart Placeholder]". Runs after `workbook-aggregation`.
-version: 0.5.23
+version: 0.5.24
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -145,8 +145,10 @@ grouped fractions from the literal $ column — the analyst's workbook still cha
   entries that its undersized auto-layout box wouldn't fit; **no** chart title; **no** chart border
 - Slice fills from the **INFOR theme accent palette** (`pptx_helpers.INFOR_ACCENTS`:
   `0E213F, 46566E, ADB9CA, A4844B, 767171, E5E3E3`), in order
-- Palatino 9 data labels; **value-only** (percentage / category / series / legend-key flags off),
-  number format `#,##0.0%_);(#,##0.0%);"--"` so the fraction reads e.g. `45.2%`
+- Palatino 9 data labels in **white**, position **Inside End** — every label sits inside its own
+  slice (Best Fit floated the small-slice labels outside the pie); **value-only** (percentage /
+  category / series / legend-key flags off), number format `#,##0.0%_);(#,##0.0%);"--"` so the
+  fraction reads e.g. `45.2%`
 - Data labels **only on slices larger than 3%** of the total — smaller slices carry no label
   (their labels overlap each other in the short box); the slice itself still renders
 
@@ -167,8 +169,8 @@ skipped and the placeholder is left in place (the null path).
    - **Overview (slide 6):** the pie filled the placeholder; **at most 5 slices** (top 4 +
      "Other"); legend on the **right** showing **every** slice's entry (including "Other") with
      the pie sitting **clear of it** (no overlap); INFOR accent slice fills; labels read as
-     percentages (`45.2%`) and appear **only on slices above 3%**; no title / no border; reads
-     legibly in the wide/short box.
+     percentages (`45.2%`) in **white, inside their slices** (none floating outside the pie) and
+     appear **only on slices above 3%**; no title / no border; reads legibly in the wide/short box.
    - **Financial Summary (slide 7):** all four charts landed; INFOR formatting (bars `46566E`, data
      labels outside-end reading **`$102.7`-style currency** exactly like the tab's cells, **no
      border**, a **visible solid black** category-axis baseline line under the bars, no value
