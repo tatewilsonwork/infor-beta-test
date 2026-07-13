@@ -2,26 +2,29 @@
 name: financial-summary
 description: >
   Use this skill to build the INFOR Financial Summary data tab for a target — the chart-ready
-  companion behind the pitch deck's Financial Summary slide. Activates on /financial-summary and
-  as the pitch plan `financial-summary` stage. Selects the four most relevant metrics for the
-  target (industry-aware: operating company vs. financial institution), gathers their last five
-  fiscal years from the latest 10-Ks plus an LTM column, and emits the four metric labels the deck
-  tiles use. The single source of truth for the deck's four financial metrics.
-version: 0.5.25
+  companion behind the pitch deck's Financial Summary slide(s). Activates on /financial-summary and
+  as the pitch plan `financial-summary` stage. Selects the most relevant metrics for the target
+  (four per Financial Summary slide: 4 by default, 8 when the deck spec asks for two slides;
+  industry-aware: operating company vs. financial institution), gathers their last five fiscal
+  years from the latest 10-Ks plus an LTM column, and emits the metric labels the deck tiles use.
+  The single source of truth for the deck's financial metrics.
+version: 0.5.26
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
 # Financial Summary — Workflow & Domain Knowledge
 
-This skill produces one **"Financial Summary"** Excel tab: the **four metrics** it selects as most
-relevant to the target, each with its **last five fiscal years** and an **LTM** column. The tab is
-laid out *chart-ready* so a later step can drop native Excel charts on it with no reshaping. This
-stage is the **single source of truth** for those four metrics — it emits their labels, and the
-deck's Financial Summary tiles read them from here (no longer from `pitch-content`).
+This skill produces one **"Financial Summary"** Excel tab: the **metrics** it selects as most
+relevant to the target — **four per deck Financial Summary slide**, so 4 (the default single
+slide) or 8 (the deck spec's two-slide option, passed in as `financial_metric_count`) — each with
+its **last five fiscal years** and an **LTM** column. The tab is laid out *chart-ready* so a later
+step can drop native Excel charts on it with no reshaping. This stage is the **single source of
+truth** for those metrics — it emits their labels, and the deck's Financial Summary tiles read
+them from here (no longer from `pitch-content`).
 
-> **It does not build charts and does not touch PowerPoint.** Slide 8's chart regions stay
+> **It does not build charts and does not touch PowerPoint.** The FS slides' chart regions stay
 > placeholders; a later task builds the charts off this tab. This stage produces only the data tab
-> plus the four labels.
+> plus the labels.
 
 > **Where the LTM value comes from.** LTM is computed on the **`ltm-metrics`** tab (the LTM bridge:
 > `FY + current-YTD − prior-YTD`) and **linked** here by a label-keyed formula — not re-derived.
@@ -38,8 +41,10 @@ When invoked as a stage of a conductor plan, the environment carries `$STAGE_INP
 `$STAGE_OUTPUTS`, and `$DEAL_DIR`:
 
 - Read inputs from `$STAGE_INPUTS`: `company` (the subject-company facts), `ticker` (used only to
-  name the file), and `reporting_quarter` / `comparison_quarter` (the latest reported period and
-  its prior-year comparison — used to decide the LTM-suppression rule below).
+  name the file), `reporting_quarter` / `comparison_quarter` (the latest reported period and
+  its prior-year comparison — used to decide the LTM-suppression rule below), and
+  `financial_metric_count` (4 or 8; `null`/absent → 4 — sets how many metrics you select and pass
+  to the builder's `metric_count`).
 - Write the workbook to `$DEAL_DIR/artefacts/<SANITIZED_NAME> - Financial Summary.xlsx` (bootstrap
   `artefacts/` if absent). At the end, write the structured handoff (see **Outputs**).
 - If `$STAGE_INPUTS` is missing a field you need, write `{"error": "missing input: <field>"}` to
@@ -66,12 +71,15 @@ metric **family** fits, following the `comps` / `precedents` precedent:
 Verify with WebSearch if the facts are thin. If invoked directly with no company named, ask for the
 target first.
 
-### Step 2 — Select exactly four metrics (NAMES only)
+### Step 2 — Select exactly the requested metric count (NAMES only)
 
-Choose the **four** metrics a banker would put on this target's Financial Summary slide. Use metric
-**NAMES only** — no amounts, currency, units, or YoY deltas (e.g. `Revenue`, `Adjusted EBITDA`,
-`Net Income`, `Combined Loan Balances`). These four labels are the deck tiles' single source of
-truth. Keep each ≤ 40 characters.
+Choose exactly **`financial_metric_count`** metrics (4 when unset) a banker would put on this
+target's Financial Summary slide(s), in tile order — with 8, the first four land on FS slide
+`(1 of 2)` and the next four on `(2 of 2)`, so lead with the headline metrics (Revenue, EBITDA)
+and follow with the secondary ones (margins, income, balances). Use metric **NAMES only** — no
+amounts, currency, units, or YoY deltas (e.g. `Revenue`, `Adjusted EBITDA`, `Net Income`,
+`Combined Loan Balances`). These labels are the deck tiles' single source of truth. Keep each
+≤ 40 characters.
 
 Note for each metric whether it is a **flow** metric (an income-statement figure with a clean
 trailing-twelve-month bridge — Revenue, Gross Profit, EBITDA, Operating Income, Net Income) or a
@@ -123,9 +131,9 @@ coordination note below). For each **non-flow** metric set `ltm_value` to the la
 bridge (result row `(=) LTM Revenue`) and an **EBITDA** bridge (`(=) LTM Adj. EBITDA`, or
 `(=) LTM EBITDA` when no Adjusted figure is disclosed). So:
 
-- If your four include **Revenue**, set its `result_label = "LTM Revenue"` and **do not** list it in
+- If your selection includes **Revenue**, set its `result_label = "LTM Revenue"` and **do not** list it in
   `ltm_bridge_specs`.
-- If your four include **Adjusted EBITDA**, set its `result_label = "LTM Adj. EBITDA"` (or
+- If your selection includes **Adjusted EBITDA**, set its `result_label = "LTM Adj. EBITDA"` (or
   `"LTM EBITDA"` if the company discloses no Adjusted figure) and **do not** list it in
   `ltm_bridge_specs`.
 - For every **other flow** metric (Gross Profit, Net Income, Operating Income, …), choose a
@@ -138,7 +146,7 @@ non-Revenue/EBITDA **flow** metric you link.
 
 ### Step 6 — Summary
 
-Report: the output path; the four metrics with their family and the five fiscal years used; whether
+Report: the output path; the selected metrics with their family and the five fiscal years used; whether
 the LTM column is shown or suppressed; and a reminder that the LTM cells resolve once the workbook
 aggregator folds this tab and the `ltm-metrics` tab into the combined `pitch-<codename>.xlsx`.
 
@@ -157,8 +165,8 @@ aggregator folds this tab and the `ltm-metrics` tab into the combined `pitch-<co
 }
 ```
 
-- `financial_metric_labels` — exactly four metric names, in slide-tile order; the `deck` stage reads
-  these for the slide-8 tiles.
+- `financial_metric_labels` — exactly `financial_metric_count` metric names (4 when unset), in
+  slide-tile order; the `deck` stage reads these for the FS slide tiles (four per slide).
 - `ltm_bridge_specs` — the flow metrics `ltm-metrics` must additionally bridge (excludes Revenue and
   Adj./unadj. EBITDA, which `ltm-metrics` always bridges; excludes non-flow metrics, which have no
   bridge). May be an empty list.
@@ -174,7 +182,7 @@ Future chart steps rely on this exact shape on the `Financial Summary` tab (rena
 | `A2` | currency / units note |
 | `A3` | period note (`FY = fiscal year; LTM = trailing twelve months as of <period>`) |
 | row 5 | header: `A5="Metric"`, `B5..F5` = the five FY labels oldest→newest, `G5="LTM"` (omitted when suppressed), last col `"Units"` |
-| rows 6–9 | one metric per row: `A` = metric label, `B..F` = five numeric FY values, LTM cell (flow → `=INDEX('ltm-metrics'!$B:$B, MATCH("(=) <result_label>", 'ltm-metrics'!$A:$A, 0))`; non-flow → latest value), last col = units |
+| rows 6..5+N | one metric per row (N = `financial_metric_count`: rows 6–9 for 4, 6–13 for 8): `A` = metric label, `B..F` = five numeric FY values, LTM cell (flow → `=INDEX('ltm-metrics'!$B:$B, MATCH("(=) <result_label>", 'ltm-metrics'!$A:$A, 0))`; non-flow → latest value), last col = units |
 
 The data block (period columns × metric rows) carries **no merged cells** and **numeric** value
 cells, with a single contiguous period header row — so the chart step selects the header row + a
@@ -218,6 +226,7 @@ workbook_path = build_financial_summary_workbook(
     period_note="FY = fiscal year; LTM = trailing twelve months as of Q3 2026",
     fiscal_labels=fiscal_labels,
     metrics=metrics,
+    metric_count=inputs.get("financial_metric_count") or 4,  # 4 or 8; must equal len(metrics)
     show_ltm=True,                       # False when the latest filing is a 10-K with no later stub
     output_dir=out_dir,
     file_stem=f"{sanitized} - Financial Summary",
@@ -238,7 +247,8 @@ Path(os.environ["STAGE_OUTPUTS"]).write_text(json.dumps(handoff, indent=2) + "\n
 
 ## Boundary
 
-- Select **exactly four** metrics; emit their names as `financial_metric_labels`. Use NAMES only.
+- Select **exactly `financial_metric_count`** metrics (4 when unset; 8 = the two-slide deck spec);
+  emit their names as `financial_metric_labels`. Use NAMES only.
 - Gather only the **annual** five-year history here. The LTM bridge math is `ltm-metrics`' job — you
   only *link* to it. Do not hardcode an LTM value for a flow metric.
 - Do **not** build charts or edit the deck — the Financial Summary slide's chart regions stay

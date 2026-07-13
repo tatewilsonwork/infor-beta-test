@@ -166,3 +166,39 @@ def test_bare_text_metric_value_raises(tmp_path: Path):
                           result_label="LTM Revenue")
     with pytest.raises(ValueError):
         _build(tmp_path, metrics=bad)
+
+# ─── Configurable metric count (v0.5.26): 8 metrics = the two-slide deck ─────
+
+
+def _metrics8() -> list[MetricSeries]:
+    return _metrics() + [
+        MetricSeries("Operating Income", "US$MM", [620.0, 710.0, 815.0, 920.0, 1010.0],
+                     result_label="LTM Operating Income"),
+        MetricSeries("Net Income", "US$MM", [410.0, 470.0, 540.0, 610.0, 680.0],
+                     result_label="LTM Net Income"),
+        MetricSeries("Free Cash Flow", "US$MM", [350.0, 400.0, 460.0, 520.0, 580.0],
+                     result_label="LTM Free Cash Flow"),
+        # Non-flow ratio metric.
+        MetricSeries("Return on Equity", "%", [0.12, 0.13, 0.14, 0.15, 0.16],
+                     ltm_value=0.16),
+    ]
+
+
+def test_eight_metrics_write_rows_6_to_13(tmp_path: Path):
+    path = _build(tmp_path, metrics=_metrics8(), metric_count=8)
+    ws = load_workbook(path).active
+    labels = [ws.cell(row=r, column=1).value for r in range(6, 14)]
+    assert labels == [m.label for m in _metrics8()]
+    assert ws.cell(row=14, column=1).value is None  # block ends after row 13
+
+
+def test_metric_count_must_match_metrics(tmp_path: Path):
+    with pytest.raises(ValueError):
+        _build(tmp_path, metrics=_metrics8(), metric_count=4)
+    with pytest.raises(ValueError):
+        _build(tmp_path, metrics=_metrics(), metric_count=8)
+
+
+def test_metric_count_must_be_positive_multiple_of_four(tmp_path: Path):
+    with pytest.raises(ValueError):
+        _build(tmp_path, metrics=_metrics8()[:6], metric_count=6)

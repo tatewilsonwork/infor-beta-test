@@ -58,16 +58,26 @@ def build_pitch_deck_slide_plan(
     section_labels: list[str] | None = None,
     current_section: str | None = None,
     market_entry_target_count: int | None = None,
+    financial_metric_count: int | None = None,
+    include_investment_highlights: bool | None = None,
 ) -> SlidePlan:
     """Return the canonical pitch plan for the slide-library deck.
 
     The blank library is 16 slides (incl. the insider-ownership slide, which
-    follows Financial Summary). The market-entry section expands to
-    ``ceil(market_entry_target_count / 2)`` slides (two targets per slide). When
-    the count is unspecified — the analyst didn't ask for a particular number —
-    it **defaults to 8 targets (4 market-entry slides)**, the standard pitch
-    layout; the deck-assembler still clones to the true count from the content
-    bundle regardless.
+    follows Financial Summary). Three deck-spec options adjust the slide mix:
+
+    - The market-entry section expands to ``ceil(market_entry_target_count / 2)``
+      slides (two targets per slide). When the count is unspecified — the analyst
+      didn't ask for a particular number — it **defaults to 8 targets (4
+      market-entry slides)**, the standard pitch layout; the deck-assembler still
+      clones to the true count from the content bundle regardless.
+    - The Financial Summary section shows four metrics per slide:
+      ``financial_metric_count`` (a positive multiple of 4; the deck spec offers
+      4 or 8, **default 4**) grows it to ``count / 4`` slides. The deck-assembler
+      clones the library's Financial Summary slide to match this plan.
+    - ``include_investment_highlights=False`` drops the Key Investment Highlights
+      slide entirely (**default: included**); the deck-assembler deletes the
+      library slide when the plan omits its entry.
     """
     name = _company_name(company)
     labels = section_labels or ["Overview", "Financial Summary", "Valuation", "Process"]
@@ -76,11 +86,27 @@ def build_pitch_deck_slide_plan(
     # doesn't specify a count.
     target_count = market_entry_target_count if market_entry_target_count else 8
     n_market_entry = max(1, math.ceil(target_count / 2))
+    # Default to one Financial Summary slide (4 metrics) when unspecified.
+    metric_count = financial_metric_count if financial_metric_count else 4
+    if metric_count % 4 != 0 or metric_count <= 0:
+        raise ValueError(
+            f"financial_metric_count must be a positive multiple of 4 (each "
+            f"Financial Summary slide shows four metric tiles); got {metric_count}"
+        )
+    n_financial_summary = metric_count // 4
+    include_kih = True if include_investment_highlights is None else bool(include_investment_highlights)
 
     slides: list[SlideEntry] = []
     order = 0
     for entry in load_slide_library_registry():
-        repeat = n_market_entry if entry.library_entry_id == "market-entry-targets" else 1
+        if entry.library_entry_id == "key-investment-highlights" and not include_kih:
+            continue
+        if entry.library_entry_id == "market-entry-targets":
+            repeat = n_market_entry
+        elif entry.library_entry_id == "financial-summary":
+            repeat = n_financial_summary
+        else:
+            repeat = 1
         for k in range(repeat):
             title = entry.title.replace("[Client Name]", name)
             block = _content_block(entry, labels=labels, current=current)
@@ -88,6 +114,10 @@ def build_pitch_deck_slide_plan(
                 block["market_entry_slide"] = k + 1
                 block["market_entry_slide_count"] = n_market_entry
                 title = f"{title} ({k + 1} of {n_market_entry})"
+            elif entry.library_entry_id == "financial-summary" and n_financial_summary > 1:
+                block["financial_summary_slide"] = k + 1
+                block["financial_summary_slide_count"] = n_financial_summary
+                title = f"{title} ({k + 1} of {n_financial_summary})"
             slides.append(
                 SlideEntry(
                     library_entry_id=entry.library_entry_id,
@@ -102,7 +132,8 @@ def build_pitch_deck_slide_plan(
         deliverable_type="pitch",
         deck_title=f"{name} Confidential Discussion Materials",
         slides=slides,
-        notes="INFOR Slide Library pitch structure; market-entry expands two targets per slide.",
+        notes="INFOR Slide Library pitch structure; market-entry expands two targets "
+        "per slide and Financial Summary four metrics per slide.",
     )
 
 

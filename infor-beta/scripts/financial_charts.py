@@ -1,13 +1,16 @@
-"""Financial Summary charts — build the deck's four metric charts and place them.
+"""Financial Summary charts — build the deck's metric charts and place them.
 
-Post-aggregation stage (`financial-charts`). The four metric charts are built on
-the **combined** pitch workbook's `financial-summary` tab — the only place each
-flow metric's ``=INDEX('ltm-metrics'!…)`` LTM link resolves, because the
-`ltm-metrics` tab co-exists there after `workbook-aggregation` folds it in. (The
-standalone Financial Summary file can't be charted: its LTM cells stay ``#N/A``
-until aggregation.) The charts are then rendered and dropped into the Financial
-Summary slide's four chart placeholders, stretched to each placeholder's box —
-the same picture-into-placeholder pattern as the cap-table / ownership insertions.
+Post-aggregation stage (`financial-charts`). One clustered-column chart per
+metric row — four for the default single Financial Summary slide, eight when the
+deck spec asked for two FS slides — is built on the **combined** pitch workbook's
+`financial-summary` tab — the only place each flow metric's
+``=INDEX('ltm-metrics'!…)`` LTM link resolves, because the `ltm-metrics` tab
+co-exists there after `workbook-aggregation` folds it in. (The standalone
+Financial Summary file can't be charted: its LTM cells stay ``#N/A`` until
+aggregation.) The charts are then rendered and dropped into the Financial
+Summary slides' chart placeholders (four per slide, discovered by scanning the
+deck for the Metric #1 placeholder), stretched to each placeholder's box — the
+same picture-into-placeholder pattern as the cap-table / ownership insertions.
 
 This stage MUTATES THE ALREADY-ASSEMBLED DECK IN PLACE — it must never re-run the
 `deck-assembler` (or any other skill). It runs *after* `workbook-aggregation` has
@@ -87,17 +90,21 @@ _AXIS_LINE_WEIGHT_PT = 1.0
 # --- tab / slide geometry ----------------------------------------------------
 _SHEET_DEFAULT = "financial-summary"
 _HEADER_ROW = 5
-# Financial Summary slide in the assembled pitch deck (the earnings slide at raw
-# library index 7 is deleted, so the FS slide lands at slides[7]).
-_SLIDE_INDEX_DEFAULT = 7
-# Chart placeholder shape name -> the tab data row whose metric it charts. The
-# 2x2 grid matches the slide tiles: #1 top-left, #2 top-right, #3 / #4 below.
-_PLACEHOLDER_MAP: list[tuple[str, int]] = [
-    ("Rectangle 17", 6),  # Metric #1 (label tile Rectangle 13)
-    ("Rectangle 7", 7),   # Metric #2 (label tile Rectangle 12)
-    ("Rectangle 19", 8),  # Metric #3 (label tile Rectangle 15)
-    ("Rectangle 18", 9),  # Metric #4 (label tile Rectangle 14)
+_FIRST_DATA_ROW = _HEADER_ROW + 1
+# Chart placeholder shape names on EVERY Financial Summary slide (the deck can
+# carry one or two — a cloned FS slide keeps the same shape names). In tile
+# order: #1 top-left, #2 top-right, #3 / #4 below. Slide k charts the tab's
+# metric rows 4k..4k+3 (rows 6-9 on the first slide, 10-13 on the second).
+_PLACEHOLDER_NAMES: list[str] = [
+    "Rectangle 17",  # Metric #1 (label tile Rectangle 13)
+    "Rectangle 7",   # Metric #2 (label tile Rectangle 12)
+    "Rectangle 19",  # Metric #3 (label tile Rectangle 15)
+    "Rectangle 18",  # Metric #4 (label tile Rectangle 14)
 ]
+_CHARTS_PER_SLIDE = len(_PLACEHOLDER_NAMES)
+# The shape whose presence identifies a Financial Summary slide when the deck is
+# scanned (the Metric #1 chart placeholder, present until this stage fills it).
+_FS_MARKER_PLACEHOLDER = _PLACEHOLDER_NAMES[0]
 # Placeholder box: 4.53" x 2.51". Used to size the exported chart so its aspect
 # matches the slide box (the picture is stretched to the box either way).
 _CHART_W_PT = 4.53 * 72
@@ -205,6 +212,29 @@ def period_axis_columns(ws) -> tuple[int, int]:
             "tab is not in the expected chart-ready layout"
         )
     return 2, units_col - 1
+
+
+def metric_data_rows(ws) -> list[int]:
+    """Return the 1-based metric data rows of the Financial Summary tab.
+
+    One metric per row from row 6 down, contiguous — the block ends at the
+    first empty column-A cell. Four rows for the default single-slide deck
+    (6-9), eight for the two-slide deck (6-13). ``ws`` is an openpyxl worksheet.
+    """
+    rows: list[int] = []
+    r = _FIRST_DATA_ROW
+    while True:
+        label = ws.cell(row=r, column=1).value
+        if label is None or (isinstance(label, str) and not label.strip()):
+            break
+        rows.append(r)
+        r += 1
+    if not rows:
+        raise ValueError(
+            "no metric rows found below the row-5 header; the Financial Summary "
+            "tab is not in the expected chart-ready layout"
+        )
+    return rows
 
 
 def _find_label_row_openpyxl(ws, prefixes) -> int | None:
@@ -348,10 +378,17 @@ def render_financial_summary_charts_into_deck(
     deck_path: Path | str,
     combined_workbook_path: Path | str,
     sheet_name: str = _SHEET_DEFAULT,
-    slide_index: int = _SLIDE_INDEX_DEFAULT,
+    slide_index: int | None = None,
     output_path: Path | str | None = None,
 ) -> Path | None:
-    """Build the four Financial Summary charts and place them into the deck.
+    """Build the Financial Summary charts and place them into the deck.
+
+    One chart per metric row on the tab — four for the default single Financial
+    Summary slide, eight for the two-slide deck spec. The deck's FS slides are
+    discovered by scanning for the Metric #1 chart placeholder (a cloned FS
+    slide keeps the same shape names), in deck order: slide *k* receives the
+    tab's metric rows ``4k..4k+3``. Pass ``slide_index`` to target a single,
+    known slide instead of scanning (legacy call shape).
 
     Returns the output deck path, or ``None`` when the slide is left with its
     placeholders — either because the combined workbook has no ``financial-summary``
@@ -359,6 +396,9 @@ def render_financial_summary_charts_into_deck(
     charts were persisted to the workbook but their PNGs could not be rendered for
     the deck (LibreOffice unavailable — the graceful-degradation path, Issue 1).
     In both cases the slide keeps its placeholders, like the ownership null path.
+
+    Raises ValueError when the tab's metric-row count does not match the deck's
+    FS slide count × 4 — a wireframe/financial-summary stage mismatch.
 
     Modifies the deck at ``deck_path`` IN PLACE (or writes ``output_path``); it does
     not re-assemble it. Never call this from a flow that also re-runs the
@@ -371,47 +411,93 @@ def render_financial_summary_charts_into_deck(
     if not workbook.exists():
         raise FileNotFoundError(f"combined workbook not found: {workbook}")
 
-    axis = _resolve_axis(workbook, sheet_name)
-    if axis is None:
+    geometry = _resolve_geometry(workbook, sheet_name)
+    if geometry is None:
         return None
-    first_col, last_col = axis
+    first_col, last_col, data_rows = geometry
 
     if sys.platform == "win32":
         try:
-            pngs = _build_charts_com(workbook, sheet_name, first_col, last_col)
+            pngs = _build_charts_com(workbook, sheet_name, first_col, last_col, data_rows)
         except RuntimeError:
             # Excel COM unavailable on this Windows box — fall through.
-            pngs = _build_charts_openpyxl_libreoffice(workbook, sheet_name, first_col, last_col)
+            pngs = _build_charts_openpyxl_libreoffice(
+                workbook, sheet_name, first_col, last_col, data_rows
+            )
     else:
-        pngs = _build_charts_openpyxl_libreoffice(workbook, sheet_name, first_col, last_col)
+        pngs = _build_charts_openpyxl_libreoffice(
+            workbook, sheet_name, first_col, last_col, data_rows
+        )
 
-    if not pngs or any(row not in pngs for _name, row in _PLACEHOLDER_MAP):
+    if not pngs or any(row not in pngs for row in data_rows):
         # Native charts were persisted to the workbook, but their PNGs could not be
         # rendered (LibreOffice unavailable). Leave the slide placeholders rather
         # than crashing — the durable artefact (workbook charts) is already saved.
         return None
 
-    out = Path(output_path).resolve() if output_path is not None else deck
-    return insert_pngs_into_placeholders(
-        deck_path=deck,
-        slide_index=slide_index,
-        pngs_by_placeholder={name: pngs[row] for name, row in _PLACEHOLDER_MAP},
-        output_path=out,
+    slide_indexes = (
+        [slide_index] if slide_index is not None else _find_financial_summary_slides(deck)
     )
+    if len(data_rows) != _CHARTS_PER_SLIDE * len(slide_indexes):
+        raise ValueError(
+            f"the '{sheet_name}' tab carries {len(data_rows)} metric rows but the deck "
+            f"has {len(slide_indexes)} Financial Summary slide(s) — expected "
+            f"{_CHARTS_PER_SLIDE * len(slide_indexes)} (four charts per slide)"
+        )
+
+    out = Path(output_path).resolve() if output_path is not None else deck
+    inserts: dict[int, dict[str, bytes]] = {}
+    for k, idx in enumerate(slide_indexes):
+        slide_rows = data_rows[_CHARTS_PER_SLIDE * k : _CHARTS_PER_SLIDE * (k + 1)]
+        inserts[idx] = {
+            name: pngs[row] for name, row in zip(_PLACEHOLDER_NAMES, slide_rows, strict=True)
+        }
+    return _insert_pngs_into_slides(deck_path=deck, inserts=inserts, output_path=out)
 
 
-def _resolve_axis(workbook: Path, sheet_name: str) -> tuple[int, int] | None:
-    """Read the period-axis columns from the combined workbook, or None if the
-    ``financial-summary`` tab is absent."""
+def _resolve_geometry(workbook: Path, sheet_name: str) -> tuple[int, int, list[int]] | None:
+    """Read the period-axis columns + metric data rows from the combined
+    workbook, or None if the ``financial-summary`` tab is absent."""
     from openpyxl import load_workbook
 
     wb = load_workbook(workbook, read_only=True)
     try:
         if sheet_name not in wb.sheetnames:
             return None
-        return period_axis_columns(wb[sheet_name])
+        ws = wb[sheet_name]
+        first_col, last_col = period_axis_columns(ws)
+        return first_col, last_col, metric_data_rows(ws)
     finally:
         wb.close()
+
+
+def _find_financial_summary_slides(deck_path: Path) -> list[int]:
+    """Zero-based indices of the deck's Financial Summary slides, in order.
+
+    A Financial Summary slide is identified by its Metric #1 chart placeholder
+    shape (``Rectangle 17``), which is present until this stage replaces it with
+    the chart picture. Raises when none is found — the deck was already charted
+    or is not an assembled pitch deck.
+    """
+    prs = Presentation(deck_path)
+
+    def _is_marker(shape) -> bool:
+        return (
+            shape.name == _FS_MARKER_PLACEHOLDER
+            and getattr(shape, "has_text_frame", False)
+            and "[Placeholder for Metric #1 Chart]" in shape.text
+        )
+
+    indexes = [
+        i for i, slide in enumerate(prs.slides) if any(_is_marker(s) for s in slide.shapes)
+    ]
+    if not indexes:
+        raise ValueError(
+            f"no Financial Summary chart placeholders ({_FS_MARKER_PLACEHOLDER!r}) found "
+            f"in {deck_path.name} — the deck was already charted or is not an assembled "
+            f"pitch deck"
+        )
+    return indexes
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +581,40 @@ def _resolve_pie_range(workbook: Path, sheet_name: str) -> tuple[int, int] | Non
 # ---------------------------------------------------------------------------
 # Placeholder insertion (mirrors excel_to_powerpoint.insert_excel_into_placeholder)
 # ---------------------------------------------------------------------------
+def _insert_pngs_into_slides(
+    *,
+    deck_path: Path | str,
+    inserts: dict[int, dict[str, bytes]],
+    output_path: Path | str | None = None,
+) -> Path:
+    """Replace named placeholders across slides with pictures, in one open/save.
+
+    ``inserts`` maps zero-based slide index -> {placeholder name -> PNG bytes}.
+    Each picture is added at the placeholder's exact left/top/width/height (the
+    picture is stretched to the box), and the placeholder shape is removed.
+    """
+    deck = Path(deck_path).resolve()
+    prs = Presentation(deck)
+    for slide_index, pngs_by_placeholder in inserts.items():
+        slide = prs.slides[slide_index]
+        for name, png in pngs_by_placeholder.items():
+            placeholder = next((s for s in slide.shapes if s.name == name), None)
+            if placeholder is None:
+                raise KeyError(f"placeholder {name!r} not found on slide {slide_index + 1}")
+            left, top, width, height = (
+                placeholder.left,
+                placeholder.top,
+                placeholder.width,
+                placeholder.height,
+            )
+            placeholder._element.getparent().remove(placeholder._element)
+            buf = png if hasattr(png, "read") else io.BytesIO(png)
+            slide.shapes.add_picture(buf, left, top, width=width, height=height)
+    out = Path(output_path).resolve() if output_path is not None else deck
+    prs.save(out)
+    return out
+
+
 def insert_pngs_into_placeholders(
     *,
     deck_path: Path | str,
@@ -502,30 +622,12 @@ def insert_pngs_into_placeholders(
     pngs_by_placeholder: dict[str, bytes],
     output_path: Path | str | None = None,
 ) -> Path:
-    """Replace each named placeholder on a slide with a picture, in one pass.
-
-    Each picture is added at the placeholder's exact left/top/width/height (the
-    picture is stretched to the box), and the placeholder shape is removed.
-    """
-    deck = Path(deck_path).resolve()
-    prs = Presentation(deck)
-    slide = prs.slides[slide_index]
-    for name, png in pngs_by_placeholder.items():
-        placeholder = next((s for s in slide.shapes if s.name == name), None)
-        if placeholder is None:
-            raise KeyError(f"placeholder {name!r} not found on slide {slide_index + 1}")
-        left, top, width, height = (
-            placeholder.left,
-            placeholder.top,
-            placeholder.width,
-            placeholder.height,
-        )
-        placeholder._element.getparent().remove(placeholder._element)
-        buf = png if hasattr(png, "read") else io.BytesIO(png)
-        slide.shapes.add_picture(buf, left, top, width=width, height=height)
-    out = Path(output_path).resolve() if output_path is not None else deck
-    prs.save(out)
-    return out
+    """Single-slide wrapper over :func:`_insert_pngs_into_slides`."""
+    return _insert_pngs_into_slides(
+        deck_path=deck_path,
+        inserts={slide_index: pngs_by_placeholder},
+        output_path=output_path,
+    )
 
 
 def insert_png_into_placeholder(
@@ -549,9 +651,9 @@ def insert_png_into_placeholder(
 # Excel COM backend (Windows) — full fidelity, charts persist, links survive
 # ---------------------------------------------------------------------------
 def _build_charts_com(
-    workbook: Path, sheet_name: str, first_col: int, last_col: int
+    workbook: Path, sheet_name: str, first_col: int, last_col: int, data_rows: list[int]
 ) -> dict[int, bytes]:
-    """Build the four native charts on the tab via Excel COM and export each PNG."""
+    """Build one native chart per metric row on the tab via Excel COM, export PNGs."""
     try:
         import pythoncom
         import win32com.client
@@ -603,8 +705,10 @@ def _build_charts_com(
             # PNG, so exporting in-place would silently lose the lower-row charts.
             scratch_left = ws.Cells(1, 2).Left
             scratch_top = ws.Cells(1, 1).Top
-            grid_top = ws.Cells(11, 1).Top
-            for idx, (_placeholder, data_row) in enumerate(_PLACEHOLDER_MAP):
+            # Park the persisted charts one blank row below the last metric row
+            # (row 11 for the default four metrics, row 15 for eight).
+            grid_top = ws.Cells(data_rows[-1] + 2, 1).Top
+            for idx, data_row in enumerate(data_rows):
                 chart_obj = ws.ChartObjects().Add(
                     Left=scratch_left, Top=scratch_top, Width=_CHART_W_PT, Height=_CHART_H_PT
                 )
@@ -998,12 +1102,25 @@ def _format_com_pie(chart, series, n_points: int, fractions: list) -> None:
 # ---------------------------------------------------------------------------
 # openpyxl + LibreOffice backend (off-Windows) — best-effort
 # ---------------------------------------------------------------------------
+def _fs_chart_anchor(idx: int, last_data_row: int) -> str:
+    """On-tab anchor cell for the idx-th persisted FS chart (2-per-row grid).
+
+    The grid starts one blank row below the last metric row (B11/I11 then
+    B27/I27 for the default four metrics; B15/I15 down for eight) — 16 rows per
+    grid row matches the chart height.
+    """
+    col = "B" if idx % 2 == 0 else "I"
+    row = (last_data_row + 2) + 16 * (idx // 2)
+    return f"{col}{row}"
+
+
 def _persist_native_charts_openpyxl(
     workbook: Path,
     *,
     rebuild: str,
     fs_sheet: str = _SHEET_DEFAULT,
     fs_cols: tuple[int, int] | None = None,
+    fs_rows: list[int] | None = None,
     pie_sheet: str = _PIE_SHEET_DEFAULT,
     pie_rows: tuple[int, int] | None = None,
 ):
@@ -1040,17 +1157,22 @@ def _persist_native_charts_openpyxl(
     if fs_sheet in wb.sheetnames and (rebuild == "fs" or not wb[fs_sheet]._charts):
         ws = wb[fs_sheet]
         cols = fs_cols
-        if cols is None:
-            try:
+        rows = fs_rows
+        try:
+            if cols is None:
                 cols = period_axis_columns(ws)
-            except ValueError:
-                cols = None  # tab not in the chart-ready layout — skip its charts
-        if cols is not None:
+            if rows is None:
+                rows = metric_data_rows(ws)
+        except ValueError:
+            cols = rows = None  # tab not in the chart-ready layout — skip its charts
+        if cols is not None and rows is not None:
             ws._charts = []
             first_col, last_col = cols
-            anchors = ["B11", "I11", "B27", "I27"]
-            for (_placeholder, data_row), anchor in zip(_PLACEHOLDER_MAP, anchors):
-                ws.add_chart(_make_openpyxl_chart(ws, data_row, first_col, last_col), anchor)
+            for idx, data_row in enumerate(rows):
+                ws.add_chart(
+                    _make_openpyxl_chart(ws, data_row, first_col, last_col),
+                    _fs_chart_anchor(idx, rows[-1]),
+                )
 
     if pie_sheet in wb.sheetnames and (rebuild == "pie" or not wb[pie_sheet]._charts):
         ws = wb[pie_sheet]
@@ -1071,7 +1193,7 @@ def _persist_native_charts_openpyxl(
 
 
 def _build_charts_openpyxl_libreoffice(
-    workbook: Path, sheet_name: str, first_col: int, last_col: int
+    workbook: Path, sheet_name: str, first_col: int, last_col: int, data_rows: list[int]
 ) -> dict[int, bytes]:
     """Persist native openpyxl charts on the tab, then render each PNG.
 
@@ -1086,19 +1208,23 @@ def _build_charts_openpyxl_libreoffice(
     missing, the workbook charts have already been saved and an empty ``{}`` is
     returned so the caller degrades gracefully (leaves the deck placeholders)
     rather than aborting the whole stage (Issue 1). Persistence goes through
-    :func:`_persist_native_charts_openpyxl` so a re-run replaces the four charts
+    :func:`_persist_native_charts_openpyxl` so a re-run replaces the charts
     instead of accumulating a duplicate set, and the pie step's chart on the
     sibling ``ltm-metrics`` tab survives this save.
     """
     _persist_native_charts_openpyxl(
-        workbook, rebuild="fs", fs_sheet=sheet_name, fs_cols=(first_col, last_col)
+        workbook,
+        rebuild="fs",
+        fs_sheet=sheet_name,
+        fs_cols=(first_col, last_col),
+        fs_rows=data_rows,
     )
 
     try:
-        resolved = _libreoffice_recalc_values(workbook, sheet_name, first_col, last_col)
+        resolved = _libreoffice_recalc_values(workbook, sheet_name, first_col, last_col, data_rows)
         labels = resolved["labels"]
         pngs: dict[int, bytes] = {}
-        for _placeholder, data_row in _PLACEHOLDER_MAP:
+        for data_row in data_rows:
             pngs[data_row] = _render_single_chart_png(labels, resolved[data_row])
         return pngs
     except RuntimeError as exc:
@@ -1106,7 +1232,7 @@ def _build_charts_openpyxl_libreoffice(
         # charts are already saved on the tab; degrade gracefully instead of
         # aborting the stage — the caller leaves the slide placeholders.
         print(
-            f"[financial-charts] deck-image render skipped ({exc}); the four native "
+            f"[financial-charts] deck-image render skipped ({exc}); the native "
             f"charts are saved on the '{sheet_name}' tab of {workbook.name}.",
             file=sys.stderr,
         )
@@ -1198,7 +1324,7 @@ def _palatino_text(size_hundredths: int = _FONT_SIZE_HUNDREDTHS, color: str = "0
 
 
 def _libreoffice_recalc_values(
-    workbook: Path, sheet_name: str, first_col: int, last_col: int
+    workbook: Path, sheet_name: str, first_col: int, last_col: int, data_rows: list[int]
 ) -> dict:
     """Recalc the combined workbook with LibreOffice and read the period labels +
     each metric row's resolved values (so the LTM cell is no longer a formula)."""
@@ -1225,7 +1351,7 @@ def _libreoffice_recalc_values(
                 ws.cell(row=_HEADER_ROW, column=c).value for c in range(first_col, last_col + 1)
             ]
         }
-        for _placeholder, data_row in _PLACEHOLDER_MAP:
+        for data_row in data_rows:
             out[data_row] = [
                 ws.cell(row=data_row, column=c).value for c in range(first_col, last_col + 1)
             ]

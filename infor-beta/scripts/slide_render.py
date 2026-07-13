@@ -79,7 +79,17 @@ def _powerpoint_com_render(deck: Path, out_dir: Path, slide_indices: list[int] |
         raise RuntimeError(f"PowerPoint COM render failed: {exc}") from exc
     finally:
         if powerpoint is not None:
-            powerpoint.Quit()
+            # PowerPoint's COM server is a SINGLETON — DispatchEx attaches to the
+            # analyst's already-running instance when one exists, so an
+            # unconditional Quit() would close their open presentations (and a
+            # force-kill of the "leftover" process corrupts Office add-in state —
+            # the CapIQ LoadBehavior=2 incident). Only quit an instance that has
+            # nothing else open, i.e. one this render effectively owns.
+            try:
+                if powerpoint.Presentations.Count == 0:
+                    powerpoint.Quit()
+            except Exception:
+                pass
         pythoncom.CoUninitialize()
     return paths
 

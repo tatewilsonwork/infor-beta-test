@@ -562,7 +562,9 @@ def test_fs_charts_persist_when_libreoffice_missing(tmp_path: Path, monkeypatch)
     # Pretend soffice / libreoffice is not on PATH.
     monkeypatch.setattr(financial_charts.shutil, "which", lambda *a, **k: None)
 
-    pngs = financial_charts._build_charts_openpyxl_libreoffice(path, "financial-summary", 2, 7)
+    pngs = financial_charts._build_charts_openpyxl_libreoffice(
+        path, "financial-summary", 2, 7, [6, 7, 8, 9]
+    )
 
     assert pngs == {}  # degraded: no deck PNGs, but no exception
     assert _chart_part_count(path) == 4  # native charts persisted regardless
@@ -650,12 +652,16 @@ def test_fs_charts_and_pie_coexist_on_combined_workbook(tmp_path: Path, monkeypa
     # SKILL.md order: FS charts first, pie second.
     combined = _combined_workbook(tmp_path / "fs_then_pie")
     first, last = ltm_revenue_overview_range(load_workbook(combined)["ltm-metrics"])
-    financial_charts._build_charts_openpyxl_libreoffice(combined, "financial-summary", 2, 7)
+    financial_charts._build_charts_openpyxl_libreoffice(
+        combined, "financial-summary", 2, 7, [6, 7, 8, 9]
+    )
     financial_charts._build_pie_openpyxl_libreoffice(combined, "ltm-metrics", first, last)
     assert _chart_part_count(combined) == 5  # 4 FS charts + 1 pie
 
     # Re-running either step replaces its charts instead of accumulating.
-    financial_charts._build_charts_openpyxl_libreoffice(combined, "financial-summary", 2, 7)
+    financial_charts._build_charts_openpyxl_libreoffice(
+        combined, "financial-summary", 2, 7, [6, 7, 8, 9]
+    )
     financial_charts._build_pie_openpyxl_libreoffice(combined, "ltm-metrics", first, last)
     assert _chart_part_count(combined) == 5
 
@@ -663,7 +669,9 @@ def test_fs_charts_and_pie_coexist_on_combined_workbook(tmp_path: Path, monkeypa
     combined = _combined_workbook(tmp_path / "pie_then_fs")
     first, last = ltm_revenue_overview_range(load_workbook(combined)["ltm-metrics"])
     financial_charts._build_pie_openpyxl_libreoffice(combined, "ltm-metrics", first, last)
-    financial_charts._build_charts_openpyxl_libreoffice(combined, "financial-summary", 2, 7)
+    financial_charts._build_charts_openpyxl_libreoffice(
+        combined, "financial-summary", 2, 7, [6, 7, 8, 9]
+    )
     assert _chart_part_count(combined) == 5
 
 
@@ -684,3 +692,134 @@ def test_pie_legend_pinned_full_right_side_at_8pt(tmp_path: Path):
     legend_pr = pie.legend.txPr.p[0].pPr.defRPr
     assert legend_pr.sz == financial_charts._PIE_LEGEND_FONT_SIZE_PT * 100
     assert legend_pr.latin.typeface == "Palatino Linotype"
+
+# ─── Configurable slide mix (v0.5.26): N metric rows across N FS slides ──────
+
+
+def _metrics8() -> list[MetricSeries]:
+    return _metrics() + [
+        MetricSeries("Operating Income", "US$MM", [620.0, 710.0, 815.0, 920.0, 1010.0],
+                     result_label="LTM Operating Income"),
+        MetricSeries("Free Cash Flow", "US$MM", [350.0, 400.0, 460.0, 520.0, 580.0],
+                     result_label="LTM Free Cash Flow"),
+        MetricSeries("Gross Margin", "%", [0.40, 0.41, 0.41, 0.42, 0.42],
+                     ltm_value=0.42),
+        MetricSeries("Return on Equity", "%", [0.12, 0.13, 0.14, 0.15, 0.16],
+                     ltm_value=0.16),
+    ]
+
+
+def test_metric_data_rows_four_and_eight(tmp_path: Path):
+    ws4 = load_workbook(_fs_workbook(tmp_path)).active
+    assert financial_charts.metric_data_rows(ws4) == [6, 7, 8, 9]
+    ws8 = load_workbook(
+        _fs_workbook(tmp_path, metrics=_metrics8(), metric_count=8, file_stem="EightMetrics")
+    ).active
+    assert financial_charts.metric_data_rows(ws8) == [6, 7, 8, 9, 10, 11, 12, 13]
+
+
+def test_fs_chart_anchor_grid_scales_with_data_rows():
+    # 4 metrics (last data row 9): the historical B11/I11/B27/I27 grid.
+    assert [financial_charts._fs_chart_anchor(i, 9) for i in range(4)] == [
+        "B11", "I11", "B27", "I27",
+    ]
+    # 8 metrics (last data row 13): grid starts below the data at row 15.
+    assert [financial_charts._fs_chart_anchor(i, 13) for i in range(8)] == [
+        "B15", "I15", "B31", "I31", "B47", "I47", "B63", "I63",
+    ]
+
+
+def test_persist_eight_charts_when_libreoffice_missing(tmp_path: Path, monkeypatch):
+    path = _fs_workbook(tmp_path, metrics=_metrics8(), metric_count=8)
+    wb = load_workbook(path)
+    wb.active.title = "financial-summary"
+    wb.save(path)
+    monkeypatch.setattr(financial_charts.shutil, "which", lambda *a, **k: None)
+
+    pngs = financial_charts._build_charts_openpyxl_libreoffice(
+        path, "financial-summary", 2, 7, list(range(6, 14))
+    )
+
+    assert pngs == {}  # degraded: no deck PNGs, but no exception
+    assert _chart_part_count(path) == 8  # one native chart per metric row
+
+
+def _deck_with_fs_slides(tmp_path: Path, n: int) -> Path:
+    """A deck with one non-FS slide followed by `n` Financial Summary slides,
+    each carrying the four named chart placeholders (as the assembler's FS
+    clones do)."""
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6])  # non-FS slide — discovery must skip it
+    placeholder_texts = [
+        ("Rectangle 17", "[Placeholder for Metric #1 Chart]"),
+        ("Rectangle 7", "[Placeholder for Metric #2 Chart]"),
+        ("Rectangle 19", "[Placeholder for Metric #3 Chart]"),
+        ("Rectangle 18", "[Placeholder for Metric #4 Chart]"),
+    ]
+    for _ in range(n):
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        for name, text in placeholder_texts:
+            box = slide.shapes.add_textbox(Inches(0.35), Inches(1.51), Inches(4.53), Inches(2.51))
+            box.name = name
+            box.text_frame.text = text
+    path = tmp_path / "deck.pptx"
+    prs.save(path)
+    return path
+
+
+def test_find_financial_summary_slides_skips_non_fs(tmp_path: Path):
+    deck = _deck_with_fs_slides(tmp_path, 2)
+    assert financial_charts._find_financial_summary_slides(deck) == [1, 2]
+
+
+def test_find_financial_summary_slides_raises_when_absent(tmp_path: Path):
+    prs = Presentation()
+    prs.slides.add_slide(prs.slide_layouts[6])
+    path = tmp_path / "plain.pptx"
+    prs.save(path)
+    with pytest.raises(ValueError):
+        financial_charts._find_financial_summary_slides(path)
+
+
+def test_orchestrator_inserts_eight_charts_across_two_fs_slides(tmp_path: Path, monkeypatch):
+    path = _fs_workbook(tmp_path, metrics=_metrics8(), metric_count=8)
+    wb = load_workbook(path)
+    wb.active.title = "financial-summary"
+    wb.save(path)
+    deck = _deck_with_fs_slides(tmp_path, 2)
+    rows = list(range(6, 14))
+    monkeypatch.setattr(financial_charts, "_build_charts_com", _raise_runtime)
+    monkeypatch.setattr(
+        financial_charts,
+        "_build_charts_openpyxl_libreoffice",
+        lambda *a, **k: {r: _PNG_1X1 for r in rows},
+    )
+
+    out = render_financial_summary_charts_into_deck(deck_path=deck, combined_workbook_path=path)
+
+    prs = Presentation(out)
+    # The non-FS slide is untouched; each FS slide got its four pictures.
+    assert not [s for s in prs.slides[0].shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    for idx in (1, 2):
+        slide = prs.slides[idx]
+        pictures = [s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+        assert len(pictures) == 4
+        assert not any(s.name == "Rectangle 17" for s in slide.shapes)
+
+
+def test_orchestrator_raises_on_row_slide_mismatch(tmp_path: Path, monkeypatch):
+    # A 4-metric tab against a 2-FS-slide deck is a wireframe/financial-summary
+    # stage mismatch — fail loudly instead of charting the wrong rows.
+    path = _fs_workbook(tmp_path)
+    wb = load_workbook(path)
+    wb.active.title = "financial-summary"
+    wb.save(path)
+    deck = _deck_with_fs_slides(tmp_path, 2)
+    monkeypatch.setattr(financial_charts, "_build_charts_com", _raise_runtime)
+    monkeypatch.setattr(
+        financial_charts,
+        "_build_charts_openpyxl_libreoffice",
+        lambda *a, **k: {r: _PNG_1X1 for r in (6, 7, 8, 9)},
+    )
+    with pytest.raises(ValueError):
+        render_financial_summary_charts_into_deck(deck_path=deck, combined_workbook_path=path)

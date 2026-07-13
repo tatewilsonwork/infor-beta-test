@@ -360,11 +360,21 @@ def test_pitch_library_poc_plan_stage_order():
 
 # ─── Helpers for the post-review fixes ───────────────────────────────────────
 
-def _assemble(tmp_path: Path, content: PitchDeckContent, *, market_entry_target_count=None, **kwargs) -> Path:
+def _assemble(
+    tmp_path: Path,
+    content: PitchDeckContent,
+    *,
+    market_entry_target_count=None,
+    financial_metric_count=None,
+    include_investment_highlights=None,
+    **kwargs,
+) -> Path:
     plan = build_pitch_deck_slide_plan(
         company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),
         section_labels=["Overview", "Financial Summary", "Valuation", "Process"],
         market_entry_target_count=market_entry_target_count,
+        financial_metric_count=financial_metric_count,
+        include_investment_highlights=include_investment_highlights,
     )
     plan_path = write_slide_plan(plan, tmp_path / "slide_plan.json")
     content_path = tmp_path / "content.json"
@@ -858,3 +868,121 @@ def test_slide7_short_overview_keeps_full_size(tmp_path: Path):
     deck_path = _assemble(tmp_path, _sample_content())
     box = find_shape(Presentation(deck_path).slides[6], "TextBox 9")
     assert _overview_font_scale(box) is None  # short copy — no downscale
+
+# ─── Configurable slide mix (v0.5.26): FS slide count + KIH toggle ───────────
+
+_EIGHT_LABELS = [
+    "Revenue", "Gross Profit", "Adjusted EBITDA", "Net Income",
+    "Operating Income", "Free Cash Flow", "Gross Margin", "Return on Equity",
+]
+
+
+def _slide_text(slide) -> str:
+    parts = []
+    for shape in slide.shapes:
+        if getattr(shape, "has_text_frame", False):
+            parts.append(shape.text)
+    return "\n".join(parts)
+
+
+def test_pitch_wireframe_two_financial_summary_slides():
+    plan = build_pitch_deck_slide_plan(
+        company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),
+        financial_metric_count=8,
+    )
+    fs = [s for s in plan.slides if s.library_entry_id == "financial-summary"]
+    assert [s.title for s in fs] == ["Financial Summary (1 of 2)", "Financial Summary (2 of 2)"]
+    assert fs[0].content_block["financial_summary_slide"] == 1
+    assert fs[1].content_block["financial_summary_slide"] == 2
+    assert fs[0].content_block["financial_summary_slide_count"] == 2
+    # 16 base + 3 extra market-entry (default 8 targets) + 1 extra FS = 20.
+    assert len(plan.slides) == 20
+    assert [s.order for s in plan.slides] == list(range(20))
+
+
+def test_pitch_wireframe_excludes_investment_highlights():
+    plan = build_pitch_deck_slide_plan(
+        company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),
+        include_investment_highlights=False,
+    )
+    ids = [s.library_entry_id for s in plan.slides]
+    assert "key-investment-highlights" not in ids
+    # 16 base + 3 extra market-entry − 1 KIH = 18.
+    assert len(plan.slides) == 18
+    assert [s.order for s in plan.slides] == list(range(18))
+
+
+def test_pitch_wireframe_rejects_non_multiple_of_four_metric_count():
+    with pytest.raises(ValueError):
+        build_pitch_deck_slide_plan(
+            company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),
+            financial_metric_count=6,
+        )
+
+
+def test_assemble_two_financial_summary_slides_shifts_downstream(tmp_path: Path):
+    content = _content_with_targets(8)
+    deck_path = _assemble(
+        tmp_path,
+        content,
+        market_entry_target_count=8,
+        financial_metric_count=8,
+        financial_metric_labels=_EIGHT_LABELS,
+    )
+    prs = Presentation(deck_path)
+    # 16 base + 1 extra FS + 3 extra market-entry = 20 slides.
+    assert len(prs.slides) == 20
+    # Both FS slides retitled and tiled four labels each, in order.
+    assert find_shape(prs.slides[7], "Title 6").text == "Financial Summary (1 of 2)"
+    assert find_shape(prs.slides[8], "Title 6").text == "Financial Summary (2 of 2)"
+    assert find_shape(prs.slides[7], "Rectangle 13").text == "Revenue"
+    assert find_shape(prs.slides[7], "Rectangle 14").text == "Net Income"
+    assert find_shape(prs.slides[8], "Rectangle 13").text == "Operating Income"
+    assert find_shape(prs.slides[8], "Rectangle 14").text == "Return on Equity"
+    # Every slide after the FS section shifted by one.
+    assert "[Placeholder for Insider Ownership]" in _slide_text(prs.slides[9])
+    assert find_shape(prs.slides[10], "Text Placeholder 6").text == content.risks_tagline
+    assert find_shape(prs.slides[11], "Text Placeholder 5").text == content.comps_takeaway
+    assert find_shape(prs.slides[12], "Text Placeholder 5").text == content.precedents_takeaway
+    assert find_shape(prs.slides[13], "Title 1").text == "Key Investment Highlights"
+    titles = [find_shape(prs.slides[14 + j], "Title 1").text for j in range(4)]
+    assert titles == [
+        f"Potential Canada Market Entry Targets ({j + 1} of 4)" for j in range(4)
+    ]
+    # Static disclaimer + contact preserved at the tail.
+    tail = _all_slides_text(prs)
+    assert "These materials are confidential and proprietary" in tail
+    assert "Neil Selfe, Managing Principal" in tail
+
+
+def test_assemble_two_fs_slides_requires_eight_labels(tmp_path: Path):
+    with pytest.raises(ValueError):
+        _assemble(
+            tmp_path,
+            _content_with_targets(8),
+            financial_metric_count=8,  # plan carries 2 FS slides…
+            # …but the default helper labels are only four.
+        )
+
+
+def test_assemble_excludes_investment_highlights_slide(tmp_path: Path):
+    raw = _content_with_targets(8).model_dump()
+    raw["investment_highlights"] = []
+    raw["investment_highlights_tagline"] = None
+    content = PitchDeckContent.model_validate(raw)
+    deck_path = _assemble(tmp_path, content, include_investment_highlights=False)
+    prs = Presentation(deck_path)
+    # 16 base − 1 KIH + 3 extra market-entry = 18 slides.
+    assert len(prs.slides) == 18
+    assert "Key Investment Highlights" not in _all_slides_text(prs)
+    # Slides before KIH keep their default positions…
+    assert find_shape(prs.slides[9], "Text Placeholder 6").text == content.risks_tagline
+    assert find_shape(prs.slides[11], "Text Placeholder 5").text == content.precedents_takeaway
+    # …and the market-entry section starts one earlier (12 instead of 13).
+    titles = [find_shape(prs.slides[12 + j], "Title 1").text for j in range(4)]
+    assert titles == [
+        f"Potential Canada Market Entry Targets ({j + 1} of 4)" for j in range(4)
+    ]
+    tail = _all_slides_text(prs)
+    assert "These materials are confidential and proprietary" in tail
+    assert "Neil Selfe, Managing Principal" in tail
