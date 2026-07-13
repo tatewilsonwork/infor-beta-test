@@ -2,12 +2,21 @@
 
 The blank library is 16 slides (incl. the insider-ownership slide, which
 follows the Financial Summary slide, and the precedent-transactions slide,
-which follows the comparable-companies slide); the market-entry section grows
-across multiple slides — two targets per slide — by cloning the library's
-market-entry slide, so an assembled deck has ``16 + (market_entry_slides - 1)``
-slides (e.g. 8 targets → 4 market-entry slides → 19-slide deck). The
-insider-ownership and precedent-transactions slides sit at fixed deck indices;
-disclaimer/contact remain the last two slides.
+which follows the comparable-companies slide). The deck's slide mix is
+configurable, so slide indices are computed from the SlidePlan rather than
+hardcoded:
+
+- the market-entry section grows across multiple slides — two targets per
+  slide — by cloning the library's market-entry slide (8 targets → 4
+  market-entry slides → 19-slide deck);
+- the Financial Summary section grows the same way — four metrics per slide —
+  when the SlidePlan carries more than one ``financial-summary`` entry (the
+  deck spec's "2 slides / 8 metrics" option);
+- the Key Investment Highlights slide is deleted when the SlidePlan omits its
+  entry (the deck spec's "omit" option).
+
+Every slide *after* the Financial Summary section shifts with the section's
+size; disclaimer/contact remain the last two slides.
 """
 
 from __future__ import annotations
@@ -38,18 +47,27 @@ from schemas import PitchDeckContent, SlidePlan
 
 # Zero-based index of the earnings-summary entry inserted into the shared
 # 17-slide library. The pitch deck does not use it, so it is dropped on open,
-# restoring the 16-slide pitch ordering this assembler's indices assume.
+# restoring the 16-slide pitch ordering the layout math below assumes.
 _EARNINGS_LIBRARY_SLIDE_INDEX = 7
 
-# Market-entry slide index in the raw 17-slide library (before the earnings
-# slide is dropped). Market-entry slides are cloned here BEFORE the delete so
-# python-pptx allocates fresh, non-colliding slide part names.
+# Clone/delete targets in the RAW 17-slide library (before the earnings slide
+# is dropped). Extra market-entry / Financial Summary slides are cloned BEFORE
+# the delete so python-pptx allocates fresh, non-colliding slide part names.
+_LIBRARY_FINANCIAL_SUMMARY_INDEX = 8
 _LIBRARY_MARKET_ENTRY_INDEX = 14
 
-# Deck indices after the earnings slide is dropped (final 16-slide pitch order).
+# Fixed deck indices after the earnings slide is dropped. Only slides BEFORE
+# the Financial Summary section have fixed indices — everything after it is
+# computed per-deck by `_pitch_layout` (the FS section can hold 1-2 slides and
+# the Key Investment Highlights slide can be omitted).
 _OVERVIEW_SLIDE_INDEX = 6          # slide 7 — public-company overview
-_PRECEDENTS_SLIDE_INDEX = 11       # slide 12 — precedent transactions (follows comps)
-_MARKET_ENTRY_SLIDE_INDEX = 13     # slide 14 — first market-entry slide
+_FINANCIAL_SUMMARY_FIRST_INDEX = 7 # slide 8 — first Financial Summary slide
+
+# Financial Summary slide title shape + the four metric-label tiles it carries
+# (each cloned FS slide has the same shape names).
+_FS_TITLE_SHAPE = "Title 6"
+_FS_METRIC_TILES = ["Rectangle 13", "Rectangle 12", "Rectangle 15", "Rectangle 14"]
+_FS_TILES_PER_SLIDE = len(_FS_METRIC_TILES)
 
 # Slide 7 cap-table placeholder; the picture covers the capitalization summary
 # plus the Financial/Valuation metric rows (same range as the earnings overview).
@@ -63,9 +81,7 @@ _CAP_TABLE_RANGE = "B15:F40"
 # Select-Institutions block (top-12 + subtotal + Other Shareholders + Total)
 # when the ownership stage ingested a Bloomberg export (Bloomberg Output C14
 # populated); otherwise it stays a Bloomberg placeholder. The slide follows the
-# Financial Summary slide, so its deck index is fixed (independent of the
-# market-entry slide count) after the earnings drop.
-_OWNERSHIP_SLIDE_INDEX = 8         # slide 9 — insider ownership
+# Financial Summary section, so its deck index comes from `_pitch_layout`.
 _OWNERSHIP_PLACEHOLDER = "Rectangle 1"
 _OWNERSHIP_SHEET = "Ownership"
 _OWNERSHIP_RANGE = "B4:G17"
@@ -466,6 +482,32 @@ def _fill_market_entry_targets(
     )
 
 
+class _PitchLayout:
+    """Computed zero-based deck indices for a configurable pitch slide mix.
+
+    The prefix (cover .. overview, indices 0-6) is fixed; everything after the
+    Financial Summary section shifts with ``n_financial_summary`` and the
+    optional Key Investment Highlights slide. Disclaimer/contact follow the
+    market-entry section.
+    """
+
+    def __init__(self, *, n_financial_summary: int, include_investment_highlights: bool, n_market_entry: int):
+        if n_financial_summary < 1:
+            raise ValueError("the deck needs at least one Financial Summary slide")
+        self.n_financial_summary = n_financial_summary
+        self.include_investment_highlights = include_investment_highlights
+        self.n_market_entry = n_market_entry
+        nfs = n_financial_summary
+        self.financial_summary = list(range(_FINANCIAL_SUMMARY_FIRST_INDEX, _FINANCIAL_SUMMARY_FIRST_INDEX + nfs))
+        self.ownership = 7 + nfs
+        self.risks = 8 + nfs
+        self.comps = 9 + nfs
+        self.precedents = 10 + nfs
+        self.investment_highlights = 11 + nfs if include_investment_highlights else None
+        self.market_entry_first = 11 + nfs + (1 if include_investment_highlights else 0)
+        self.total = self.market_entry_first + n_market_entry + 2  # + disclaimer/contact
+
+
 def assemble_pitch_deck(
     *,
     slide_plan_path: Path | str,
@@ -478,20 +520,29 @@ def assemble_pitch_deck(
 ) -> Path:
     """Fill the INFOR slide-library pitch deck.
 
-    The blank library is 16 slides; the market-entry section expands across
-    multiple slides (two targets per slide) based on
-    ``content.market_entry_targets``. The cap table is pasted into slide 7 when
-    ``captable_workbook_path`` is supplied, and the insider-ownership table into
-    the ownership slide when ``ownership_workbook_path`` is supplied (both via the
-    ``excel_to_powerpoint`` insertion helper). When the ownership workbook also
-    carries Bloomberg institutional data, the Select-Institutions block is pasted
-    into the slide's right placeholder too; other chart/table insertions remain
-    deferred placeholders.
+    The blank library is 16 slides; the SlidePlan drives the slide mix:
 
-    ``financial_metric_labels`` are the four Financial Summary tile labels,
-    selected by and handed off from the ``financial-summary`` stage (no longer on
-    ``PitchDeckContent``). When supplied it must hold exactly four names; when
-    None the slide-8 tiles keep their template placeholder text.
+    - the market-entry section expands across multiple slides (two targets per
+      slide) based on ``content.market_entry_targets``;
+    - the Financial Summary section expands to one slide per four metrics when
+      the SlidePlan carries repeated ``financial-summary`` entries (the extra
+      slides are cloned from the library's FS slide and retitled ``(k of n)``);
+    - the Key Investment Highlights slide is deleted when the SlidePlan omits
+      its ``key-investment-highlights`` entry.
+
+    The cap table is pasted into slide 7 when ``captable_workbook_path`` is
+    supplied, and the insider-ownership table into the ownership slide when
+    ``ownership_workbook_path`` is supplied (both via the ``excel_to_powerpoint``
+    insertion helper). When the ownership workbook also carries Bloomberg
+    institutional data, the Select-Institutions block is pasted into the slide's
+    right placeholder too; other chart/table insertions remain deferred
+    placeholders.
+
+    ``financial_metric_labels`` are the Financial Summary tile labels, selected
+    by and handed off from the ``financial-summary`` stage (no longer on
+    ``PitchDeckContent``). When supplied it must hold exactly four names per
+    Financial Summary slide in the plan (4 for the default single slide, 8 for
+    two); when None the FS tiles keep their template placeholder text.
     """
     slide_plan = SlidePlan.model_validate_json(Path(slide_plan_path).read_text(encoding="utf-8"))
     content = PitchDeckContent.model_validate_json(Path(content_path).read_text(encoding="utf-8"))
@@ -516,22 +567,50 @@ def assemble_pitch_deck(
         else None
     )
 
-    prs = Presentation(template)
-
-    # Grow the market-entry section (two targets per slide) by cloning the
-    # library's market-entry slide. Clone BEFORE dropping the earnings slide so
-    # python-pptx allocates fresh, non-colliding slide part names.
+    # The SlidePlan drives the deck's slide mix: the Financial Summary slide
+    # count and the Key Investment Highlights toggle come from the wireframe's
+    # entries; the market-entry slide count comes from the true content-bundle
+    # target count (the wireframe count is only a default).
+    plan_entry_ids = [entry.library_entry_id for entry in slide_plan.slides]
+    n_financial_summary = max(1, plan_entry_ids.count("financial-summary"))
+    include_kih = "key-investment-highlights" in plan_entry_ids
     n_market_entry = (
         max(1, math.ceil(len(content.market_entry_targets) / 2))
         if content.market_entry_targets
         else 1
     )
+    layout = _PitchLayout(
+        n_financial_summary=n_financial_summary,
+        include_investment_highlights=include_kih,
+        n_market_entry=n_market_entry,
+    )
+    if financial_metric_labels and len(financial_metric_labels) != _FS_TILES_PER_SLIDE * n_financial_summary:
+        raise ValueError(
+            f"financial_metric_labels holds {len(financial_metric_labels)} names but the "
+            f"SlidePlan carries {n_financial_summary} Financial Summary slide(s) — expected "
+            f"{_FS_TILES_PER_SLIDE * n_financial_summary} (four tiles per slide)"
+        )
+
+    prs = Presentation(template)
+
+    # Grow the market-entry section (two targets per slide) and the Financial
+    # Summary section (four metrics per slide) by cloning their library slides.
+    # Clone BEFORE dropping the earnings slide so python-pptx allocates fresh,
+    # non-colliding slide part names; market-entry first so its raw index is
+    # still valid when the FS clones shift everything after index 8.
     for _ in range(n_market_entry - 1):
         clone_slide_after(prs, _LIBRARY_MARKET_ENTRY_INDEX)
+    for _ in range(n_financial_summary - 1):
+        clone_slide_after(prs, _LIBRARY_FINANCIAL_SUMMARY_INDEX)
 
     # The shared library carries the earnings-update slide at index 7. Drop it
     # so the remaining slides keep the canonical pitch ordering.
     delete_slide(prs, _EARNINGS_LIBRARY_SLIDE_INDEX)
+
+    # Drop the Key Investment Highlights slide when the plan omits it. Done
+    # after the earnings delete, at its computed post-delete index.
+    if not include_kih:
+        delete_slide(prs, 11 + n_financial_summary)
 
     # Slide 1 — cover: client name/date only.
     slide1 = prs.slides[0]
@@ -573,41 +652,53 @@ def assemble_pitch_deck(
     if currency_letter is not None:
         fill_footnote_token(find_shape(slide7, "Text Placeholder 1"), currency_letter)
 
-    # Slide 8 — financial metric labels only (from the financial-summary stage);
-    # charts remain placeholders. Left as template placeholders when no labels.
-    if financial_metric_labels:
-        slide8 = prs.slides[7]
-        metric_shapes = ["Rectangle 13", "Rectangle 12", "Rectangle 15", "Rectangle 14"]
-        for shape_name, label in zip(metric_shapes, financial_metric_labels, strict=True):
-            set_text(find_shape(slide8, shape_name), [label])
+    # Financial Summary slide(s) — metric labels only (from the financial-summary
+    # stage); charts remain placeholders. Left as template placeholders when no
+    # labels. With two FS slides, tiles fill four labels per slide in order and
+    # each slide is retitled '(k of n)'.
+    for k, fs_index in enumerate(layout.financial_summary):
+        fs_slide = prs.slides[fs_index]
+        if n_financial_summary > 1:
+            set_text(
+                find_shape(fs_slide, _FS_TITLE_SHAPE),
+                [f"Financial Summary ({k + 1} of {n_financial_summary})"],
+            )
+        if financial_metric_labels:
+            slide_labels = financial_metric_labels[
+                _FS_TILES_PER_SLIDE * k : _FS_TILES_PER_SLIDE * (k + 1)
+            ]
+            for shape_name, label in zip(_FS_METRIC_TILES, slide_labels, strict=True):
+                set_text(find_shape(fs_slide, shape_name), [label])
 
-    # Slide 10 — concise acquirer risks and mitigants + tagline; the table is
+    # Acquirer considerations/mitigants — concise risks + tagline; the table is
     # clamped back to the library's 5.18" after fill (see _fill_risk_table).
-    slide10 = prs.slides[9]
-    set_text(find_shape(slide10, "Text Placeholder 6"), [content.risks_tagline])
-    _fill_risk_table(slide10, content)
+    slide_risks = prs.slides[layout.risks]
+    set_text(find_shape(slide_risks, "Text Placeholder 6"), [content.risks_tagline])
+    _fill_risk_table(slide_risks, content)
 
-    # Slide 11 — comps takeaway; chart placeholder remains unless insertion later replaces it.
-    slide11 = prs.slides[10]
-    set_text(find_shape(slide11, "Text Placeholder 5"), [content.comps_takeaway])
+    # Comps takeaway; chart placeholder remains unless insertion later replaces it.
+    slide_comps = prs.slides[layout.comps]
+    set_text(find_shape(slide_comps, "Text Placeholder 5"), [content.comps_takeaway])
 
-    # Slide 12 — precedent-transactions takeaway; chart placeholder remains (no
+    # Precedent-transactions takeaway; chart placeholder remains (no
     # Excel→PowerPoint while Capital IQ can't be refreshed), mirroring comps.
-    slide_prec = prs.slides[_PRECEDENTS_SLIDE_INDEX]
+    slide_prec = prs.slides[layout.precedents]
     set_text(find_shape(slide_prec, "Text Placeholder 5"), [content.precedents_takeaway])
 
-    # Slide 13 — key investment highlights; placeholders remain unless content supplies them.
-    slide13 = prs.slides[12]
-    _fill_investment_highlights(slide13, content)
-    if currency_letter is not None:
-        fill_footnote_token(find_shape(slide13, "Text Placeholder 13"), currency_letter)
+    # Key investment highlights — only when the plan carries the slide;
+    # placeholders remain unless content supplies them.
+    if layout.investment_highlights is not None:
+        slide_kih = prs.slides[layout.investment_highlights]
+        _fill_investment_highlights(slide_kih, content)
+        if currency_letter is not None:
+            fill_footnote_token(find_shape(slide_kih, "Text Placeholder 13"), currency_letter)
 
-    # Slides 14+ — potential market-entry targets, two per slide. The section was
-    # grown above; fill each slide with its pair and title it '(N of M)'.
+    # Market-entry targets, two per slide. The section was grown above; fill
+    # each slide with its pair and title it '(N of M)'.
     for j in range(n_market_entry):
         pair = content.market_entry_targets[2 * j : 2 * j + 2]
         _fill_market_entry_targets(
-            prs.slides[_MARKET_ENTRY_SLIDE_INDEX + j],
+            prs.slides[layout.market_entry_first + j],
             row_labels=content.market_entry_row_labels,
             targets=pair,
             market=content.market_entry_market,
@@ -636,9 +727,9 @@ def assemble_pitch_deck(
 
     # Paste the insider-ownership table into the ownership slide's left
     # "Insiders" placeholder (mirrors the cap-table insertion). The ownership
-    # slide follows the Financial Summary slide at a fixed deck index. When the
-    # ownership stage also ingested a Bloomberg export (Bloomberg Output C14
-    # populated), the right "Institutions" placeholder gets the
+    # slide follows the Financial Summary section at its computed layout index.
+    # When the ownership stage also ingested a Bloomberg export (Bloomberg
+    # Output C14 populated), the right "Institutions" placeholder gets the
     # Select-Institutions block too; otherwise it stays a Bloomberg placeholder.
     institutions_inserted = False
     if ownership_workbook_path is not None:
@@ -646,7 +737,7 @@ def assemble_pitch_deck(
             deck_path=output_path,
             workbook_path=ownership_workbook_path,
             output_path=output_path,
-            slide_index=_OWNERSHIP_SLIDE_INDEX,
+            slide_index=layout.ownership,
             placeholder_name=_OWNERSHIP_PLACEHOLDER,
             sheet_name=_OWNERSHIP_SHEET,
             source_range=_OWNERSHIP_RANGE,
@@ -656,7 +747,7 @@ def assemble_pitch_deck(
                 deck_path=output_path,
                 workbook_path=ownership_workbook_path,
                 output_path=output_path,
-                slide_index=_OWNERSHIP_SLIDE_INDEX,
+                slide_index=layout.ownership,
                 placeholder_name=_INSTITUTIONS_PLACEHOLDER,
                 sheet_name=_OWNERSHIP_SHEET,
                 source_range=_INSTITUTIONS_RANGE,
@@ -668,6 +759,7 @@ def assemble_pitch_deck(
         cap_table_inserted=captable_workbook_path is not None,
         ownership_inserted=ownership_workbook_path is not None,
         institutions_inserted=institutions_inserted,
+        expected_slides=layout.total,
     )
     return output_path
 
@@ -678,8 +770,14 @@ def _verify_pitch_output(
     cap_table_inserted: bool = False,
     ownership_inserted: bool = False,
     institutions_inserted: bool = False,
+    expected_slides: int | None = None,
 ) -> None:
     prs = Presentation(path)
+    if expected_slides is not None and len(prs.slides) != expected_slides:
+        raise ValueError(
+            f"assembled pitch deck has {len(prs.slides)} slides; the slide-mix "
+            f"layout expected {expected_slides}"
+        )
     text = _all_text(prs)
     forbidden = ["[CLIENT NAME]", "[Date]"]
     leftovers = [token for token in forbidden if token in text]

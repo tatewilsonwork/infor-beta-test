@@ -1,22 +1,26 @@
 ---
 name: financial-charts
 description: >
-  Use this skill as the pitch plan's post-aggregation `financial-charts` stage. It builds the four
-  INFOR-formatted clustered-column charts for the deck's Financial Summary slide on the combined
-  pitch workbook's `financial-summary` tab — where each flow metric's LTM link resolves — then
-  renders them into the slide's four chart placeholders. It also builds the overview slide's LTM
-  revenue-by-segment pie on the combined workbook's `ltm-metrics` tab and drops it into the
-  "[Pie Chart Placeholder]". Runs after `workbook-aggregation`.
-version: 0.5.25
+  Use this skill as the pitch plan's post-aggregation `financial-charts` stage. It builds the
+  INFOR-formatted clustered-column charts for the deck's Financial Summary slide(s) — one per
+  metric row, four per slide — on the combined pitch workbook's `financial-summary` tab — where
+  each flow metric's LTM link resolves — then renders them into each FS slide's four chart
+  placeholders. It also builds the overview slide's LTM revenue-by-segment pie on the combined
+  workbook's `ltm-metrics` tab and drops it into the "[Pie Chart Placeholder]". Runs after
+  `workbook-aggregation`.
+version: 0.5.26
 allowed-tools: [Read, Write, Bash]
 ---
 
 # Financial Summary Charts — Workflow
 
-This stage finishes the pitch deck's **Financial Summary** slide (library entry 8). The
-`financial-summary` stage already built the chart-ready data tab and the deck-assembler already
-filled the four metric **name** tiles; this stage builds the **four charts** (one per metric) and
-drops them into the slide's four chart placeholders.
+This stage finishes the pitch deck's **Financial Summary** slide(s) (library entry 8 — one slide
+by default, two when the deck spec asked for 8 metrics). The `financial-summary` stage already
+built the chart-ready data tab and the deck-assembler already filled the metric **name** tiles;
+this stage builds the **charts** (one per metric row — 4 or 8) and drops them into each FS slide's
+four chart placeholders. The helper discovers the FS slides by scanning the deck for the Metric #1
+placeholder and detects the metric rows from the tab, so 4-metric and 8-metric decks run the same
+call.
 
 It also fills the **overview** slide's deferred **LTM revenue pie** — see the section below. Both
 the FS charts and the pie ride this single post-aggregation stage because the data live on the same
@@ -25,7 +29,7 @@ combined workbook (FS charts off the `financial-summary` tab, the pie off the `l
 ## Mandatory: build the charts with the helper (no hand-rolling)
 
 This stage **must** build every chart by calling the two `scripts/financial_charts.py`
-orchestrators — `render_financial_summary_charts_into_deck(...)` for the four Financial Summary
+orchestrators — `render_financial_summary_charts_into_deck(...)` for the Financial Summary
 charts and `render_ltm_revenue_pie_into_deck(...)` for the overview pie (see the Reference
 command). Do **not** hand-roll charts with `matplotlib`, `plotly`, Pillow, or any other plotting
 library, and do not draw the chart images yourself — the analyst needs real, editable Excel
@@ -33,10 +37,10 @@ charts on the workbook, not flat pictures.
 
 Each helper does two things that are both required and must not be split apart:
 
-1. **Persists native chart objects on the combined workbook** — the four clustered-column charts
+1. **Persists native chart objects on the combined workbook** — the clustered-column charts
    on the `financial-summary` tab and the pie on the `ltm-metrics` tab — so opening
    `pitch-<codename>.xlsx` shows real Excel chart objects.
-2. **Inserts the rendered charts into the deck** — the four chart placeholders on the Financial
+2. **Inserts the rendered charts into the deck** — the four chart placeholders on each Financial
    Summary slide and the `[Pie Chart Placeholder]` on the overview slide.
 
 The helpers save the native charts to the workbook **first**, then render the deck images. If
@@ -91,9 +95,10 @@ When invoked as a stage, the environment carries `$STAGE_INPUTS`, `$STAGE_OUTPUT
 
 ## What the charts look like (the only formatting that matters)
 
-One **clustered-column** chart per metric (4 total): a single data series = that metric's row
-(`B{r}:G{r}`, `r` ∈ 6,7,8,9), categories = the period header (`B5:G5`). Read the header row
-**dynamically** so a suppressed-LTM tab (`B5:F5`) charts five columns instead of six.
+One **clustered-column** chart per metric (4 or 8 total): a single data series = that metric's row
+(`B{r}:G{r}`, `r` from 6 down — rows 6-9 for four metrics, 6-13 for eight; detected from the tab),
+categories = the period header (`B5:G5`). Read the header row **dynamically** so a suppressed-LTM
+tab (`B5:F5`) charts five columns instead of six.
 
 - Font: **Palatino Linotype 9 pt, black** (data labels + category-axis labels)
 - **No** chart title
@@ -109,14 +114,18 @@ One **clustered-column** chart per metric (4 total): a single data series = that
   cell, never a bare `102.7`
 - All bars fill **RGB(70, 86, 110)** (hex `46566E`)
 
-## Placeholder ↔ metric mapping (Financial Summary slide = `prs.slides[7]`)
+## Placeholder ↔ metric mapping (per Financial Summary slide)
 
-| Metric | data row | chart placeholder | box (L", T") |
+The helper finds every FS slide by its `Rectangle 17` / `[Placeholder for Metric #1 Chart]`
+marker (slide 8 in the default deck; slides 8-9 when the deck spec asked for two). FS slide *k*
+(zero-based) charts tab rows `6+4k .. 9+4k` onto the same four placeholder shapes:
+
+| Metric on the slide | data row (slide k) | chart placeholder | box (L", T") |
 |--------|----------|-------------------|--------------|
-| #1 | 6 | `Rectangle 17` | 0.35, 1.51 |
-| #2 | 7 | `Rectangle 7`  | 5.12, 1.51 |
-| #3 | 8 | `Rectangle 19` | 0.35, 4.42 |
-| #4 | 9 | `Rectangle 18` | 5.12, 4.42 |
+| #1 | 6+4k | `Rectangle 17` | 0.35, 1.51 |
+| #2 | 7+4k | `Rectangle 7`  | 5.12, 1.51 |
+| #3 | 8+4k | `Rectangle 19` | 0.35, 4.42 |
+| #4 | 9+4k | `Rectangle 18` | 5.12, 4.42 |
 
 Each placeholder is 4.53" × 2.51"; the rendered chart is stretched to its box.
 
@@ -158,23 +167,24 @@ skipped and the placeholder is left in place (the null path).
 ## Workflow
 
 1. Read `$STAGE_INPUTS`.
-2. Call `render_financial_summary_charts_into_deck(...)` (see the reference command). It builds the
-   four charts on the combined workbook's `financial-summary` tab and inserts them into the deck.
+2. Call `render_financial_summary_charts_into_deck(...)` (see the reference command). It builds one
+   chart per metric row on the combined workbook's `financial-summary` tab and inserts them into
+   every FS slide in the deck (four per slide, discovered by scanning).
 3. Call `render_ltm_revenue_pie_into_deck(...)` on the **deck written by step 2** (chain the same
    path) to build + insert the overview LTM revenue pie. A `None` return means the pie was skipped
    (no `ltm-metrics` tab / block) — leave the placeholder.
-4. **Chart QA — mandatory, do not skip.** Render the overview slide **and** the Financial Summary
-   slide to PNG with `render_deck_to_png(deck_path, out, slide_indices=[6, 7])`, read the PNGs, and
-   confirm:
+4. **Chart QA — mandatory, do not skip.** Render the overview slide **and** every Financial Summary
+   slide to PNG with `render_deck_to_png(deck_path, out, slide_indices=[6, 7])` (append index 8
+   when the deck carries a second FS slide), read the PNGs, and confirm:
    - **Overview (slide 6):** the pie filled the placeholder; **at most 5 slices** (top 4 +
      "Other"); legend on the **right** showing **every** slice's entry (including "Other") with
      the pie sitting **clear of it** (no overlap); INFOR accent slice fills; labels read as
      percentages (`45.2%`) in **white, inside their slices** (none floating outside the pie) and
      appear **only on slices above 3%**; no title / no border; reads legibly in the wide/short box.
-   - **Financial Summary (slide 7):** all four charts landed; INFOR formatting (bars `46566E`, data
-     labels outside-end reading **`$102.7`-style currency** exactly like the tab's cells, **no
-     border**, a **visible solid black** category-axis baseline line under the bars, no value
-     axis / gridlines / title, Palatino 9);
+   - **Each Financial Summary slide (7, and 8 when present):** all four charts landed; INFOR
+     formatting (bars `46566E`, data labels outside-end reading **`$102.7`-style currency** exactly
+     like the tab's cells, **no border**, a **visible solid black** category-axis baseline line
+     under the bars, no value axis / gridlines / title, Palatino 9);
    - the combined-metric and LTM bars use the **same scale** as the fiscal-year bars (no 10⁶
      mismatch — a symptom of a units mismatch between the `financial-summary` and `ltm-metrics`
      tabs; both must be in millions with an `"MM"` suffix).
@@ -203,7 +213,8 @@ deal_dir = Path(os.environ.get("DEAL_DIR", "."))
 deck_path = inputs["deck_path"]
 combined = inputs["combined_workbook_path"]
 
-# 1) Financial Summary charts (slide 7) — modifies the deck in place.
+# 1) Financial Summary charts — one per metric row, inserted into every FS
+#    slide (discovered by scanning the deck); modifies the deck in place.
 fs_deck = render_financial_summary_charts_into_deck(
     deck_path=deck_path,
     combined_workbook_path=combined,
@@ -219,7 +230,8 @@ pie_deck = render_ltm_revenue_pie_into_deck(
 pie_inserted = pie_deck is not None
 deck_path = str(pie_deck) if pie_deck is not None else deck_path
 
-# 3) Mandatory QA render — overview (index 6) + Financial Summary (index 7).
+# 3) Mandatory QA render — overview (index 6) + every Financial Summary slide
+#    (index 7, plus 8 when the deck carries two FS slides).
 qa_dir = deal_dir / "runs" / "financial-charts-qa"
 render_deck_to_png(deck_path, qa_dir, slide_indices=[6, 7])
 # → read qa_dir/slide_7.png (overview pie) and slide_8.png (FS charts) and confirm

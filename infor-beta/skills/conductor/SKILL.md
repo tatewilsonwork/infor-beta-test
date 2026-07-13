@@ -4,13 +4,14 @@ description: >
   Use this skill when the user wants to build a complete INFOR deliverable end-to-end —
   pitch, earnings update, or overview deck — instead of
   invoking individual skills. Activates on "build a <deliverable>", "kick off
-  <deliverable>", "conductor", "/conductor", "orchestrate", or any request that names a
-  deliverable type rather than a single workflow step. The conductor handles deal-init
-  (one G7 prompt per codename), loads the plan YAML for the deliverable, collects
-  plan-specific inputs, dispatches each stage to its skill via the Agent tool with a
-  file-based input / output handoff, and emits a run log under
-  ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.25
+  <deliverable>", "conductor", "/conductor", "orchestrate", the /pitch and
+  /earnings-update commands (which preset the deliverable type + subject company), or
+  any request that names a deliverable type rather than a single workflow step. The
+  conductor handles deal-init (one G7 prompt per codename), loads the plan YAML for the
+  deliverable, collects plan-specific inputs via the locked deck-spec questionnaire,
+  dispatches each stage to its skill via the Agent tool with a file-based input / output
+  handoff, and emits a run log under ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
+version: 0.5.26
 allowed-tools: [Read, Write, Bash, Glob, Task]
 ---
 
@@ -34,6 +35,10 @@ sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scri
 from schemas import Plan, Stage, DealContext, InputSpec
 from codename import resolve, find_existing, disambiguate
 from deal_init import render_init_prompt, load_or_locate_deal, save_deal_context, load_deal_context
+from deck_spec import (
+    render_deck_spec_prompt, metric_count_from_slides, market_entry_targets_from_slides,
+    PITCH_ITEM_PLAN_INPUTS, EARNINGS_UPDATE_ITEM_PLAN_INPUTS,
+)
 from plan_refs import resolve_refs
 from plan_schedule import compute_waves
 from run_log import (
@@ -55,6 +60,8 @@ Read the analyst's request. Extract:
 - **Deliverable type**: `pitch` / `earnings-update` / `overview` / `one-off-skill`. If ambiguous, ask before continuing. (`overview` is a stub plan — not yet implemented; say so if selected.)
 - **Codename**: the analyst's `Project <target>` string. If absent, ask for it.
 
+**Slash-command entry.** The plugin ships `/pitch <company name>` and `/earnings-update <company name>` commands that route here with the deliverable type AND the subject company name pre-answered. When entered that way, do not re-ask either — only the codename (and the remaining G7 items) still need collecting.
+
 If the analyst is invoking a **one-off skill** (no deliverable plan needed), say so and stop — the conductor only orchestrates plans. Direct skill invocation is for one-offs.
 
 ### Step 2 — Deal-init (once per deal)
@@ -75,9 +82,19 @@ Plans live at `${CLAUDE_PLUGIN_ROOT}/plans/<deliverable>.yaml`. Resolve and read
 Read the plan's `description` and present a one-paragraph summary to the analyst:
 > "Plan for `<deliverable>` has N stages: `<stage_id_1>` (skill: `<skill_1>`), `<stage_id_2>` (skill: `<skill_2>`), …. Plan inputs required: `<list>`. Checkpoints: `<list of required checkpoints>`."
 
-### Step 4 — Collect plan inputs
+### Step 4 — Collect plan inputs (deck-spec questionnaire)
 
-For each `InputSpec` in `plan.plan_inputs` where `required is True`, prompt the analyst (in a single message — ask for all of them at once). For optional inputs, ask only if the analyst's initial message did not already supply them.
+For `pitch` and `earnings-update`, render the **locked deck-spec questionnaire** verbatim in a single message — `render_deck_spec_prompt(plan.deliverable_type)` — and collect every answer at once. The questionnaire is code-owned (like the G7 prompt) so every run asks the same questions in the same order; do NOT paraphrase it, reorder its items, or invent extra questions, and never re-ask a G7 item. If the analyst's earlier messages already answered some items, still render the questionnaire once, mark those items "(from your message: …)" inline, and only ask for what is missing. `"defaults"` accepts every bracketed default.
+
+Map the answers onto `plan_inputs` with the module's item tables (`PITCH_ITEM_PLAN_INPUTS` / `EARNINGS_UPDATE_ITEM_PLAN_INPUTS`). Three pitch answers convert deterministically instead of passing through verbatim:
+
+- item 6 (Financial Summary slides) → `financial_metric_count = metric_count_from_slides(n_slides)` (4 per slide; the deck supports 1 or 2 FS slides),
+- item 7 (acquisition-target slides) → `market_entry_target_count = market_entry_targets_from_slides(n_slides)` (2 per slide, at most 4 slides),
+- item 8 (Key Investment Highlights) → `include_investment_highlights = False` only on "omit"; any include variant leaves the input unset (analyst-dictated highlight copy belongs in the item-3 analyst notes).
+
+An answer that just accepts a default is left OUT of `plan_inputs` (see the optional-input rule below). Files the analyst attaches at the questionnaire (SEDI PDF, Bloomberg export, EEO snip, CIM) are saved under `<deal_dir>/filings/` exactly like G7 attachments.
+
+For any other deliverable (no questionnaire — `render_deck_spec_prompt` raises `ValueError`), fall back to the generic collection: for each `InputSpec` in `plan.plan_inputs` where `required is True`, prompt the analyst in a single message; for optional inputs, ask only if the analyst's initial message did not already supply them.
 
 Store the collected values as a plain dict `plan_inputs: dict[str, Any]`. Validate types informally — exact pydantic-validation of plan-input values is deferred; in v1 the type field is documentation.
 

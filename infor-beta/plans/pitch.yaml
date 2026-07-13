@@ -1,11 +1,13 @@
-# Pitch plan — 16-slide INFOR slide-library deck
+# Pitch plan — INFOR slide-library deck (16-slide base, configurable slide mix)
 #
-# Fills the canonical 16-slide INFOR Slide Library template end-to-end while
-# preserving static credential/disclaimer/contact slides and deferring complex
-# chart generation.
+# Fills the canonical INFOR Slide Library template end-to-end while preserving
+# static credential/disclaimer/contact slides and deferring complex chart
+# generation. Three deck-spec inputs adjust the slide mix: the market-entry
+# (acquisition-target) slide count, the Financial Summary slide count (4 or 8
+# metrics), and the optional Key Investment Highlights slide.
 
 deliverable_type: pitch
-description: 16-slide INFOR slide-library pitch deck.
+description: INFOR slide-library pitch deck (16-slide base; configurable market-entry / Financial Summary / Key Investment Highlights slide mix).
 
 plan_inputs:
   - name: client_name
@@ -39,7 +41,15 @@ plan_inputs:
   - name: market_entry_target_count
     type: int
     required: false
-    description: Optional number of market-entry (acquisition) targets. When the analyst does not specify a count, the plugin defaults to 8 (4 slides, two targets per slide).
+    description: Optional number of market-entry (acquisition) targets. When the analyst does not specify a count, the plugin defaults to 8 (4 slides, two targets per slide). Deck-spec item 7 answers in slides; targets = slides × 2.
+  - name: financial_metric_count
+    type: int
+    required: false
+    description: Optional Financial Summary metric count — 4 (default, one slide) or 8 (two slides, four tiles each). Deck-spec item 6 answers in slides; metrics = slides × 4.
+  - name: include_investment_highlights
+    type: bool
+    required: false
+    description: Optional Key Investment Highlights toggle — omitted/true keeps the slide; false drops it from the deck (deck-spec item 8 "omit").
   - name: cim_path
     type: Path
     required: false
@@ -62,6 +72,8 @@ stages:
       section_labels: $plan_inputs.section_labels
       current_section: $plan_inputs.current_section
       market_entry_target_count: $plan_inputs.market_entry_target_count
+      financial_metric_count: $plan_inputs.financial_metric_count
+      include_investment_highlights: $plan_inputs.include_investment_highlights
     outputs:
       - name: slide_plan_path
         type: Path
@@ -78,6 +90,7 @@ stages:
       cim_path: $plan_inputs.cim_path
       valuation_range: $plan_inputs.valuation_range
       risk_notes: $plan_inputs.risk_notes
+      include_investment_highlights: $plan_inputs.include_investment_highlights
       slide_plan_path: $stages.wireframe.slide_plan_path
     outputs:
       - name: content_bundle_path
@@ -86,12 +99,14 @@ stages:
     checkpoint: informational
 
   # Financial Summary data tab. Runs *before* `ltm-metrics` because it is the
-  # single source of truth for the deck's four financial metrics: it selects them
-  # (industry-aware) and tells `ltm-metrics`, via `ltm_bridge_specs`, which extra
-  # metrics to bridge LTM for. It gathers the 5-fiscal-year history from the latest
-  # 10-Ks and links each metric's LTM cell to the `ltm-metrics` tab (a label-keyed
-  # lookup that resolves only in the combined workbook). Independent of the
-  # ltm/captable chain — needs only the target's facts + the attached 10-Ks.
+  # single source of truth for the deck's financial metrics (four per Financial
+  # Summary slide — 4 by default, 8 when the deck spec asks for two slides): it
+  # selects them (industry-aware) and tells `ltm-metrics`, via
+  # `ltm_bridge_specs`, which extra metrics to bridge LTM for. It gathers the
+  # 5-fiscal-year history from the latest 10-Ks and links each metric's LTM cell
+  # to the `ltm-metrics` tab (a label-keyed lookup that resolves only in the
+  # combined workbook). Independent of the ltm/captable chain — needs only the
+  # target's facts + the attached 10-Ks.
   - id: financial-summary
     skill: financial-summary
     inputs:
@@ -99,13 +114,14 @@ stages:
       ticker: $deal.subject_company.ticker
       reporting_quarter: $plan_inputs.reporting_quarter
       comparison_quarter: $plan_inputs.comparison_quarter
+      financial_metric_count: $plan_inputs.financial_metric_count
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the standalone Financial Summary .xlsx (5 FY + LTM × 4 metrics; chart-ready).
+        description: Absolute path to the standalone Financial Summary .xlsx (5 FY + LTM × the requested metric count; chart-ready).
       - name: financial_metric_labels
         type: list[str]
-        description: The four Financial Summary metric names, in tile order — read by the deck stage for slide 8.
+        description: The Financial Summary metric names, in tile order (four per deck slide) — read by the deck stage for the FS slide tiles.
       - name: ltm_bridge_specs
         type: list
         description: Flow metrics (beyond revenue + Adj. EBITDA) that ltm-metrics must bridge so this tab can link each LTM cell.
@@ -221,7 +237,7 @@ stages:
     outputs:
       - name: deck_path
         type: Path
-        description: Absolute path to the generated 16-slide POC .pptx deck.
+        description: Absolute path to the generated .pptx deck (16-slide base, adjusted by the deck-spec slide mix).
     checkpoint: informational
 
   # Final consolidation: merge every companion workbook into one file named
@@ -250,10 +266,12 @@ stages:
         description: Absolute path to the combined workbook (one tab per producing skill); replaces the individual workbooks.
     checkpoint: informational
 
-  # Financial Summary charts: build the deck's four metric charts on the COMBINED
-  # workbook's `financial-summary` tab — the only place each flow metric's
+  # Financial Summary charts: build the deck's metric charts (one per metric row
+  # — four per Financial Summary slide) on the COMBINED workbook's
+  # `financial-summary` tab — the only place each flow metric's
   # `=INDEX('ltm-metrics'!…)` LTM link resolves (the standalone tab is #N/A until
-  # this point) — then drop the rendered charts into the slide-8 placeholders.
+  # this point) — then drop the rendered charts into each FS slide's four
+  # placeholders (the slides are discovered by scanning the deck).
   # Runs after BOTH `deck` (which it edits) and `workbook-aggregation` (whose
   # combined workbook it charts); the scheduler places it alone in the final wave.
   - id: financial-charts
@@ -265,5 +283,5 @@ stages:
     outputs:
       - name: deck_path
         type: Path
-        description: The final pitch deck, with the four Financial Summary charts inserted (same file, modified in place).
+        description: The final pitch deck, with the Financial Summary charts inserted (same file, modified in place).
     checkpoint: informational

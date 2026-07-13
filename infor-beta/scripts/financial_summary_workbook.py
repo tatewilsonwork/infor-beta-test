@@ -1,9 +1,11 @@
 """Build the standalone Financial Summary data tab for the pitch deck.
 
 One **"Financial Summary"** tab holds the data behind the deck's Financial Summary
-slide (slide-library entry 8): the **4 metrics the `financial-summary` skill selected**,
-each with its **last 5 fiscal years** plus an **LTM** column. The layout is deliberately
-*chart-ready* so a later step can drop native Excel charts on top with no reshaping.
+slide(s) (slide-library entry 8): the **metrics the `financial-summary` skill selected**
+— four per deck slide, so 4 by default or 8 when the deck spec asks for two Financial
+Summary slides — each with its **last 5 fiscal years** plus an **LTM** column. The
+layout is deliberately *chart-ready* so a later step can drop native Excel charts on
+top with no reshaping.
 
 Chart-ready layout contract (rely on this from the future chart step)::
 
@@ -15,7 +17,8 @@ Chart-ready layout contract (rely on this from the future chart step)::
         A5 = "Metric"   B5..F5 = the 5 fiscal-year labels, oldest -> newest
         G5 = "LTM"      (only when the LTM column is shown — see suppression below)
         <last col> = "Units"
-    rows 6-9 (DATA — one metric per row, four rows):
+    rows 6..5+N (DATA — one metric per row; N = 4 per deck slide, so rows 6-9
+        for the default four metrics, rows 6-13 for eight):
         A = metric label (identical to the deck tile label)
         B..F = five NUMERIC fiscal-year values, chronological
         LTM cell:
@@ -67,7 +70,7 @@ _SHEET_TITLE = "Financial Summary"
 # must target this post-aggregation name, not the standalone "LTM Metrics" sheet.
 _DEFAULT_LTM_SHEET = "ltm-metrics"
 
-_METRIC_COUNT = 4  # the deck shows exactly four tiles
+_METRIC_COUNT = 4  # tiles per Financial Summary slide; the default single-slide deck shows four
 # Currency value format for the metric cells (FY values, the LTM literal fallback,
 # and the LTM link cell): "$#,##0.0" positive, "($#,##0.0)" negative, "--" zero.
 _VALUE_FORMAT = '$#,##0.0_);($#,##0.0);"--"'
@@ -166,6 +169,7 @@ def build_financial_summary_workbook(
     period_note: str,
     fiscal_labels: list[str],
     metrics: "list[MetricSeries | dict]",
+    metric_count: int = _METRIC_COUNT,
     show_ltm: bool = True,
     ltm_sheet_name: str = _DEFAULT_LTM_SHEET,
     output_dir: Path | str,
@@ -174,21 +178,29 @@ def build_financial_summary_workbook(
     """Write the chart-ready Financial Summary .xlsx and return its path.
 
     ``fiscal_labels`` are the five fiscal-year column headers in chronological
-    order (oldest -> newest). ``metrics`` must hold exactly four ``MetricSeries``
-    (or dicts), each supplying one value per fiscal label. When ``show_ltm`` is
-    True an LTM column is appended; flow metrics (those with a ``result_label``)
-    link to the ``ltm-metrics`` tab and non-flow metrics show their ``ltm_value``.
-    When ``show_ltm`` is False the LTM column is dropped and a flow metric's
-    most-recent fiscal-year cell carries the LTM-tab link instead (req 5).
+    order (oldest -> newest). ``metrics`` must hold exactly ``metric_count``
+    ``MetricSeries`` (or dicts) — a positive multiple of 4 because every deck
+    Financial Summary slide shows four tiles (default 4 = the single-slide deck;
+    8 = the two-slide deck) — each supplying one value per fiscal label. When
+    ``show_ltm`` is True an LTM column is appended; flow metrics (those with a
+    ``result_label``) link to the ``ltm-metrics`` tab and non-flow metrics show
+    their ``ltm_value``. When ``show_ltm`` is False the LTM column is dropped and
+    a flow metric's most-recent fiscal-year cell carries the LTM-tab link
+    instead (req 5).
 
     Raises ValueError on the wrong metric count, a fiscal-value count that does
     not match ``fiscal_labels``, or a flow metric missing its ``result_label``
     while a non-flow metric has neither a link nor an ``ltm_value``.
     """
-    rows = [_normalize_metric(m) for m in metrics]
-    if len(rows) != _METRIC_COUNT:
+    if metric_count <= 0 or metric_count % 4 != 0:
         raise ValueError(
-            f"Financial Summary holds exactly {_METRIC_COUNT} metrics; got {len(rows)}"
+            f"metric_count must be a positive multiple of 4 (four tiles per "
+            f"Financial Summary slide); got {metric_count}"
+        )
+    rows = [_normalize_metric(m) for m in metrics]
+    if len(rows) != metric_count:
+        raise ValueError(
+            f"Financial Summary holds exactly {metric_count} metrics; got {len(rows)}"
         )
     if not fiscal_labels:
         raise ValueError("at least one fiscal-year label is required")
