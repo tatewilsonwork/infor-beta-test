@@ -55,8 +55,10 @@ See `_relink_cross_tab_openpyxl` / `_relink_cross_tab_com`.
 Hyperlinks + comments: the openpyxl merge copies each cell's hyperlink and
 comment alongside its value and style (`_copy_sheet`), so the precedents source
 links on `AB`–`AG` and the cap table's commented CapIQ refresh formulas
-(`F7`/`F16`) survive the off-Windows merge; the COM backend preserves both
-natively via Excel's copy.
+(`F7`/`F16`) — including the "Source: <url> — retrieved <date>" citation line
+the captable skill appends below each formula (v0.5.31, `comment_citations`) —
+survive the off-Windows merge; the COM backend preserves both natively via
+Excel's copy.
 
 Tab naming: a single-sheet source becomes one tab named after the skill
 (`captable`, `ltm-metrics`); a multi-sheet source contributes one tab per

@@ -144,14 +144,19 @@ def test_merge_preserves_comments_and_hyperlinks(tmp_path: Path):
     # as cell COMMENTS (F7/F16), and openpyxl copies neither comments nor
     # hyperlinks with the style — both must be carried across explicitly or the
     # documented refresh workflow silently breaks on the off-Windows merge.
+    # Since v0.5.31 the F7/F16 comments are multi-line: the captable skill appends
+    # a "Source: <url> — retrieved <date>" citation below the CapIQ formula, and
+    # the whole comment (both lines) must survive the merge verbatim.
     from openpyxl.comments import Comment
+
+    f7_comment = "=IQ_FX_RATE(...)\nSource: https://example.com/fx — retrieved 2026-07-15"
 
     a = tmp_path / "cap.xlsx"
     wb = Workbook()
     ws = wb.active
     ws.title = "Cap"
     ws["F7"] = 1.36
-    ws["F7"].comment = Comment("=IQ_FX_RATE(...)", "INFOR")
+    ws["F7"].comment = Comment(f7_comment, "INFOR")
     ws["B2"] = "Source"
     ws["B2"].hyperlink = "https://example.com/filing"
     wb.save(a)
@@ -160,7 +165,7 @@ def test_merge_preserves_comments_and_hyperlinks(tmp_path: Path):
     _combine_via_openpyxl([("captable", a)], out)
     ws2 = load_workbook(out)["captable"]
     assert ws2["F7"].comment is not None
-    assert ws2["F7"].comment.text == "=IQ_FX_RATE(...)"
+    assert ws2["F7"].comment.text == f7_comment
     assert ws2["F7"].comment.author == "INFOR"
     assert ws2["B2"].hyperlink is not None
     assert ws2["B2"].hyperlink.target == "https://example.com/filing"

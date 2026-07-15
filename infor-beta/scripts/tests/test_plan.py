@@ -115,6 +115,10 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
     assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
     assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
+    # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
+    # assembled deck before workbook aggregation produces the final artefact.
+    assert deck_stage.checkpoint == "required"
+    assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
 
 
 def test_overview_stub_plan_is_valid():

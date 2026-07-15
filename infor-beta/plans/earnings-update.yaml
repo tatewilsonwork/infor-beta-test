@@ -98,7 +98,12 @@ stages:
       - name: deck_path
         type: Path
         description: Absolute path to the generated earnings update .pptx deck with the cap table inserted.
-    checkpoint: informational
+    # Pre-delivery gate: the assembled deck is built from untrusted external
+    # inputs (filings, EEO snip, web data), so the analyst must approve it
+    # before the final combined workbook is produced. `deck` sits alone in its
+    # wave ahead of `workbook-aggregation`, so this wave-boundary gate
+    # genuinely holds the final artefact.
+    checkpoint: required
 
   # Final consolidation: merge every companion workbook into one file named
   # earningsupdate-<codename>.xlsx (one tab per producing skill) and delete the
