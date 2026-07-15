@@ -2,6 +2,34 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin uses a single version across all skills; bump every skill's `version:` frontmatter when bumping the plugin.
 
+## [0.5.29] — 2026-07-15
+
+Fixed attachment-status dialogs for the intake. Every deliverable-specific document now has a locked, clickable gate — "Attached in this chat" / "I'll drop it in my next message" / "None" — instead of only a passive text checklist. File bytes cannot come through a dialog (there is no file-picker tool in the harness), so the questions gate and structure the drop while the file itself arrives through the chat input or as an absolute path in the Other box; the plain-text checklist notes stay, demoted to the detail behind the questions.
+
+### Added
+- **Deal-init "Filings" status question** (`scripts/deal_init.py`). The G7 filings item joins `_INIT_QUESTIONS` as a fixed three-option gate; `INIT_FILINGS_NOTE` is posted alongside as the checklist detail (which filings + the LTM-bridge why). "I'll drop them in my next message" → the run waits for that message before Step 3; "None for now" → proceed. The init dialog is now Listing / Sector / Filings (+ Deliverable when not preset — exactly 4 questions, still one `AskUserQuestion` call). `INIT_DIALOG_FIELDS` gains `Filings` → the persisted `<deal_dir>/filings/` attachments.
+- **Deck-spec attachment-status dialogs** (`scripts/deck_spec.py`, new `render_deck_spec_documents_dialogs(deliverable_type)`). Pitch: one dialog asking SEDI PDF (Canadian public targets; "Not applicable / none" → the insider side stays a placeholder) and Bloomberg ownership export ("None" → the institutions side stays a placeholder). These answers are deliberately **not plan inputs** — the ownership stage discovers the saved files under `<deal_dir>/filings/`, so the headers live in a separate `PITCH_DOCUMENTS_DIALOG_TARGETS` table (documenting which stage consumes what) and never touch the `*_DIALOG_PLAN_INPUTS` invariants. Earnings-update returns an empty list (the EEO snip is already a spec-dialog plan input; the G7 filings belong to deal-init); unknown deliverables raise. The CIM (pitch) and EEO snip stay where they were — they map to real plan inputs.
+- Conductor Step 4 gains the attachment-dialog step (render between the spec dialogs and the documents note; drop a question whose document is already attached) and an answer-handling rule (save / wait-before-dispatch / proceed-with-placeholder); the Step 2 interactive-UI blockquote is rewritten around the status-gate pattern. Both command docs updated.
+
+### Tests
+- `test_deal_init.py` (+1): the Filings question offers exactly the three statuses.
+- `test_deck_spec.py` (+5): documents-dialog `AskUserQuestion` shape, header ↔ targets-table agreement + no collision with the plan-input headers, the three-status contract per question, the earnings-update empty list, verbatim/immutable rendering, and unknown-deliverable rejection.
+
+## [0.5.28] — 2026-07-15
+
+Analyst-intake trims: deal-init drops two questions (the codename is now auto-derived, the free-form extras question is gone), sector inference no longer asks for confirmation, and two deck-spec wordings are sharpened.
+
+### Changed
+- **Codename auto-derived, never asked** (`scripts/codename.py`, `scripts/deal_init.py`; conductor SKILL.md Steps 1–2; both command docs). New `codename.codename_from_company(name)` returns `"Project " + <company name with trailing corporate suffixes stripped>` — Inc / Incorporated / Corp / Corporation / Co / Company / Group / Ltd / Limited / LLC / LP / PLC / Holdings, case-insensitive, with or without periods, stripped repeatedly ("ACME Holdings Inc." → "Project ACME"); "& Co" brand names are kept whole (same rule as ownership's `strip_legal_suffixes`), and a name that is nothing but suffixes keeps its sanitised form. The conductor derives the codename silently at Step 1 and states it — the analyst can still override in chat before the deal directory is created. The "Codename" dialog question ("Propose one for me" / "Use the company name") is removed; the optional deliverable question now leads the dialogs when rendered.
+- **Sector inference is confirmation-free.** The Sector option reads "Infer from the web" with "I'll look it up and use it — no confirmation needed" (was "Infer from the web — I'll confirm"); conductor Step 2 drops the confirm-the-one-liner requirement (web-search verification kept).
+- **"Extras" question removed.** Deal-init no longer asks "Anything else I should know for this deal?" — `DealContext.notes` stays settable when the analyst volunteers notes in chat.
+- **Deck-spec wording** (`scripts/deck_spec.py`). The Risk-notes question drops "steer": "Any specific risks / mitigants for the Considerations / Mitigants slide?" with option "I'll provide specific risks / mitigants". The Highlights option "Include — I'll provide the copy" becomes "Include — draft from attached filings + web" (the content stage drafts the highlights from the deal's filings and public sources); the answer mapping is unchanged — only "Omit" sets `include_investment_highlights = False`, both include variants leave it unset.
+- **Text fallbacks updated to match:** the init prompt is now 5 items (no Codename / Anything-else) with a codename-derivation note; the pitch deck-spec prompt's items 4 and 6 carry the new wording.
+
+### Tests
+- `test_codename.py` (+4): the `codename_from_company` suffix table (repeated stripping, the "& Co" guard, "Cobalt" untouched — whole-word suffixes only), unsafe-char sanitisation, the all-suffix-name fallback, and empty/None rejection.
+- `test_deal_init.py`: the init prompt asserts 5 items, the derivation note, and the absence of the removed labels; the optional deliverable question now leads at index 0.
+
 ## [0.5.27] — 2026-07-15
 
 The analyst-facing questionnaires go interactive. `/pitch` and `/earnings-update` no longer dump a numbered text block: deal-init, the deck spec, and `required` checkpoints all render through the interactive question UI (the `AskUserQuestion` tool) — clickable option chips plus an automatic "Other" free-text box on every question. Only the judgement items are asked; everything with a sensible default is defaulted and echoed once so a reply can override it.

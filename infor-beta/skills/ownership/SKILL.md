@@ -7,7 +7,7 @@ description: >
   the analyst-attached SEDI PDF, keeps only current insiders, sums each one's common shares, looks
   up roles, ingests the Bloomberg holders (excluding SEDI duplicates — the SEDI figure always
   wins), and writes the INFOR ownership workbook (companion to the ownership slide).
-version: 0.5.27
+version: 0.5.29
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 

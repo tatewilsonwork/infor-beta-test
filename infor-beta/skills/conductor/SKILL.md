@@ -12,7 +12,7 @@ description: >
   dialogs (AskUserQuestion), dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.27
+version: 0.5.29
 allowed-tools: [Read, Write, Bash, Glob, Task, AskUserQuestion]
 ---
 
@@ -34,13 +34,14 @@ import sys, os
 sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
 
 from schemas import Plan, Stage, DealContext, InputSpec
-from codename import resolve, find_existing, disambiguate
+from codename import resolve, find_existing, disambiguate, codename_from_company
 from deal_init import (
     render_init_dialogs, render_init_filings_note, render_init_prompt,
     load_or_locate_deal, save_deal_context, load_deal_context,
 )
 from deck_spec import (
     render_deck_spec_dialogs, render_deck_spec_defaults, render_deck_spec_documents_note,
+    render_deck_spec_documents_dialogs,  # attachment-status gates (not plan inputs)
     render_deck_spec_prompt,  # text fallback when the interactive UI is unavailable
     default_presentation_date, prior_year_quarter,
     metric_count_from_slides, market_entry_targets_from_slides,
@@ -66,25 +67,25 @@ from conductor_cli import prep_wave, collect_wave, write_plan_inputs
 
 Read the analyst's request. Extract:
 - **Deliverable type**: `pitch` / `earnings-update` / `overview` / `one-off-skill`. If ambiguous, ask before continuing. (`overview` is a stub plan — not yet implemented; say so if selected.)
-- **Codename**: the analyst's `Project <target>` string. If absent, ask for it.
+- **Codename**: the analyst's `Project <target>` string if they typed one. If absent, do NOT ask — derive it silently as `codename_from_company(<subject company name>)` ("Project <company>" with corporate suffixes stripped) and state it when announcing the deal directory; the analyst can override it in chat at any point before the deal directory is created.
 
-**Slash-command entry.** The plugin ships `/pitch <company name>` and `/earnings-update <company name>` commands that route here with the deliverable type AND the subject company name pre-answered. When entered that way, do not re-ask either — only the codename (and the remaining G7 items) still need collecting.
+**Slash-command entry.** The plugin ships `/pitch <company name>` and `/earnings-update <company name>` commands that route here with the deliverable type AND the subject company name pre-answered. When entered that way, do not re-ask either — the codename is derived from the company name and only the remaining G7 items still need collecting.
 
 If the analyst is invoking a **one-off skill** (no deliverable plan needed), say so and stop — the conductor only orchestrates plans. Direct skill invocation is for one-offs.
 
 ### Step 2 — Deal-init (once per deal)
 
-> **Interactive UI.** Every analyst-facing question in Steps 1–2 and 4 — and every `required` checkpoint — goes through the **`AskUserQuestion` tool** (clickable options + an automatic "Other" free-text box), never a numbered text block the analyst answers by typing item numbers. The dialog payloads are code-owned (`render_init_dialogs` / `render_deck_spec_dialogs`) so every run asks the same questions with the same options — render them **verbatim**: do not paraphrase, reorder, re-option, or invent extra questions. Only two things stay plain text: attachment checklists (files cannot come through a dialog) and pure free-text facts with nothing to suggest (the subject company name). If the `AskUserQuestion` tool is unavailable on the current surface, fall back to the locked text prompts (`render_init_prompt()` / `render_deck_spec_prompt(...)`) — same items, same order.
+> **Interactive UI.** Every analyst-facing question in Steps 1–2 and 4 — and every `required` checkpoint — goes through the **`AskUserQuestion` tool** (clickable options + an automatic "Other" free-text box), never a numbered text block the analyst answers by typing item numbers. The dialog payloads are code-owned (`render_init_dialogs` / `render_deck_spec_dialogs` / `render_deck_spec_documents_dialogs`) so every run asks the same questions with the same options — render them **verbatim**: do not paraphrase, reorder, re-option, or invent extra questions. Attachments have fixed **status** dialogs (attached in this chat / I'll drop it in my next message / none) — file bytes cannot come through a dialog, so the file itself always arrives via the chat input or as an absolute path in the Other box, and the plain-text checklist notes are posted alongside as the detail behind those questions. Pure free-text facts with nothing to suggest (the subject company name) stay plain chat questions. If the `AskUserQuestion` tool is unavailable on the current surface, fall back to the locked text prompts (`render_init_prompt()` / `render_deck_spec_prompt(...)`) — same items, same order.
 
 Call `load_or_locate_deal(codename)`:
 - If it returns `(ctx, deal_dir)` with `ctx` non-None — the deal exists, the analyst has worked on it before. Confirm via `AskUserQuestion` (one question):
   > "I already have `<codename>` at `<deal_dir>` with `<inventory of facts/, filings/, artefacts/, prior runs>`. Continue this deal?" — options **"Continue `<codename>`"** / **"Different deal"**.
   - On "Different deal", call `disambiguate(deals_root, codename)` and present the 1–4 alternatives as another `AskUserQuestion` (one option per alternative; the analyst types their own via Other).
   - On "Continue", proceed to Step 3.
-- If it returns `(None, deal_dir)` — fresh deal. Render the G7 dialogs with `render_init_dialogs(include_deliverable=<True only when Step 1 could not determine the deliverable>)` — one `AskUserQuestion` call per dialog, payload verbatim — **dropping any question whose answer is already preset** (the codename from Step 1; the deliverable + subject company from a slash command). Alongside the dialogs:
-  - Post `render_init_filings_note()` as plain text — the filings are attachments and cannot come through a dialog.
+- If it returns `(None, deal_dir)` — fresh deal. Render the G7 dialogs with `render_init_dialogs(include_deliverable=<True only when Step 1 could not determine the deliverable>)` — one `AskUserQuestion` call per dialog, payload verbatim — **dropping any question whose answer is already preset** (the deliverable + subject company from a slash command; the Filings question when the analyst already attached files). The codename has no dialog — it was derived in Step 1 via `codename_from_company` (analyst-overridable in chat). Alongside the dialogs:
+  - Post `render_init_filings_note()` as plain text — it is the checklist detail behind the Filings status question (which filings are needed and why); the files themselves arrive through the chat input, never through a dialog.
   - If the subject company name is not preset, ask for it as a plain chat question (pure free text — it has no dialog).
-  - Codename "Propose one for me" → propose a `Project <single word>` and confirm it before creating the deal directory. "Public — I'll give the ticker" with no ticker in the Other text → ask for ticker + exchange as a plain follow-up. Sector "Infer from the web — I'll confirm" → research it, verify by web search, and confirm the one-liner with the analyst.
+  - "Public — I'll give the ticker" with no ticker in the Other text → ask for ticker + exchange as a plain follow-up. Sector "Infer from the web" → research it, verify by web search, and use the one-liner — no analyst confirmation. Filings "Attached in this chat" → save them now (see Filings handling below); "I'll drop them in my next message" → wait for that message before Step 3; "None for now" → proceed without filings.
 
   Construct a `DealContext`, then `save_deal_context(ctx)` to persist `<deal_dir>/deal.json` and bootstrap `facts/`, `filings/`, `artefacts/`, `runs/`.
 
@@ -109,7 +110,8 @@ For `pitch` and `earnings-update`, collect the deck spec through the **locked in
    - `financial_metric_count` and `section_labels` (pitch only) ← left OUT of `plan_inputs`; the wireframe applies its own defaults (one Financial Summary slide / 4 metrics; standard section labels).
 2. **Post the defaults echo** — `render_deck_spec_defaults(plan.deliverable_type, client_name=…, presentation_date=…, reporting_quarter=…, comparison_quarter=…)` verbatim, so the analyst can override any default by replying. Override answers convert deterministically: "2 Financial Summary slides" → `financial_metric_count = metric_count_from_slides(2)`; a replacement reporting quarter re-derives the comparison quarter via `prior_year_quarter` unless the analyst gave both.
 3. **Render the dialogs** — `render_deck_spec_dialogs(plan.deliverable_type)`: one `AskUserQuestion` call per dialog, payload verbatim (see the Step 2 interactive-UI rules). Never re-ask a G7 item. If the analyst's earlier messages already answered a dialog item, drop just that question from the payload and note "(from your message: …)" — do not skip whole dialogs.
-4. **Post the documents note** — `render_deck_spec_documents_note(plan.deliverable_type)` as plain text (the G7 filings, SEDI PDF, Bloomberg export, EEO snip, and CIM are attachments — they cannot come through a dialog).
+4. **Render the attachment-status dialogs** — `render_deck_spec_documents_dialogs(plan.deliverable_type)`: one `AskUserQuestion` call per dialog, payload verbatim (pitch: SEDI PDF + Bloomberg export; earnings-update returns an empty list — render nothing). These are fixed status gates, not plan inputs: file bytes cannot come through a dialog, so the analyst answers attached / will-drop / none and the file itself arrives via the chat input (or an absolute path in Other). Drop a question whose document is already attached.
+5. **Post the documents note** — `render_deck_spec_documents_note(plan.deliverable_type)` as plain text — the checklist detail behind the status questions (the G7 filings reminder, SEDI PDF, Bloomberg export, EEO snip, and CIM).
 
 Map every dialog answer onto `plan_inputs` with the module's header tables (`PITCH_DIALOG_PLAN_INPUTS` / `EARNINGS_UPDATE_DIALOG_PLAN_INPUTS`). Conversions are deterministic, never improvised:
 
@@ -120,6 +122,8 @@ Map every dialog answer onto `plan_inputs` with the module's header tables (`PIT
 - **Valuation / Risk notes** → "None" → leave unset; "I'll provide…" with no text supplied → collect it as a plain follow-up; Other → the typed text.
 
 An answer that just accepts a default is left OUT of `plan_inputs` (see the optional-input rule below); the computed defaults for the four *required* pitch inputs (`client_name`, `presentation_date`, `reporting_quarter`, `comparison_quarter` — quarters only for earnings-update) are always supplied. Files the analyst attaches at the deck spec (SEDI PDF, Bloomberg export, EEO snip, CIM) are saved under `<deal_dir>/filings/` exactly like G7 attachments.
+
+**Attachment-status answers never land in `plan_inputs`** (the consuming stages discover the saved files under `<deal_dir>/filings/` — `PITCH_DOCUMENTS_DIALOG_TARGETS` documents which stage reads what): "Attached in this chat" → save the attachment under `<deal_dir>/filings/`; "I'll drop it in my next message" → wait for that message (and save) before Step 5; "Not applicable / None" → proceed — the ownership slide's corresponding side stays a placeholder, exactly as the no-attachment path already behaves.
 
 **Text fallback:** if `AskUserQuestion` is unavailable, render `render_deck_spec_prompt(plan.deliverable_type)` verbatim in a single message instead — it asks the same items (numbered; map answers via `PITCH_ITEM_PLAN_INPUTS` / `EARNINGS_UPDATE_ITEM_PLAN_INPUTS`) and lists the same defaults; `"defaults"` accepts every bracketed default.
 

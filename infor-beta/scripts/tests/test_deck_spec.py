@@ -10,11 +10,13 @@ from deck_spec import (
     EARNINGS_UPDATE_DEFAULT_SUPPLIED_INPUTS,
     EARNINGS_UPDATE_DEFAULT_UNSET_INPUTS,
     EARNINGS_UPDATE_DIALOG_PLAN_INPUTS,
+    EARNINGS_UPDATE_DOCUMENTS_DIALOG_TARGETS,
     EARNINGS_UPDATE_ITEM_PLAN_INPUTS,
     NO_NOTES_ANALYST_NOTES,
     PITCH_DEFAULT_SUPPLIED_INPUTS,
     PITCH_DEFAULT_UNSET_INPUTS,
     PITCH_DIALOG_PLAN_INPUTS,
+    PITCH_DOCUMENTS_DIALOG_TARGETS,
     PITCH_ITEM_PLAN_INPUTS,
     default_presentation_date,
     market_entry_targets_from_slides,
@@ -22,6 +24,7 @@ from deck_spec import (
     prior_year_quarter,
     render_deck_spec_defaults,
     render_deck_spec_dialogs,
+    render_deck_spec_documents_dialogs,
     render_deck_spec_documents_note,
     render_deck_spec_prompt,
 )
@@ -103,6 +106,57 @@ def test_unknown_deliverable_raises_everywhere():
         render_deck_spec_documents_note("overview")
     with pytest.raises(ValueError):
         render_deck_spec_defaults("overview")
+    with pytest.raises(ValueError):
+        render_deck_spec_documents_dialogs("overview")
+
+
+# ---------------------------------------------------------------------------
+# Attachment-status (documents) dialogs
+# ---------------------------------------------------------------------------
+
+
+def test_pitch_documents_dialogs_are_valid_askuserquestion_payloads():
+    _assert_askuserquestion_shape(render_deck_spec_documents_dialogs("pitch"))
+
+
+def test_pitch_documents_dialog_headers_match_targets_table():
+    headers = [
+        q["header"]
+        for dialog in render_deck_spec_documents_dialogs("pitch")
+        for q in dialog
+    ]
+    assert len(headers) == len(set(headers))
+    assert set(headers) == set(PITCH_DOCUMENTS_DIALOG_TARGETS)
+    # Status gates are NOT plan inputs — headers must not collide with the
+    # spec dialogs' plan-input table.
+    assert not set(headers) & set(PITCH_DIALOG_PLAN_INPUTS)
+
+
+def test_pitch_documents_questions_offer_the_three_statuses():
+    """Every document question is attached / will-drop / none — a fixed gate."""
+    for dialog in render_deck_spec_documents_dialogs("pitch"):
+        for q in dialog:
+            labels = [opt["label"] for opt in q["options"]]
+            assert labels[0] == "Attached in this chat"
+            assert "next message" in labels[1]
+            assert len(labels) == 3  # last option = not applicable / none
+
+
+def test_earnings_update_documents_dialogs_empty():
+    # The EEO snip is a plan input (spec dialog) and the G7 filings belong to
+    # deal-init — earnings-update has nothing to ask here.
+    assert render_deck_spec_documents_dialogs("earnings-update") == []
+    assert EARNINGS_UPDATE_DOCUMENTS_DIALOG_TARGETS == {}
+
+
+def test_documents_dialogs_render_verbatim_and_immutably():
+    first = render_deck_spec_documents_dialogs("pitch")
+    first[0][0]["question"] = "mutated"
+    first[0][0]["options"].clear()
+    again = render_deck_spec_documents_dialogs("pitch")
+    assert again == render_deck_spec_documents_dialogs("pitch")
+    assert again[0][0]["question"] != "mutated"
+    assert again[0][0]["options"]
 
 
 # ---------------------------------------------------------------------------
