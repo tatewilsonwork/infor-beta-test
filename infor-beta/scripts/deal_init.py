@@ -5,7 +5,10 @@ Owns the conductor's deal-init flow (Obsidian note 12, G7 + H5):
   - The G7 questions are rendered here, ONCE per deal — as interactive
     dialogs (`render_init_dialogs`, the `AskUserQuestion` payloads) with the
     legacy single-message text prompt (`render_init_prompt`) kept as the
-    fallback for surfaces without the interactive question UI.
+    fallback for surfaces without the interactive question UI. The codename
+    is not asked: it is auto-derived via `codename.codename_from_company`
+    ("Project <company>" with corporate suffixes stripped), overridable by
+    the analyst in chat.
   - DealContext is persisted as `<deal_dir>/deal.json`.
   - The deal directory tree is bootstrapped: `facts/`, `filings/`,
     `artefacts/`, `runs/`.
@@ -51,12 +54,14 @@ statement; the older filings are only for the 5-year history and the LTM math.
 _INIT_PROMPT = """\
 What deal is this for?
 
-1. Codename:                  (e.g. "Project Atlas")
-2. Deliverable type:          (pitch / earnings update / overview / one-off skill)
-3. Subject company name:      (e.g. "ACME Corp")
-4. Public or private?:        (public → ask for ticker + exchange; private → skip)
-5. Sector / industry:         (one line, free-form)
-6. Filings / attachments:     (drop now or "none for now")
+(The codename is derived automatically: "Project <company>" with corporate
+suffixes stripped — say otherwise to override it.)
+
+1. Deliverable type:          (pitch / earnings update / overview / one-off skill)
+2. Subject company name:      (e.g. "ACME Corp")
+3. Public or private?:        (public → ask for ticker + exchange; private → skip)
+4. Sector / industry:         (one line, free-form)
+5. Filings / attachments:     (drop now or "none for now")
                               For pitch and earnings-update deliverables I need
                               the latest four annual financial statements / 10-Ks
                               (they cover five fiscal years for the
@@ -68,7 +73,6 @@ What deal is this for?
                               The cap table is still built off the most recent
                               statement; the older filings are only for the
                               5-year history and the LTM math.
-7. Anything else?:            (optional analyst notes)
 """
 
 # ---------------------------------------------------------------------------
@@ -79,11 +83,19 @@ What deal is this for?
 # False. Each question's `header` doubles as its key in INIT_DIALOG_FIELDS.
 #
 # Not every G7 item is a dialog question:
-#   - item 3 (subject company name) is pure free text with nothing to
+#   - the codename is never asked — it is derived silently via
+#     `codename.codename_from_company` ("Project <company>" with corporate
+#     suffixes stripped); the analyst can still override it in chat;
+#   - the subject company name is pure free text with nothing to
 #     suggest — when the slash command / analyst message did not supply it,
 #     the conductor asks for it as a plain chat question;
-#   - item 6 (filings) is an attachments checklist — INIT_FILINGS_NOTE is
-#     posted as plain text because files cannot come through the dialogs.
+#   - the filings item is a fixed STATUS question ("Filings" below) — files
+#     cannot come through a dialog, so the analyst answers attached / will
+#     drop next message / none, and the files themselves arrive through the
+#     chat input; INIT_FILINGS_NOTE is posted alongside as the checklist
+#     detail (which filings are needed and why);
+#   - free-form analyst notes are no longer asked — DealContext.notes stays
+#     settable when the analyst volunteers notes in chat.
 # ---------------------------------------------------------------------------
 
 _DELIVERABLE_QUESTION: dict = {
@@ -120,27 +132,6 @@ _DELIVERABLE_QUESTION: dict = {
 
 _INIT_QUESTIONS: list[dict] = [
     {
-        "question": 'Codename for the deal (e.g. "Project Atlas")?',
-        "header": "Codename",
-        "multiSelect": False,
-        "options": [
-            {
-                "label": "Propose one for me",
-                "description": (
-                    "I'll suggest a `Project <single word>` codename and "
-                    "confirm it with you before creating the deal directory."
-                ),
-            },
-            {
-                "label": "Use the company name",
-                "description": (
-                    "Skip the confidentiality codename — the deal directory "
-                    "is named after the company itself."
-                ),
-            },
-        ],
-    },
-    {
         "question": "Is the subject company public or private?",
         "header": "Listing",
         "multiSelect": False,
@@ -164,10 +155,9 @@ _INIT_QUESTIONS: list[dict] = [
         "multiSelect": False,
         "options": [
             {
-                "label": "Infer from the web — I'll confirm",
+                "label": "Infer from the web",
                 "description": (
-                    "I'll look it up, verify by web search, and confirm the "
-                    "one-liner with you."
+                    "I'll look it up and use it — no confirmation needed."
                 ),
             },
             {
@@ -179,19 +169,28 @@ _INIT_QUESTIONS: list[dict] = [
         ],
     },
     {
-        "question": "Anything else I should know for this deal?",
-        "header": "Extras",
+        "question": "Filings — how will you provide them?",
+        "header": "Filings",
         "multiSelect": False,
         "options": [
             {
-                "label": "Nothing else",
-                "description": "Default.",
+                "label": "Attached in this chat",
+                "description": (
+                    "I'll save them under the deal's filings/ directory now."
+                ),
             },
             {
-                "label": "I'll add notes",
+                "label": "I'll drop them in my next message",
                 "description": (
-                    "Type them in the Other box (or reply right after this "
-                    "dialog)."
+                    "The run waits here for the attachments — the checklist "
+                    "note lists what I need."
+                ),
+            },
+            {
+                "label": "None for now",
+                "description": (
+                    "Continue without filings; attach them in chat at any "
+                    "later point."
                 ),
             },
         ],
@@ -200,11 +199,13 @@ _INIT_QUESTIONS: list[dict] = [
 
 # Question header -> where the answer lands on the DealContext.
 INIT_DIALOG_FIELDS: dict[str, str] = {
-    "Codename": "codename",
     "Deliverable": "deliverable_type",
     "Listing": "subject_company.ticker + subject_company.exchange (Private -> both None)",
     "Sector": "subject_company.sector / subject_company.industry",
-    "Extras": "notes",
+    "Filings": (
+        "filings (attachments persisted to <deal_dir>/filings/; "
+        "'I'll drop them in my next message' -> the run waits for them)"
+    ),
 }
 
 _DIALOG_MAX_QUESTIONS = 4
@@ -220,13 +221,17 @@ def render_init_dialogs(*, include_deliverable: bool = False) -> list[list[dict]
     named). Returns deep copies so callers cannot mutate the locked
     constants.
 
-    Post INIT_FILINGS_NOTE (plain text) alongside these — attachments cannot
-    come through the dialogs — and ask for the subject company name as a
-    plain chat question when it was not preset.
+    Post INIT_FILINGS_NOTE (plain text) alongside these — it is the
+    checklist detail behind the "Filings" status question; file bytes cannot
+    come through a dialog, so the attachments themselves arrive via the chat
+    input — and ask for the subject company name as a plain chat question
+    when it was not preset. The codename is never a dialog question: derive
+    it silently with `codename.codename_from_company(<subject company
+    name>)` (the analyst can override it in chat).
     """
     questions = list(_INIT_QUESTIONS)
     if include_deliverable:
-        questions.insert(1, _DELIVERABLE_QUESTION)
+        questions.insert(0, _DELIVERABLE_QUESTION)
     return [
         copy.deepcopy(questions[i : i + _DIALOG_MAX_QUESTIONS])
         for i in range(0, len(questions), _DIALOG_MAX_QUESTIONS)

@@ -40,6 +40,14 @@ improvised:
     -> ``analyst_notes = NO_NOTES_ANALYST_NOTES`` (a code-owned literal, so the
     no-notes run is reproducible too)
 
+Deliverable-specific attachments get their own locked status dialogs
+(:func:`render_deck_spec_documents_dialogs` — pitch: SEDI PDF + Bloomberg
+export; earnings-update: none), rendered alongside the plain-text checklist
+note (:func:`render_deck_spec_documents_note`). File bytes cannot come
+through a dialog, so the questions gate the run (attached / will drop next
+message / none) while the file itself arrives via the chat input; the
+answers never land in ``plan_inputs``.
+
 The legacy single-message text prompts are kept (:func:`render_deck_spec_prompt`)
 as the fallback for surfaces where the interactive question UI is unavailable;
 they ask the same items and list the same defaults as the dialogs.
@@ -133,7 +141,10 @@ _PITCH_SPEC_DIALOGS: list[list[dict]] = [
             ],
         },
         {
-            "question": "Any steer for the Considerations / Mitigants slide?",
+            "question": (
+                "Any specific risks / mitigants for the Considerations / "
+                "Mitigants slide?"
+            ),
             "header": "Risk notes",
             "multiSelect": False,
             "options": [
@@ -145,10 +156,10 @@ _PITCH_SPEC_DIALOGS: list[list[dict]] = [
                     ),
                 },
                 {
-                    "label": "I'll provide steer",
+                    "label": "I'll provide specific risks / mitigants",
                     "description": (
-                        "Type it in the Other box (or reply right after this "
-                        "dialog)."
+                        "Type them in the Other box (or reply right after "
+                        "this dialog)."
                     ),
                 },
             ],
@@ -185,8 +196,11 @@ _PITCH_SPEC_DIALOGS: list[list[dict]] = [
                     ),
                 },
                 {
-                    "label": "Include — I'll provide the copy",
-                    "description": "Put the highlight copy in the analyst notes.",
+                    "label": "Include — draft from attached filings + web",
+                    "description": (
+                        "The content stage drafts the highlights from the "
+                        "deal's filings and public sources."
+                    ),
                 },
                 {
                     "label": "Omit",
@@ -229,6 +243,104 @@ _SPEC_DIALOGS: dict[str, list[list[dict]]] = {
     "pitch": _PITCH_SPEC_DIALOGS,
     "earnings-update": _EARNINGS_UPDATE_SPEC_DIALOGS,
 }
+
+# ---------------------------------------------------------------------------
+# Attachment-status dialogs (AskUserQuestion payloads)
+#
+# One fixed status question per deliverable-specific document. File bytes
+# cannot come through a dialog — the attachment itself always arrives via the
+# chat input (or an absolute path in the Other box); these questions are the
+# locked gate that pauses the run until the analyst says attached / will drop
+# next message / none. Their answers are NOT plan inputs (the consuming
+# stages discover the saved files under <deal_dir>/filings/), so their
+# headers deliberately do not appear in the *_DIALOG_PLAN_INPUTS tables.
+# The G7 filings have their own status question at deal-init; the CIM (pitch)
+# and EEO snip (earnings-update) are plan inputs and stay in the spec dialogs
+# above.
+# ---------------------------------------------------------------------------
+
+_PITCH_DOCUMENTS_DIALOGS: list[list[dict]] = [
+    [
+        {
+            "question": (
+                'SEDI "Insider Information by Issuer" PDF '
+                "(Canadian public targets)?"
+            ),
+            "header": "SEDI PDF",
+            "multiSelect": False,
+            "options": [
+                {
+                    "label": "Attached in this chat",
+                    "description": (
+                        "I'll save it under the deal's filings/ directory now."
+                    ),
+                },
+                {
+                    "label": "I'll drop it in my next message",
+                    "description": (
+                        "The run waits here for the PDF — SEDI is bot-walled, "
+                        "so I cannot fetch it myself."
+                    ),
+                },
+                {
+                    "label": "Not applicable / none",
+                    "description": (
+                        "Non-Canadian target or no report — the ownership "
+                        "slide's insider side stays a placeholder."
+                    ),
+                },
+            ],
+        },
+        {
+            "question": "Bloomberg ownership export (.xlsm)?",
+            "header": "BBG export",
+            "multiSelect": False,
+            "options": [
+                {
+                    "label": "Attached in this chat",
+                    "description": (
+                        "I'll save it under the deal's filings/ directory now."
+                    ),
+                },
+                {
+                    "label": "I'll drop it in my next message",
+                    "description": "The run waits here for the export.",
+                },
+                {
+                    "label": "None",
+                    "description": (
+                        "The ownership slide's institutions side stays a "
+                        "placeholder."
+                    ),
+                },
+            ],
+        },
+    ],
+]
+
+# Earnings-update has no deliverable-specific attachments beyond the EEO snip
+# (a plan input, asked in the spec dialogs) and the G7 filings (deal-init's
+# status question) — nothing to ask here.
+_DOCUMENTS_DIALOGS: dict[str, list[list[dict]]] = {
+    "pitch": _PITCH_DOCUMENTS_DIALOGS,
+    "earnings-update": [],
+}
+
+# Documents-dialog question header -> where the answer leads (never a plan
+# input; the files land under <deal_dir>/filings/ and the consuming stage
+# discovers them there).
+PITCH_DOCUMENTS_DIALOG_TARGETS: dict[str, str] = {
+    "SEDI PDF": (
+        "saved under <deal_dir>/filings/ — consumed by the ownership stage "
+        "(insider side)"
+    ),
+    "BBG export": (
+        "saved under <deal_dir>/filings/ — consumed by the ownership stage "
+        "(institutions side)"
+    ),
+}
+
+EARNINGS_UPDATE_DOCUMENTS_DIALOG_TARGETS: dict[str, str] = {}
 
 # Question header -> plan_inputs name. Every dialog answer maps through one of
 # these; the converters below turn slide-count / include-omit answers into the
@@ -313,6 +425,34 @@ def render_deck_spec_dialogs(deliverable_type: str) -> list[list[dict]]:
         raise ValueError(
             f"no deck-spec questionnaire for deliverable type {deliverable_type!r}; "
             f"known: {sorted(_SPEC_DIALOGS)}"
+        ) from None
+
+
+def render_deck_spec_documents_dialogs(deliverable_type: str) -> list[list[dict]]:
+    """Return the locked attachment-status dialogs for a deliverable, verbatim.
+
+    Each inner list is one `AskUserQuestion` call's `questions` payload —
+    render them in order, unchanged, alongside
+    :func:`render_deck_spec_documents_note` (the note carries the checklist
+    detail; these questions are the fixed attached / will-drop / none gate).
+    File bytes cannot come through a dialog: the attachment itself arrives
+    via the chat input, or as an absolute path in the Other box. The answers
+    never land in ``plan_inputs`` — "Attached in this chat" -> save under
+    `<deal_dir>/filings/`; "I'll drop it in my next message" -> wait for the
+    attachment before dispatching; "Not applicable / None" -> proceed (the
+    consuming slide side stays a placeholder).
+
+    Returns an EMPTY list for a deliverable with no deliverable-specific
+    documents (earnings-update — render nothing); returns deep copies so
+    callers cannot mutate the locked constants. Raises ValueError for an
+    unknown deliverable type.
+    """
+    try:
+        return copy.deepcopy(_DOCUMENTS_DIALOGS[deliverable_type])
+    except KeyError:
+        raise ValueError(
+            f"no documents dialogs for deliverable type {deliverable_type!r}; "
+            f"known: {sorted(_DOCUMENTS_DIALOGS)}"
         ) from None
 
 
@@ -408,14 +548,14 @@ Items marked REQUIRED have no default.
                               "draft from filings + web" is acceptable
 2. CIM / management pres.:    [none] — attach the file or give its path
 3. Valuation range:           [none] — optional executive-summary language
-4. Risk notes:                [none] — optional steer for the Considerations /
-                              Mitigants slide
+4. Risk notes:                [none] — optional specific risks / mitigants for
+                              the Considerations / Mitigants slide
 5. Acquisition-target slides: [4 slides — 8 targets] — 1 to 4 slides, two
                               targets per slide; name specific targets if you
                               have them
 6. Key Investment Highlights: [include — drafted from your notes] /
-                              "include — I'll provide them" (put the highlight
-                              copy in item 1) / "omit" — drops the slide
+                              "include — draft from attached filings + web" /
+                              "omit" — drops the slide
 
 Defaulted unless you override here (no need to answer):
 - Client name on the cover:   the subject company name from deal-init

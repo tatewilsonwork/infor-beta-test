@@ -24,6 +24,33 @@ from pathlib import Path
 # (the conductor targets all three indirectly). Stripped, not replaced.
 _PATH_UNSAFE = re.compile(r'[\\/:*?"<>|]')
 
+# Trailing corporate suffixes stripped when auto-deriving a codename from the
+# subject company name (case-insensitive, with or without a period). Longer
+# forms listed first for readability; the end-of-string anchor makes the match
+# unambiguous either way.
+_CORP_SUFFIXES = (
+    "Incorporated",
+    "Inc",
+    "Corporation",
+    "Corp",
+    "Company",
+    "Co",
+    "Group",
+    "Limited",
+    "Ltd",
+    "LLC",
+    "LP",
+    "PLC",
+    "Holdings",
+)
+# The `(?<!&)` guard keeps "& Co"-style brand names whole ("Smith & Co" stays
+# "Smith & Co", never "Smith &") — same rule as ownership's
+# strip_legal_suffixes.
+_CORP_SUFFIX_RE = re.compile(
+    r"(?<!&)[\s,]+(?:" + "|".join(_CORP_SUFFIXES) + r")\.?\s*$",
+    re.IGNORECASE,
+)
+
 # Default deals root per E1 (deal directory decision).
 DEFAULT_DEALS_ROOT = Path("~/Documents/INFOR Deals").expanduser()
 
@@ -34,6 +61,36 @@ def _strip_unsafe(name: str) -> str:
     # Collapse any runs of whitespace caused by stripped characters.
     collapsed = re.sub(r"\s+", " ", stripped).strip()
     return collapsed
+
+
+def codename_from_company(name: str) -> str:
+    """Auto-derive the default codename from the subject company name.
+
+    ``"Project " + <name with trailing corporate suffixes stripped>`` —
+    e.g. ``"OpenText Corporation"`` -> ``"Project OpenText"``,
+    ``"ACME Holdings Inc."`` -> ``"Project ACME"``. Suffixes are stripped
+    repeatedly (case-insensitive, with or without periods; "& Co" brands are
+    kept whole), path-unsafe characters are removed, and whitespace is
+    collapsed. A name that is nothing but suffixes keeps its sanitised form
+    rather than emptying.
+
+    This is the silent deal-init default — the analyst is not asked, but can
+    override the codename in chat at any point before the deal directory is
+    created.
+
+    Raises ValueError if the name is empty after sanitisation.
+    """
+    if name is None:
+        raise ValueError("company name must be a non-empty string")
+    base = _strip_unsafe(name)
+    if not base:
+        raise ValueError(f"company name {name!r} contains only path-unsafe characters")
+    while True:
+        stripped = _strip_unsafe(_CORP_SUFFIX_RE.sub("", base).rstrip(" ,."))
+        if not stripped or stripped == base:
+            break
+        base = stripped
+    return f"Project {base}"
 
 
 def resolve(codename: str, deals_root: Path | str = DEFAULT_DEALS_ROOT) -> tuple[str, Path]:

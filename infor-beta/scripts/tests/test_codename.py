@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from codename import disambiguate, find_existing, resolve
+from codename import codename_from_company, disambiguate, find_existing, resolve
 
 
 def test_strip_unsafe_chars():
@@ -38,6 +38,48 @@ def test_empty_after_strip_raises():
 def test_none_raises():
     with pytest.raises(ValueError):
         resolve(None)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("company", "expected"),
+    [
+        ("OpenText Corporation", "Project OpenText"),
+        ("ACME Corp", "Project ACME"),
+        ("ACME Corp.", "Project ACME"),
+        ("ACME, Inc.", "Project ACME"),
+        ("acme incorporated", "Project acme"),
+        ("ACME Holdings Inc.", "Project ACME"),  # suffixes strip repeatedly
+        ("Northern Rail Ltd", "Project Northern Rail"),
+        ("Northern Rail Limited", "Project Northern Rail"),
+        ("Maple Leaf Foods LLC", "Project Maple Leaf Foods"),
+        ("Brookfield LP", "Project Brookfield"),
+        ("Vodafone PLC", "Project Vodafone"),
+        ("Boston Consulting Group", "Project Boston Consulting"),
+        ("The Coca-Cola Company", "Project The Coca-Cola"),
+        ("Smith & Co", "Project Smith & Co"),  # "& Co" brands kept whole
+        ("Kelso & Co LP", "Project Kelso & Co"),
+        ("NoSuffix", "Project NoSuffix"),
+        ("Cobalt", "Project Cobalt"),  # "Co" only strips as a whole word
+    ],
+)
+def test_codename_from_company_strips_corporate_suffixes(company, expected):
+    assert codename_from_company(company) == expected
+
+
+def test_codename_from_company_strips_unsafe_and_collapses_whitespace():
+    assert codename_from_company("Open/Text*  Corp?") == "Project OpenText"
+
+
+def test_codename_from_company_all_suffix_name_keeps_sanitised_form():
+    # A name that is nothing but suffix words must not empty out.
+    assert codename_from_company("Limited") == "Project Limited"
+
+
+def test_codename_from_company_rejects_empty():
+    with pytest.raises(ValueError):
+        codename_from_company(None)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        codename_from_company("///")
 
 
 def test_find_existing_case_insensitive(tmp_path: Path):

@@ -28,22 +28,25 @@ def _ctx(tmp_root: Path, codename: str = "Project OpenText", **overrides) -> Dea
     return DealContext(**kwargs)
 
 
-def test_render_init_prompt_contains_seven_questions():
-    """G7 lists exactly seven numbered prompts — verify all are present."""
+def test_render_init_prompt_contains_five_questions():
+    """The init prompt asks exactly five numbered items — verify all present."""
     prompt = render_init_prompt()
-    for n in range(1, 8):
+    for n in range(1, 6):
         assert f"{n}." in prompt, f"prompt missing item {n}"
     # The locked field names should appear verbatim
     for label in (
-        "Codename:",
         "Deliverable type:",
         "Subject company name:",
         "Public or private?:",
         "Sector / industry:",
         "Filings / attachments:",
-        "Anything else?:",
     ):
         assert label in prompt, f"prompt missing label {label!r}"
+    # The codename is auto-derived, never asked — the prompt says so and no
+    # longer carries the old items.
+    assert "derived automatically" in prompt
+    assert "Codename:" not in prompt
+    assert "Anything else?:" not in prompt
 
 
 def _assert_askuserquestion_shape(dialogs: list[list[dict]]) -> None:
@@ -91,7 +94,8 @@ def test_init_dialogs_deliverable_question_is_optional():
     # Slash-command entry presets the deliverable — the other questions are
     # identical and keep their order either way.
     assert [h for h in with_it if h != "Deliverable"] == without
-    assert with_it.index("Deliverable") == 1  # G7 order: codename first
+    # Deliverable leads: the codename is auto-derived, not a dialog question.
+    assert with_it.index("Deliverable") == 0
 
 
 def test_init_dialogs_render_verbatim_and_immutably():
@@ -102,6 +106,18 @@ def test_init_dialogs_render_verbatim_and_immutably():
     assert again == render_init_dialogs()
     assert again[0][0]["question"] != "mutated"
     assert again[0][0]["options"]
+
+
+def test_init_filings_question_is_a_status_gate():
+    """Filings is a fixed status question — files themselves come via chat."""
+    questions = [q for dialog in render_init_dialogs() for q in dialog]
+    filings_q = next(q for q in questions if q["header"] == "Filings")
+    labels = [opt["label"] for opt in filings_q["options"]]
+    assert labels == [
+        "Attached in this chat",
+        "I'll drop them in my next message",
+        "None for now",
+    ]
 
 
 def test_init_filings_note_keeps_the_ltm_reminder():
