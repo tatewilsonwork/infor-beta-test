@@ -6,8 +6,11 @@ import pytest
 
 from deal_init import (
     DEAL_SUBDIRS,
+    INIT_DIALOG_FIELDS,
     load_deal_context,
     load_or_locate_deal,
+    render_init_dialogs,
+    render_init_filings_note,
     render_init_prompt,
     save_deal_context,
 )
@@ -41,6 +44,76 @@ def test_render_init_prompt_contains_seven_questions():
         "Anything else?:",
     ):
         assert label in prompt, f"prompt missing label {label!r}"
+
+
+def _assert_askuserquestion_shape(dialogs: list[list[dict]]) -> None:
+    """Every dialog must be a valid AskUserQuestion `questions` payload."""
+    assert dialogs, "no dialogs"
+    for dialog in dialogs:
+        assert 1 <= len(dialog) <= 4, "AskUserQuestion holds at most 4 questions"
+        for q in dialog:
+            assert set(q) == {"question", "header", "multiSelect", "options"}
+            assert q["question"].strip().endswith("?")
+            assert 1 <= len(q["header"]) <= 12, f"header too long: {q['header']!r}"
+            assert q["multiSelect"] is False
+            assert 2 <= len(q["options"]) <= 4
+            for opt in q["options"]:
+                assert set(opt) == {"label", "description"}
+                assert opt["label"].strip()
+                assert opt["description"].strip()
+
+
+def test_init_dialogs_are_valid_askuserquestion_payloads():
+    _assert_askuserquestion_shape(render_init_dialogs())
+    _assert_askuserquestion_shape(render_init_dialogs(include_deliverable=True))
+
+
+def test_init_dialog_headers_match_field_table():
+    headers = [
+        q["header"]
+        for dialog in render_init_dialogs(include_deliverable=True)
+        for q in dialog
+    ]
+    assert len(headers) == len(set(headers)), "dialog headers must be unique"
+    assert set(headers) == set(INIT_DIALOG_FIELDS)
+
+
+def test_init_dialogs_deliverable_question_is_optional():
+    without = [
+        q["header"] for dialog in render_init_dialogs() for q in dialog
+    ]
+    with_it = [
+        q["header"]
+        for dialog in render_init_dialogs(include_deliverable=True)
+        for q in dialog
+    ]
+    assert "Deliverable" not in without
+    # Slash-command entry presets the deliverable — the other questions are
+    # identical and keep their order either way.
+    assert [h for h in with_it if h != "Deliverable"] == without
+    assert with_it.index("Deliverable") == 1  # G7 order: codename first
+
+
+def test_init_dialogs_render_verbatim_and_immutably():
+    first = render_init_dialogs()
+    first[0][0]["question"] = "mutated"
+    first[0][0]["options"].clear()
+    again = render_init_dialogs()
+    assert again == render_init_dialogs()
+    assert again[0][0]["question"] != "mutated"
+    assert again[0][0]["options"]
+
+
+def test_init_filings_note_keeps_the_ltm_reminder():
+    # The filings checklist stays a text note (attachments can't come
+    # through a dialog) and must keep the LTM-bridge explanation.
+    note = render_init_filings_note()
+    for token in ("LTM", "10-Q", "10-Ks", "five fiscal years"):
+        assert token in note, f"filings note lost {token!r}"
+    # The text-fallback G7 prompt must carry the same requirements.
+    prompt = render_init_prompt()
+    for token in ("LTM", "10-Q", "10-Ks", "five fiscal years"):
+        assert token in prompt
 
 
 def test_save_deal_context_bootstraps_dirs(tmp_path: Path):

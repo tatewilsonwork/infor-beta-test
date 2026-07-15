@@ -7,12 +7,13 @@ description: >
   <deliverable>", "conductor", "/conductor", "orchestrate", the /pitch and
   /earnings-update commands (which preset the deliverable type + subject company), or
   any request that names a deliverable type rather than a single workflow step. The
-  conductor handles deal-init (one G7 prompt per codename), loads the plan YAML for the
-  deliverable, collects plan-specific inputs via the locked deck-spec questionnaire,
-  dispatches each stage to its skill via the Agent tool with a file-based input / output
-  handoff, and emits a run log under ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.26
-allowed-tools: [Read, Write, Bash, Glob, Task]
+  conductor handles deal-init (one set of G7 dialogs per codename), loads the plan YAML
+  for the deliverable, collects plan-specific inputs via the locked interactive deck-spec
+  dialogs (AskUserQuestion), dispatches each stage to its skill via the Agent tool with a
+  file-based input / output handoff, and emits a run log under
+  ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
+version: 0.5.27
+allowed-tools: [Read, Write, Bash, Glob, Task, AskUserQuestion]
 ---
 
 # Conductor — Workflow
@@ -34,10 +35,17 @@ sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scri
 
 from schemas import Plan, Stage, DealContext, InputSpec
 from codename import resolve, find_existing, disambiguate
-from deal_init import render_init_prompt, load_or_locate_deal, save_deal_context, load_deal_context
+from deal_init import (
+    render_init_dialogs, render_init_filings_note, render_init_prompt,
+    load_or_locate_deal, save_deal_context, load_deal_context,
+)
 from deck_spec import (
-    render_deck_spec_prompt, metric_count_from_slides, market_entry_targets_from_slides,
-    PITCH_ITEM_PLAN_INPUTS, EARNINGS_UPDATE_ITEM_PLAN_INPUTS,
+    render_deck_spec_dialogs, render_deck_spec_defaults, render_deck_spec_documents_note,
+    render_deck_spec_prompt,  # text fallback when the interactive UI is unavailable
+    default_presentation_date, prior_year_quarter,
+    metric_count_from_slides, market_entry_targets_from_slides,
+    NO_NOTES_ANALYST_NOTES,
+    PITCH_DIALOG_PLAN_INPUTS, EARNINGS_UPDATE_DIALOG_PLAN_INPUTS,
 )
 from plan_refs import resolve_refs
 from plan_schedule import compute_waves
@@ -66,14 +74,21 @@ If the analyst is invoking a **one-off skill** (no deliverable plan needed), say
 
 ### Step 2 — Deal-init (once per deal)
 
-Call `load_or_locate_deal(codename)`:
-- If it returns `(ctx, deal_dir)` with `ctx` non-None — the deal exists, the analyst has worked on it before. Confirm with the analyst:
-  > "I already have `<codename>` at `<deal_dir>` with `<inventory of facts/, filings/, artefacts/, prior runs>`. Continue this deal? [y/n]"
-  - If `n`, call `disambiguate(deals_root, codename)` and present 1–4 alternatives; ask the analyst to pick or type their own.
-  - If `y`, proceed to Step 3.
-- If it returns `(None, deal_dir)` — fresh deal. Render the G7 prompt with `render_init_prompt()` and ask the analyst to answer all seven items. Construct a `DealContext`, then `save_deal_context(ctx)` to persist `<deal_dir>/deal.json` and bootstrap `facts/`, `filings/`, `artefacts/`, `runs/`.
+> **Interactive UI.** Every analyst-facing question in Steps 1–2 and 4 — and every `required` checkpoint — goes through the **`AskUserQuestion` tool** (clickable options + an automatic "Other" free-text box), never a numbered text block the analyst answers by typing item numbers. The dialog payloads are code-owned (`render_init_dialogs` / `render_deck_spec_dialogs`) so every run asks the same questions with the same options — render them **verbatim**: do not paraphrase, reorder, re-option, or invent extra questions. Only two things stay plain text: attachment checklists (files cannot come through a dialog) and pure free-text facts with nothing to suggest (the subject company name). If the `AskUserQuestion` tool is unavailable on the current surface, fall back to the locked text prompts (`render_init_prompt()` / `render_deck_spec_prompt(...)`) — same items, same order.
 
-**Filings handling:** if the analyst attaches files at the G7 prompt, save them under `<deal_dir>/filings/` with descriptive names and append matching `Filing` entries to `ctx.filings`. Re-save the DealContext.
+Call `load_or_locate_deal(codename)`:
+- If it returns `(ctx, deal_dir)` with `ctx` non-None — the deal exists, the analyst has worked on it before. Confirm via `AskUserQuestion` (one question):
+  > "I already have `<codename>` at `<deal_dir>` with `<inventory of facts/, filings/, artefacts/, prior runs>`. Continue this deal?" — options **"Continue `<codename>`"** / **"Different deal"**.
+  - On "Different deal", call `disambiguate(deals_root, codename)` and present the 1–4 alternatives as another `AskUserQuestion` (one option per alternative; the analyst types their own via Other).
+  - On "Continue", proceed to Step 3.
+- If it returns `(None, deal_dir)` — fresh deal. Render the G7 dialogs with `render_init_dialogs(include_deliverable=<True only when Step 1 could not determine the deliverable>)` — one `AskUserQuestion` call per dialog, payload verbatim — **dropping any question whose answer is already preset** (the codename from Step 1; the deliverable + subject company from a slash command). Alongside the dialogs:
+  - Post `render_init_filings_note()` as plain text — the filings are attachments and cannot come through a dialog.
+  - If the subject company name is not preset, ask for it as a plain chat question (pure free text — it has no dialog).
+  - Codename "Propose one for me" → propose a `Project <single word>` and confirm it before creating the deal directory. "Public — I'll give the ticker" with no ticker in the Other text → ask for ticker + exchange as a plain follow-up. Sector "Infer from the web — I'll confirm" → research it, verify by web search, and confirm the one-liner with the analyst.
+
+  Construct a `DealContext`, then `save_deal_context(ctx)` to persist `<deal_dir>/deal.json` and bootstrap `facts/`, `filings/`, `artefacts/`, `runs/`.
+
+**Filings handling:** if the analyst attaches files at deal-init, save them under `<deal_dir>/filings/` with descriptive names and append matching `Filing` entries to `ctx.filings`. Re-save the DealContext.
 
 ### Step 3 — Load the plan
 
@@ -82,19 +97,33 @@ Plans live at `${CLAUDE_PLUGIN_ROOT}/plans/<deliverable>.yaml`. Resolve and read
 Read the plan's `description` and present a one-paragraph summary to the analyst:
 > "Plan for `<deliverable>` has N stages: `<stage_id_1>` (skill: `<skill_1>`), `<stage_id_2>` (skill: `<skill_2>`), …. Plan inputs required: `<list>`. Checkpoints: `<list of required checkpoints>`."
 
-### Step 4 — Collect plan inputs (deck-spec questionnaire)
+### Step 4 — Collect plan inputs (deck-spec dialogs)
 
-For `pitch` and `earnings-update`, render the **locked deck-spec questionnaire** verbatim in a single message — `render_deck_spec_prompt(plan.deliverable_type)` — and collect every answer at once. The questionnaire is code-owned (like the G7 prompt) so every run asks the same questions in the same order; do NOT paraphrase it, reorder its items, or invent extra questions, and never re-ask a G7 item. If the analyst's earlier messages already answered some items, still render the questionnaire once, mark those items "(from your message: …)" inline, and only ask for what is missing. `"defaults"` accepts every bracketed default.
+For `pitch` and `earnings-update`, collect the deck spec through the **locked interactive dialogs**. Only the judgement items are asked; everything with a sensible default is defaulted and echoed for override. In order:
 
-Map the answers onto `plan_inputs` with the module's item tables (`PITCH_ITEM_PLAN_INPUTS` / `EARNINGS_UPDATE_ITEM_PLAN_INPUTS`). Three pitch answers convert deterministically instead of passing through verbatim:
+1. **Compute the defaults.** Six pitch inputs (two for earnings-update) are never asked:
+   - `client_name` ← the deal-init subject company name,
+   - `presentation_date` ← `default_presentation_date(date.today())` (spelled-out month + year),
+   - `reporting_quarter` ← the latest attached interim filing's fiscal quarter — infer it from the statements themselves (fiscal quarter labels depend on the company's fiscal calendar, not the calendar date),
+   - `comparison_quarter` ← `prior_year_quarter(reporting_quarter)`,
+   - `financial_metric_count` and `section_labels` (pitch only) ← left OUT of `plan_inputs`; the wireframe applies its own defaults (one Financial Summary slide / 4 metrics; standard section labels).
+2. **Post the defaults echo** — `render_deck_spec_defaults(plan.deliverable_type, client_name=…, presentation_date=…, reporting_quarter=…, comparison_quarter=…)` verbatim, so the analyst can override any default by replying. Override answers convert deterministically: "2 Financial Summary slides" → `financial_metric_count = metric_count_from_slides(2)`; a replacement reporting quarter re-derives the comparison quarter via `prior_year_quarter` unless the analyst gave both.
+3. **Render the dialogs** — `render_deck_spec_dialogs(plan.deliverable_type)`: one `AskUserQuestion` call per dialog, payload verbatim (see the Step 2 interactive-UI rules). Never re-ask a G7 item. If the analyst's earlier messages already answered a dialog item, drop just that question from the payload and note "(from your message: …)" — do not skip whole dialogs.
+4. **Post the documents note** — `render_deck_spec_documents_note(plan.deliverable_type)` as plain text (the G7 filings, SEDI PDF, Bloomberg export, EEO snip, and CIM are attachments — they cannot come through a dialog).
 
-- item 6 (Financial Summary slides) → `financial_metric_count = metric_count_from_slides(n_slides)` (4 per slide; the deck supports 1 or 2 FS slides),
-- item 7 (acquisition-target slides) → `market_entry_target_count = market_entry_targets_from_slides(n_slides)` (2 per slide, at most 4 slides),
-- item 8 (Key Investment Highlights) → `include_investment_highlights = False` only on "omit"; any include variant leaves the input unset (analyst-dictated highlight copy belongs in the item-3 analyst notes).
+Map every dialog answer onto `plan_inputs` with the module's header tables (`PITCH_DIALOG_PLAN_INPUTS` / `EARNINGS_UPDATE_DIALOG_PLAN_INPUTS`). Conversions are deterministic, never improvised:
 
-An answer that just accepts a default is left OUT of `plan_inputs` (see the optional-input rule below). Files the analyst attaches at the questionnaire (SEDI PDF, Bloomberg export, EEO snip, CIM) are saved under `<deal_dir>/filings/` exactly like G7 attachments.
+- **Notes** → `analyst_notes`: "I'll paste notes in my next message" → wait for the notes, use them verbatim; "Draft from the attached filings + web" → the code-owned literal `NO_NOTES_ANALYST_NOTES`; Other → the typed text.
+- **Targets** → `market_entry_target_count = market_entry_targets_from_slides(n_slides)` (2 per slide, at most 4 slides).
+- **Highlights** → `include_investment_highlights = False` only on "Omit"; any include variant leaves the input unset (analyst-dictated highlight copy belongs in the analyst notes).
+- **CIM / EEO snip** → "Attached in this chat" → save the attachment under `<deal_dir>/filings/` and use the saved path; "None" → leave unset; Other → the given path.
+- **Valuation / Risk notes** → "None" → leave unset; "I'll provide…" with no text supplied → collect it as a plain follow-up; Other → the typed text.
 
-For any other deliverable (no questionnaire — `render_deck_spec_prompt` raises `ValueError`), fall back to the generic collection: for each `InputSpec` in `plan.plan_inputs` where `required is True`, prompt the analyst in a single message; for optional inputs, ask only if the analyst's initial message did not already supply them.
+An answer that just accepts a default is left OUT of `plan_inputs` (see the optional-input rule below); the computed defaults for the four *required* pitch inputs (`client_name`, `presentation_date`, `reporting_quarter`, `comparison_quarter` — quarters only for earnings-update) are always supplied. Files the analyst attaches at the deck spec (SEDI PDF, Bloomberg export, EEO snip, CIM) are saved under `<deal_dir>/filings/` exactly like G7 attachments.
+
+**Text fallback:** if `AskUserQuestion` is unavailable, render `render_deck_spec_prompt(plan.deliverable_type)` verbatim in a single message instead — it asks the same items (numbered; map answers via `PITCH_ITEM_PLAN_INPUTS` / `EARNINGS_UPDATE_ITEM_PLAN_INPUTS`) and lists the same defaults; `"defaults"` accepts every bracketed default.
+
+For any other deliverable (no questionnaire — the deck-spec renderers raise `ValueError`), fall back to the generic collection: for each `InputSpec` in `plan.plan_inputs` where `required is True`, prompt the analyst in a single message; for optional inputs, ask only if the analyst's initial message did not already supply them.
 
 Store the collected values as a plain dict `plan_inputs: dict[str, Any]`. Validate types informally — exact pydantic-validation of plan-input values is deferred; in v1 the type field is documentation.
 
@@ -144,7 +173,7 @@ Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage 
 5. **Capture log.** Persist the sub-agent's reply transcript via `write_stage_log(run_dir, stage.id, transcript)`.
 6. **Update state.** `stage_outputs[stage.id] = outputs`.
 
-**6d — Checkpoint the wave.** Once the wave's state is updated, run the checkpoint behaviour (`references/checkpoint-behaviour.md`) for each stage in the wave, in listed order — `informational` summarises (batch the wave's outputs into one surface), `silent` does nothing, `required` halts. If the analyst rejects any `required` checkpoint, halt before dispatching the next wave.
+**6d — Checkpoint the wave.** Once the wave's state is updated, run the checkpoint behaviour (`references/checkpoint-behaviour.md`) for each stage in the wave, in listed order — `informational` summarises (batch the wave's outputs into one surface), `silent` does nothing, `required` halts and asks for approval via `AskUserQuestion` ("Approve — continue the run" / "Halt the run"). If the analyst rejects any `required` checkpoint, halt before dispatching the next wave.
 
 > **`required` checkpoints and parallelism.** A `required` gate is evaluated at its **wave boundary**, after every stage in that wave has already run — so it cannot stop its own wave-mates, only the downstream waves. Today every shipped plan's checkpoints are `informational`, so behaviour is unchanged. If a future plan needs a gate to stop work *before* an expensive stage starts, give that stage a dependency so it lands in a later wave (the scheduler will serialise it behind the gate).
 

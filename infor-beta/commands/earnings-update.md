@@ -7,9 +7,9 @@ Build a full INFOR **earnings update** deck for **$ARGUMENTS**, end to end, usin
 
 - **Deliverable type: `earnings-update`** (G7 item 2 — pre-answered, do not re-ask).
 - **Subject company name: "$ARGUMENTS"** (G7 item 3 — pre-answered, do not re-ask). If no company name was given after the command, ask for it before anything else.
-- Ask for the **codename** (G7 item 1). If the analyst hasn't got one, propose `Project <single word>` and confirm.
-- Render the **G7 deal-init prompt** for the remaining items (public/private + ticker, sector, filings, notes) exactly as `deal_init.render_init_prompt()` emits it, minus the two pre-answered items.
-- Then render the **earnings-update deck-spec questionnaire** verbatim — `deck_spec.render_deck_spec_prompt("earnings-update")` — in a single message (reporting/comparison quarters + the Bloomberg EEO snip; the deck itself is the fixed 5-slide layout).
+- Collect every remaining analyst input through the **interactive question UI** (`AskUserQuestion`), never as a numbered text block — the conductor skill's Steps 2 and 4 spell out the flow:
+  - **Deal-init:** render the `deal_init.render_init_dialogs()` dialogs verbatim (codename, public/private + ticker, sector, notes; the deliverable question is dropped — it is preset), post `render_init_filings_note()` as plain text for the attachments.
+  - **Deck spec:** compute the quarter defaults (reporting quarter inferred from the latest interim filing; comparison = `prior_year_quarter(...)`), post `deck_spec.render_deck_spec_defaults("earnings-update", ...)` so the analyst can override by replying, then render the `deck_spec.render_deck_spec_dialogs("earnings-update")` dialog verbatim (the Bloomberg EEO snip) and post `render_deck_spec_documents_note("earnings-update")` for the attachments. The deck itself is the fixed 5-slide layout — no slide options.
 - Proceed through the earnings-update plan's stages wave by wave as the conductor skill directs, and finish with the run summary.
 
-Do not skip the questionnaire even if the analyst's message already contains some of the answers — render it once, pre-fill what is already known inline (marked "from your message"), and only ask for what is missing.
+Do not skip the dialogs even if the analyst's message already contains some of the answers — drop just the pre-answered questions from the payloads, note "(from your message: …)", and ask the rest. If `AskUserQuestion` is unavailable on this surface, fall back to the locked text prompts (`render_init_prompt()` / `render_deck_spec_prompt("earnings-update")`).
