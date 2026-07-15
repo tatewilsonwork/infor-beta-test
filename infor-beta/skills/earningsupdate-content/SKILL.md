@@ -4,7 +4,7 @@ description: >
   Use this skill as the Phase 3 POC content stage for a quarterly earnings update. It consumes a
   typed SlidePlan plus source inputs and emits a strict EarningsUpdateContent JSON bundle for the
   deck-assembler stage. Activates inside the conductor plan stage `content`.
-version: 0.5.31
+version: 0.5.32
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 

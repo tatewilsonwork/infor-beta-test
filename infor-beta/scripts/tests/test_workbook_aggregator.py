@@ -49,6 +49,38 @@ def _make_workbook(path: Path, sheets: dict[str, list[list]]) -> Path:
     return path
 
 
+def _make_anchored_captable(path: Path, sheet: str = "Cap with Links") -> Path:
+    """A minimal cap-table source carrying the real template's sentinel labels.
+
+    combine_workbooks verifies the relinked cells' anchors (template_layout)
+    before merging whenever a relink partner tab is present, so a synthetic
+    captable used alongside ltm-metrics/ownership/comps/precedents must look
+    like the shipped template around those cells.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet
+    ws["B5"] = "Output Currency:"
+    ws["B7"] = "FX Rate:"
+    ws["B17"] = "Basic Shares Outstanding"
+    ws["D33"] = "LTM"
+    ws["B47"] = "Revenue"
+    ws["B48"] = "Adj. EBITDA"
+    wb.save(path)
+    return path
+
+
+def _make_anchored_ownership(path: Path) -> Path:
+    """A minimal ownership source carrying the F35 sentinel the relink
+    pre-flight verifies."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Ownership"
+    ws["B35"] = "Total Basic Shares Outstanding"
+    wb.save(path)
+    return path
+
+
 # --- combined_filename -------------------------------------------------------
 
 
@@ -177,7 +209,7 @@ def test_merge_preserves_comments_and_hyperlinks(tmp_path: Path):
 def test_combine_writes_named_file_and_deletes_sources(tmp_path: Path, monkeypatch):
     # Force the openpyxl backend so the test never shells out to Excel.
     monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
-    a = _make_workbook(tmp_path / "cap.xlsx", {"Cap": [[1]]})
+    a = _make_anchored_captable(tmp_path / "cap.xlsx", sheet="Cap")
     b = _make_workbook(tmp_path / "ltm.xlsx", {"LTM": [[2]]})
 
     out = combine_workbooks(
@@ -245,7 +277,7 @@ def test_relink_wires_cross_tab_formulas(tmp_path: Path, monkeypatch):
     bridge totals (found by label, since their rows are dynamic) and the ownership
     denominator links to the cap table's basic shares (millions -> full units)."""
     monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
-    cap = _make_workbook(tmp_path / "cap.xlsx", {"Cap with Links": [["cap"]]})
+    cap = _make_anchored_captable(tmp_path / "cap.xlsx")
     ltm = _make_workbook(
         tmp_path / "ltm.xlsx",
         {
@@ -268,7 +300,7 @@ def test_relink_wires_cross_tab_formulas(tmp_path: Path, monkeypatch):
             ]
         },
     )
-    own = _make_workbook(tmp_path / "own.xlsx", {"Ownership": [["own"]]})
+    own = _make_anchored_ownership(tmp_path / "own.xlsx")
 
     out = combine_workbooks(
         sources={"captable": cap, "ltm-metrics": ltm, "ownership": own},
@@ -286,7 +318,7 @@ def test_relink_is_noop_without_ltm_bridge_labels(tmp_path: Path, monkeypatch):
     # No "(=) LTM ..." labels in the ltm tab -> the cap table's D47/D48 are left
     # alone (the captable skill's own scalar/CapIQ values stand).
     monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
-    cap = _make_workbook(tmp_path / "cap.xlsx", {"Cap with Links": [["cap"]]})
+    cap = _make_anchored_captable(tmp_path / "cap.xlsx")
     ltm = _make_workbook(tmp_path / "ltm.xlsx", {"LTM Metrics": [["Total", 100]]})
     out = combine_workbooks(
         sources={"captable": cap, "ltm-metrics": ltm},

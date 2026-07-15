@@ -53,6 +53,11 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from naming import safe_filename
 
+# No template_layout anchors here: this workbook is authored from scratch (no
+# shipped template to shift), and the chart step re-derives its geometry by
+# label (financial_charts.period_axis_columns / metric_data_rows on the row-5
+# 'Units' header and column-A metric labels), never by stored address.
+
 # INFOR mid-blue header fill / Palatino body, mirroring `ltm_metrics.py` so the
 # folded-in tab matches the rest of the combined workbook.
 _HEADER_FILL = PatternFill("solid", fgColor="1F3864")

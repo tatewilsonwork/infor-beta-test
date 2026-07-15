@@ -8,7 +8,7 @@ description: >
   pitch-Project Atlas.xlsx. Activates as the plan stage `workbook-aggregation`. Preserves formulas,
   CapIQ links, charts, and formatting via Excel COM on Windows; falls back to a best-effort openpyxl
   merge off-Windows. The individual source workbooks are replaced by the combined file.
-version: 0.5.31
+version: 0.5.32
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -59,6 +59,8 @@ Once every workbook is one file, a **relink** pass rewrites the skills' standalo
 - Financial-summary LTM link cells — each `=INDEX('ltm-metrics'!…)` formula is re-assigned so it re-binds to the sibling `ltm-metrics` tab (the COM sheet-copy leaves it bound to an *external* workbook relationship that Excel's `.Formula` getter masks as internal, resolving `#N/A`; see v0.5.16).
 
 The relink is best-effort and only fires when the relevant tabs are present; it is a no-op otherwise. On the openpyxl fallback the formulas are still written, but CapIQ links are already lost on that path.
+
+**Layout pre-flight (v0.5.32).** Because the relink writes those fixed addresses blind, `combine_workbooks` first verifies each source's sentinel anchors from the shared `template_layout` map (cap table `B47`/`B48` `Revenue`/`Adj. EBITDA` labels + the `D33` `LTM` header for `D47`/`D48`, `B17` for `F17`, `B5` for `F5`, `B7` for `F7`; ownership `B35`; comps `E3`; precedents `B2`) — but only for the relink pairs actually present. The check runs before either merge backend, on the still-on-disk sources, so a re-saved template with shifted rows raises `TemplateLayoutError` with nothing merged and no source deleted, instead of relinking the wrong cells.
 
 ## LibreOffice recalc (openpyxl path only)
 

@@ -49,6 +49,13 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import Font
 
+from template_layout import (
+    PRECEDENTS_BLOCK_ANCHORS,
+    PRECEDENTS_OUTPUT_CCY_ANCHORS,
+    PRECEDENTS_TEMPLATE,
+    verify_anchors,
+)
+
 _SHEET = "Precedents"
 _MAX_GROUPS = 2
 _TX_PER_GROUP = 6
@@ -298,6 +305,13 @@ def build_precedents_workbook(
     if _SHEET not in wb.sheetnames:
         raise KeyError(f"sheet {_SHEET!r} not found in precedents template (have {wb.sheetnames})")
     ws = wb[_SHEET]
+    # Verify the block/column sentinel anchors (row-4/5 headers + each group's
+    # 'Group Average' bound + the C2 'Output:' label) before writing blind.
+    verify_anchors(
+        ws,
+        PRECEDENTS_OUTPUT_CCY_ANCHORS + PRECEDENTS_BLOCK_ANCHORS,
+        template=PRECEDENTS_TEMPLATE,
+    )
 
     ws[_OUTPUT_CCY_CELL] = output_currency
 

@@ -32,6 +32,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from template_layout import COMPS_BLOCK_ANCHORS, COMPS_TEMPLATE, verify_anchors
+
 _SHEET = "Comps"
 _MAX_VERTICALS = 3
 _COMPANIES_PER_VERTICAL = 6
@@ -140,6 +142,9 @@ def build_comps_workbook(
     if _SHEET not in wb.sheetnames:
         raise KeyError(f"sheet {_SHEET!r} not found in comps template (have {wb.sheetnames})")
     ws = wb[_SHEET]
+    # Verify the vertical blocks' sentinel anchors (row-7 headers + the 'Group
+    # Average' row closing each block) before writing the hardcoded rows blind.
+    verify_anchors(ws, COMPS_BLOCK_ANCHORS, template=COMPS_TEMPLATE)
 
     for vertical, (label_cell, first_row) in zip(verticals, _VERTICAL_ANCHORS):
         ws[label_cell] = vertical.name

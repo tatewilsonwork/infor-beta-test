@@ -7,7 +7,7 @@ description: >
   the analyst-attached SEDI PDF, keeps only current insiders, sums each one's common shares, looks
   up roles, ingests the Bloomberg holders (excluding SEDI duplicates — the SEDI figure always
   wins), and writes the INFOR ownership workbook (companion to the ownership slide).
-version: 0.5.31
+version: 0.5.32
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -138,7 +138,9 @@ total = read_basic_shares_from_cap_table(captable_workbook_path)  # full units, 
 
 This sums the cap table's Section VII basic-share input rows (full units). If it returns `None`
 (no cap table / unreadable), leave `F35` blank and flag it as a manual step in the summary. Because
-F35 comes from the cap table, this stage must run **after** `captable`.
+F35 comes from the cap table, this stage must run **after** `captable`. A *readable* cap table whose
+Section VII layout no longer matches (shifted rows) raises `TemplateLayoutError` instead of silently
+summing the wrong window — report that to the analyst rather than working around it.
 
 ### Step 9 — Bloomberg institutional side (optional)
 
@@ -196,7 +198,10 @@ build_ownership_workbook(
 ```
 
 The builder writes the SEDI name (B), common shares (F, plain or sum formula), date (G), and adjusted
-name (J) into rows 39-65, and sets `F35`. It does **not** touch the display blocks (`B4:G17`,
+name (J) into rows 39-65, and sets `F35`. Before writing it verifies the template's sentinel labels
+around those addresses (the row-38 block header, the row-67 `From Bloomberg` bound, the `B35` label —
+shared `template_layout` map) and raises `TemplateLayoutError` if the template layout has shifted.
+It does **not** touch the display blocks (`B4:G17`,
 `B19:G35`), the insider include flags (H39:H65), or the `=H*F` formulas (I). With a Bloomberg export
 it additionally copies the holder rows into the `Bloomberg Output` tab (values + number formats;
 capped at the template's 118 rows — the Summary View is position-sorted, so any truncated tail is the

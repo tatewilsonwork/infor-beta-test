@@ -6,7 +6,7 @@ description: >
   three verticals (peer groups) relevant to the target, selects six public companies per
   vertical with their Capital IQ tickers, writes a short description for each, and fills the
   INFOR Comps Template — the companion workbook behind the deck's comps slide.
-version: 0.5.31
+version: 0.5.32
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -159,8 +159,10 @@ Path(os.environ["STAGE_OUTPUTS"]).write_text(
 ```
 
 The builder validates the shape (≤3 verticals, ≤6 companies each, non-empty tickers,
-descriptions ≤50 chars), writes only the labels / tickers / descriptions, and leaves the
-CapIQ array formulas and statistic rows untouched.
+descriptions ≤50 chars), verifies the template's sentinel labels around the hardcoded block
+addresses before writing (shared `template_layout` map — a re-saved template with shifted rows
+raises `TemplateLayoutError` instead of writing blind), writes only the labels / tickers /
+descriptions, and leaves the CapIQ array formulas and statistic rows untouched.
 
 ---
 
