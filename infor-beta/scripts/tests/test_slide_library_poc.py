@@ -285,6 +285,10 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
     assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
     # Aggregation runs last so the deck stage can still read the standalone cap table.
     assert plan.stages[-1].id == "workbook-aggregation"
+    # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
+    # assembled deck before workbook aggregation produces the final artefact.
+    assert deck_stage.checkpoint == "required"
+    assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
 
 
 def test_pitch_library_poc_plan_stage_order():
@@ -319,6 +323,10 @@ def test_pitch_library_poc_plan_stage_order():
     fc_stage = next(s for s in plan.stages if s.id == "financial-charts")
     assert fc_stage.inputs["combined_workbook_path"] == "$stages.workbook-aggregation.combined_workbook_path"
     assert fc_stage.inputs["deck_path"] == "$stages.deck.deck_path"
+    # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
+    # assembled deck before aggregation + charts produce the final artefacts.
+    assert next(s for s in plan.stages if s.id == "deck").checkpoint == "required"
+    assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"

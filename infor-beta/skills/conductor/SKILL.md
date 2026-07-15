@@ -12,7 +12,7 @@ description: >
   dialogs (AskUserQuestion), dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.30
+version: 0.5.31
 allowed-tools: [Read, Write, Bash, Glob, Task, AskUserQuestion]
 ---
 
@@ -179,7 +179,7 @@ Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage 
 
 **6d — Checkpoint the wave.** Once the wave's state is updated, run the checkpoint behaviour (`references/checkpoint-behaviour.md`) for each stage in the wave, in listed order — `informational` summarises (batch the wave's outputs into one surface), `silent` does nothing, `required` halts and asks for approval via `AskUserQuestion` ("Approve — continue the run" / "Halt the run"). If the analyst rejects any `required` checkpoint, halt before dispatching the next wave.
 
-> **`required` checkpoints and parallelism.** A `required` gate is evaluated at its **wave boundary**, after every stage in that wave has already run — so it cannot stop its own wave-mates, only the downstream waves. Today every shipped plan's checkpoints are `informational`, so behaviour is unchanged. If a future plan needs a gate to stop work *before* an expensive stage starts, give that stage a dependency so it lands in a later wave (the scheduler will serialise it behind the gate).
+> **`required` checkpoints and parallelism.** A `required` gate is evaluated at its **wave boundary**, after every stage in that wave has already run — so it cannot stop its own wave-mates, only the downstream waves. Both shipped plans mark the `deck` stage `required` (the pre-delivery gate — the assembled deck is built from untrusted external inputs, so the analyst approves it before the final artefacts are produced); every other stage is `informational`. The gate genuinely holds the final artefacts because `deck` is scheduled alone in its wave, ahead of `workbook-aggregation` (and, for pitch, `financial-charts`). If a future plan needs a gate to stop work *before* an expensive stage starts, give that stage a dependency so it lands in a later wave (the scheduler will serialise it behind the gate).
 
 ### Step 7 — Emit summary
 

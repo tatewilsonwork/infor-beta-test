@@ -238,7 +238,12 @@ stages:
       - name: deck_path
         type: Path
         description: Absolute path to the generated .pptx deck (16-slide base, adjusted by the deck-spec slide mix).
-    checkpoint: informational
+    # Pre-delivery gate: the assembled deck is built from untrusted external
+    # inputs (filings, exports, web data), so the analyst must approve it before
+    # the final artefacts are produced. `deck` sits alone in its wave ahead of
+    # `workbook-aggregation` and `financial-charts`, so this wave-boundary gate
+    # genuinely holds both final artefacts (combined workbook + charted deck).
+    checkpoint: required
 
   # Final consolidation: merge every companion workbook into one file named
   # pitch-<codename>.xlsx (one tab per producing skill) and delete the

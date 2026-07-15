@@ -68,6 +68,23 @@ def test_financial_charts_depends_on_deck_and_aggregation():
     assert {"deck", "workbook-aggregation"} <= deps["financial-charts"]
 
 
+def test_required_deck_gate_precedes_final_artefact_waves():
+    """Both shipped plans mark `deck` as the `required` pre-delivery checkpoint
+    (v0.5.31). Checkpoints are evaluated at the wave boundary and only stop
+    DOWNSTREAM waves, so the gate is only real if `deck` is scheduled in an
+    earlier wave than the final-artefact stages — lock that here so a plan edit
+    can't silently move aggregation or charts alongside (or ahead of) the gate."""
+    for name in ("pitch.yaml", "earnings-update.yaml"):
+        plan = _load_plan(name)
+        checkpoints = {s.id: s.checkpoint for s in plan.stages}
+        assert checkpoints["deck"] == "required", name
+        assert all(m == "informational" for sid, m in checkpoints.items() if sid != "deck"), name
+        wave_index = {sid: i for i, wave in enumerate(compute_waves(plan)) for sid in wave}
+        assert wave_index["deck"] < wave_index["workbook-aggregation"], name
+        if "financial-charts" in wave_index:
+            assert wave_index["deck"] < wave_index["financial-charts"], name
+
+
 def test_every_stage_scheduled_exactly_once():
     for name in ("pitch.yaml", "earnings-update.yaml"):
         plan = _load_plan(name)
