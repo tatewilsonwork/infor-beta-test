@@ -7,7 +7,7 @@ description: >
   + EV/EBITDA for operating companies, or P/E + P/B + P/TBV for financial institutions — and
   fills the INFOR Precedents Template, hyperlinking each figure's source. The companion workbook
   behind the deck's precedent-transactions slide.
-version: 0.5.31
+version: 0.5.32
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -198,8 +198,10 @@ For a **financial-institution** target, swap the metric inputs: use `net_income_
 / `tangible_book_value_link`.
 
 The builder validates the shape (≤2 groups, ≤6 transactions each, a positive TEV, 3-letter
-currency / HQ codes, numeric metrics, http(s) links), writes only the inputs, and leaves the FX
-/ ratio / statistic formulas untouched.
+currency / HQ codes, numeric metrics, http(s) links), verifies the template's sentinel labels
+around the hardcoded block/column addresses before writing (shared `template_layout` map — a
+re-saved template with shifted rows raises `TemplateLayoutError` instead of writing blind),
+writes only the inputs, and leaves the FX / ratio / statistic formulas untouched.
 
 ---
 

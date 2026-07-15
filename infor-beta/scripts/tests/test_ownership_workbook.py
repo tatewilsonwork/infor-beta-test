@@ -124,6 +124,12 @@ def _cap_table(path: Path, rows: dict[int, float]) -> Path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Cap with Links"
+    # Section VII sentinel labels — read_basic_shares_from_cap_table verifies
+    # these anchors (template_layout) before summing the F168:F185 window.
+    ws["B166"] = "VII. BASIC SHARES OUTSTANDING"
+    ws["B167"] = "Description"
+    ws["F167"] = "Amount"
+    ws["B186"] = "Total Basic Shares Outstanding"
     for row, value in rows.items():
         ws.cell(row=row, column=6, value=value)  # column F
     wb.save(path)

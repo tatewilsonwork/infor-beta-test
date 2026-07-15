@@ -25,6 +25,11 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from naming import safe_filename
 
+# No template_layout anchors here: this workbook is authored from scratch (no
+# shipped template to shift), and every downstream reader locates its blocks by
+# label, not address (financial_charts.ltm_revenue_overview_range, the
+# aggregator's `(=) LTM …` label scan, financial-summary's MATCH-keyed links).
+
 # INFOR mid-blue header fill / Palatino body, mirroring the deck brand.
 _HEADER_FILL = PatternFill("solid", fgColor="1F3864")
 _SECTION_FILL = PatternFill("solid", fgColor="D9E1F2")

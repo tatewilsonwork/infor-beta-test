@@ -66,6 +66,7 @@ from pathlib import Path
 from pptx import Presentation
 
 from pptx_helpers import INFOR_ACCENTS
+from template_layout import OVERVIEW_SLIDE_INDEX
 
 # --- INFOR chart constants ---------------------------------------------------
 _BAR_RGB_HEX = "46566E"  # RGB(70, 86, 110) as openpyxl RRGGBB
@@ -171,8 +172,9 @@ _PIE_LEGEND_Y = 0.02
 _PIE_LEGEND_W = 0.38
 _PIE_LEGEND_H = 0.96
 # Overview slide in the assembled pitch deck (slides[6] after the earnings slide
-# at raw library index 7 is deleted).
-_OVERVIEW_SLIDE_INDEX = 6
+# at raw library index 7 is deleted) — the shared template_layout constant, so
+# this module and pitch_deck_assembler cannot drift apart.
+_OVERVIEW_SLIDE_INDEX = OVERVIEW_SLIDE_INDEX
 _PIE_PLACEHOLDER = "Rectangle 4"
 # Placeholder box: 4.51" x 1.77" (wide and short) — size the exported pie to the
 # same aspect so the stretched picture is not distorted.

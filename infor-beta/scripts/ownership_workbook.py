@@ -44,6 +44,17 @@ from openpyxl import load_workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Font
 
+from template_layout import (
+    CAP_TABLE_SECTION_VII_ANCHORS,
+    CAP_TABLE_SHEET,
+    OWNERSHIP_BBG_LINK_ANCHORS,
+    OWNERSHIP_BBG_TEMPLATE_ANCHORS,
+    OWNERSHIP_INSIDER_BLOCK_ANCHORS,
+    OWNERSHIP_TEMPLATE,
+    OWNERSHIP_TOTAL_SHARES_ANCHORS,
+    verify_anchors,
+)
+
 _SHEET = "Ownership"
 _DATA_FIRST_ROW = 39
 _DATA_LAST_ROW = 65  # rows 39-65 -> 27 insider slots
@@ -165,7 +176,10 @@ def read_basic_shares_from_cap_table(captable_path: Path | str) -> int | None:
         wb = load_workbook(Path(captable_path), data_only=False)
     except Exception:
         return None
-    ws = wb["Cap with Links"] if "Cap with Links" in wb.sheetnames else wb.active
+    ws = wb[CAP_TABLE_SHEET] if CAP_TABLE_SHEET in wb.sheetnames else wb.active
+    # A readable-but-shifted cap table must raise, not silently sum the wrong
+    # window: verify the Section VII sentinels before reading F168:F185.
+    verify_anchors(ws, CAP_TABLE_SECTION_VII_ANCHORS, template=Path(captable_path).name)
     total_millions = 0.0
     found = False
     for row in range(168, 186):  # Section VII basic-share inputs (rows 168-185)
@@ -410,6 +424,12 @@ def _write_bloomberg_side(
         raise KeyError(f"sheet {_BBG_SHEET!r} not found in ownership template (have {wb.sheetnames})")
     ws_bbg = wb[_BBG_SHEET]
     ws_own = wb[_SHEET]
+    # The export side is validated in read_bloomberg_export; this validates the
+    # template side the rows land on — the 'Bloomberg Output' header row the
+    # holder rows are copied under, and the Ownership tab's pre-wired link rows
+    # 68–185 (whose H/J columns are written and B/F/G neutralised below).
+    verify_anchors(ws_bbg, OWNERSHIP_BBG_TEMPLATE_ANCHORS, template=OWNERSHIP_TEMPLATE)
+    verify_anchors(ws_own, OWNERSHIP_BBG_LINK_ANCHORS, template=OWNERSHIP_TEMPLATE)
 
     holders = export.holders
     if len(holders) > _MAX_BBG_HOLDERS:
@@ -507,6 +527,14 @@ def build_ownership_workbook(
     if _SHEET not in wb.sheetnames:
         raise KeyError(f"sheet {_SHEET!r} not found in ownership template (have {wb.sheetnames})")
     ws = wb[_SHEET]
+    # Verify the template layout before writing the hardcoded addresses blind:
+    # the insider block rows 39–65 (header row 38 + the row-67 lower bound) and
+    # the F35 % denominator.
+    verify_anchors(
+        ws,
+        OWNERSHIP_INSIDER_BLOCK_ANCHORS + OWNERSHIP_TOTAL_SHARES_ANCHORS,
+        template=OWNERSHIP_TEMPLATE,
+    )
 
     for offset, insider in enumerate(insiders):
         row = _DATA_FIRST_ROW + offset

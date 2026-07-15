@@ -5,7 +5,7 @@ description: >
   statements to populate a capitalization table. Activates on /captable and on tasks involving
   shares outstanding, debt schedules, lease obligations, options/RSU/warrant tables, convertible
   debentures, cash balances, preferred shares, or non-controlling interest sourced from company filings.
-version: 0.5.31
+version: 0.5.32
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -84,6 +84,18 @@ ls -lh "$OUTPUT"
 ### Step 3 — Update Header Inputs (openpyxl)
 
 Open the copied file with openpyxl (NOT data_only — preserve all formulas).
+
+**Layout verification — REQUIRED before any write.** The workflow below addresses the template by hardcoded cells (F3/F5/F7/F16, D47/D48, the Section rows). Verify the copied template still matches that layout via the shared helper — it checks the sentinel labels next to each address and raises `TemplateLayoutError` naming what moved if the template was re-saved with shifted rows:
+
+```python
+import sys, os
+sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
+from template_layout import verify_cap_table_before_write
+
+verify_cap_table_before_write(ws)  # raises TemplateLayoutError if the layout shifted — STOP and tell the analyst
+```
+
+If it raises, STOP: do not write any cell, and report the error message to the analyst (the shipped template and this skill's row map must be re-aligned).
 
 Update this cell in the `Cap with Links` sheet:
 

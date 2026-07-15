@@ -31,6 +31,13 @@ from pptx_helpers import (
     write_bullets_or_plain,
 )
 from schemas import EarningsUpdateContent, SlidePlan
+from template_layout import (
+    CAP_TABLE_PICTURE_ANCHORS,
+    CAP_TABLE_PICTURE_RANGE,
+    CAP_TABLE_SHEET,
+    verify_library_slide,
+    verify_workbook_anchors,
+)
 
 # Zero-based library indices the earnings deck keeps, in final deck order:
 # cover (0), public-company overview (6), earnings summary (7), disclaimer (15),
@@ -40,11 +47,16 @@ from schemas import EarningsUpdateContent, SlidePlan
 # 15/16. (Pre-0.5.9 this was (0,6,7,13,14); the v0.5.8 ownership-slide insertion
 # shifted the closers to 14/15, and the v0.5.14 precedents-slide insertion shifted
 # them again to 15/16 — each insertion before the closers bumps these by one.)
+# Every kept index is verified against its `template_layout` marker before the
+# delete pass, so a re-ordered library raises TemplateLayoutError instead of
+# shipping the wrong slides (this map has needed three manual migrations).
 _KEEP_LIBRARY_INDICES = (0, 6, 7, 15, 16)
 
 # Earnings-summary slide cap-table placeholder (library slide 7 / deck index 1).
+# Range + its sentinel anchors live in template_layout (shared with the pitch
+# assembler — same 'Cap with Links'!B15:F40 picture).
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
-_CAP_TABLE_RANGE = "B15:F40"
+_CAP_TABLE_RANGE = CAP_TABLE_PICTURE_RANGE
 
 
 def _bullet_tuple(bullet) -> tuple[str, int]:
@@ -262,6 +274,12 @@ def assemble_earnings_update_deck(
 
     prs = Presentation(template)
 
+    # Verify each kept slide is the concept its index promises BEFORE any
+    # clone/delete — a re-ordered or re-saved library raises TemplateLayoutError
+    # here instead of assembling the wrong slides.
+    for idx in _KEEP_LIBRARY_INDICES:
+        verify_library_slide(prs, idx, template=template.name)
+
     # Reduce the 17-slide library to the five earnings entries (delete from the
     # tail so earlier indices stay valid).
     keep = set(_KEEP_LIBRARY_INDICES)
@@ -278,13 +296,18 @@ def assemble_earnings_update_deck(
     prs.save(output_path)
 
     if captable_workbook_path is not None:
+        # The picture range is read blind — verify its sentinel anchors first so
+        # a shifted cap table raises instead of pasting the wrong rows.
+        verify_workbook_anchors(
+            captable_workbook_path, sheet=CAP_TABLE_SHEET, anchors=CAP_TABLE_PICTURE_ANCHORS
+        )
         insert_excel_into_placeholder(
             deck_path=output_path,
             workbook_path=captable_workbook_path,
             output_path=output_path,
             slide_index=1,
             placeholder_name=_CAP_TABLE_PLACEHOLDER,
-            sheet_name="Cap with Links",
+            sheet_name=CAP_TABLE_SHEET,
             source_range=_CAP_TABLE_RANGE,
         )
     _verify_output(output_path, cap_table_inserted=captable_workbook_path is not None)

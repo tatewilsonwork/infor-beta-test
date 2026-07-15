@@ -78,6 +78,20 @@ from pathlib import Path
 from typing import Mapping
 
 from naming import safe_filename
+from template_layout import (
+    CAP_TABLE_BASIC_SHARES_ANCHOR,
+    CAP_TABLE_FX_ANCHOR,
+    CAP_TABLE_LTM_ANCHORS,
+    CAP_TABLE_OUTPUT_CCY_ANCHOR,
+    CAP_TABLE_SHEET,
+    COMPS_OUTPUT_CCY_ANCHORS,
+    COMPS_SHEET,
+    OWNERSHIP_SHEET,
+    OWNERSHIP_TOTAL_SHARES_ANCHORS,
+    PRECEDENTS_OUTPUT_CCY_ANCHORS,
+    PRECEDENTS_SHEET,
+    verify_anchors,
+)
 
 # xlOpenXMLWorkbook — the .xlsx SaveAs file format for Excel COM.
 _XL_OPEN_XML_WORKBOOK = 51
@@ -217,6 +231,12 @@ def combine_workbooks(
     kept, _skipped = _resolve_sources(sources)
     if not kept:
         raise ValueError("no workbooks to combine — every source was None or missing")
+
+    # Layout pre-flight for the relink pass, on the shared layer BOTH backends
+    # pass through (the sources are still openpyxl-readable .xlsx files here).
+    # A re-saved template with shifted rows would otherwise make the relink
+    # write its cross-tab formulas into the wrong cells — a silent wrong number.
+    _verify_relink_layout(kept)
 
     out_dir = Path(output_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -412,6 +432,67 @@ _OWN_SHARES_SCALE = 1_000_000   # cap table is in millions; ownership is full un
 _CAP_OUTPUT_CCY_CELL = "F5"
 _OUTPUT_CCY_LINKS = {"comps": "F3", "precedents": "C2"}
 _OUTPUT_CCY_LINK_FONT = ("Palatino Linotype", 9.0, "0000FF")  # name, size, aRGB-less hex
+
+
+def _relink_source_sheet(wb, preferred: str):
+    """The sheet a source contributes as its relink target: the preferred
+    template sheet name when present, else the first non-CapIQ-helper sheet
+    (which is what the merge names after the skill)."""
+    if preferred in wb.sheetnames:
+        return wb[preferred]
+    for name in wb.sheetnames:
+        if not _is_capiq_helper_sheet(name):
+            return wb[name]
+    return wb.active
+
+
+def _verify_relink_layout(kept: list[tuple[str, Path]]) -> None:
+    """Verify the relinked cells' sentinel anchors on the source workbooks.
+
+    Runs BEFORE either merge backend, so the Excel-COM and openpyxl paths share
+    one verification (the sources are plain .xlsx files here; nothing has been
+    merged or deleted yet, so raising loses no work). Only the relinks that
+    will actually fire are checked: every relink is keyed off the cap table, and
+    each partner tab adds its own cells — captable+ltm-metrics ⇒ D47/D48 (and
+    the F7 FX rate the written formulas multiply by), captable+ownership ⇒
+    F17 → F35, captable+comps ⇒ F5 → F3, captable+precedents ⇒ F5 → C2.
+    Raises TemplateLayoutError when a template's layout has shifted.
+    """
+    from openpyxl import load_workbook
+
+    skills = {skill for skill, _ in kept}
+    if "captable" not in skills:
+        return  # every relink is keyed off the cap table
+
+    cap_anchors = []
+    if "ltm-metrics" in skills:
+        cap_anchors += [*CAP_TABLE_LTM_ANCHORS, CAP_TABLE_FX_ANCHOR]
+    if "ownership" in skills:
+        cap_anchors.append(CAP_TABLE_BASIC_SHARES_ANCHOR)
+    if "comps" in skills or "precedents" in skills:
+        cap_anchors.append(CAP_TABLE_OUTPUT_CCY_ANCHOR)
+
+    partner_checks = {
+        "ownership": (OWNERSHIP_SHEET, OWNERSHIP_TOTAL_SHARES_ANCHORS),
+        "comps": (COMPS_SHEET, COMPS_OUTPUT_CCY_ANCHORS),
+        "precedents": (PRECEDENTS_SHEET, PRECEDENTS_OUTPUT_CCY_ANCHORS),
+    }
+    for skill, path in kept:
+        if skill == "captable" and cap_anchors:
+            wb = load_workbook(path, data_only=False)
+            try:
+                verify_anchors(
+                    _relink_source_sheet(wb, CAP_TABLE_SHEET), cap_anchors, template=path.name
+                )
+            finally:
+                wb.close()
+        elif skill in partner_checks:
+            preferred, anchors = partner_checks[skill]
+            wb = load_workbook(path, data_only=False)
+            try:
+                verify_anchors(_relink_source_sheet(wb, preferred), anchors, template=path.name)
+            finally:
+                wb.close()
 
 
 def _quote_sheet(name: str) -> str:

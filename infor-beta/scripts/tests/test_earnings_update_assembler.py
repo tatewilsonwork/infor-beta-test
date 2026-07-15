@@ -77,6 +77,9 @@ def _write_sample_cap_table(path: Path) -> Path:
         22: ("Fully-Diluted Market Cap", "C$1,283.4"),
         28: ("Net Debt", "C$200.0"),
         31: ("Enterprise Value", "C$1,483.4"),
+        # B40 pins the bottom of the B15:F40 picture range — the assembler
+        # verifies both sentinel anchors (template_layout) before pasting.
+        40: ("EV / Adj. EBITDA", "10.0x"),
     }
     for row, (label, value) in rows.items():
         ws.cell(row=row, column=2).value = label

@@ -4,7 +4,7 @@ description: >
   Use this skill as the deck assembly stage. It consumes a typed SlidePlan and typed content bundle
   and writes either the earnings-update deck or the pitch deck, both cloned from the shared INFOR
   slide library.
-version: 0.5.31
+version: 0.5.32
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -42,6 +42,7 @@ When invoked by the conductor, read:
 3. Inspect the `SlidePlan.deliverable_type`.
 4. If `earnings-update`, call `assemble_earnings_update_deck(...)` and pass `captable_workbook_path` when supplied so slide 2's cap-table placeholder is replaced.
 5. If `pitch`, call `assemble_pitch_deck(...)`.
+   Both assemblers verify the library and workbook layouts before touching hardcoded indices/ranges (shared `template_layout` map): every library slide about to be kept, cloned, deleted, or filled is checked against its marker shape (extending the `Rectangle 17` FS self-discovery pattern), and each Excel picture range's sentinel anchors (`B15`/`B40` on the cap table; `B4`/`B17`, `B19`/`B35` on ownership) are checked before pasting. A re-ordered library or re-saved workbook raises `TemplateLayoutError` naming what moved — report it to the analyst; do not work around it.
 6. Write the deck under `$DEAL_DIR/artefacts/` when `$DEAL_DIR` is set; otherwise use the supplied `output_dir`.
 7. **Overflow QA — mandatory, do not skip** (see below). Render the overflow-prone slides to PNG, read each PNG, and autofit until text is clean. This stage is not complete until the QA has run; if the renderer is unavailable, say so explicitly rather than skipping silently.
 8. Write `$STAGE_OUTPUTS` as:

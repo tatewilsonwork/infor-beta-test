@@ -416,7 +416,11 @@ def _write_sample_cap_table(path: Path, currency: str = "CAD") -> Path:
     ws.title = "Cap with Links"
     ws["F5"] = currency  # output currency drives the footnote letter
     rows = {
-        15: ("Capitalization Summary", None),
+        # The pitch assembler verifies the template's sentinel anchors
+        # (template_layout) before reading F5 / pasting B15:F40: the B5 label
+        # for the output currency, and B15/B40 pinning the picture range.
+        5: ("Output Currency:", None),
+        15: ("Company Ticker:", None),
         16: ("Share Price", "12.34"),
         17: ("Basic Shares Outstanding", "100.0"),
         18: ("Basic Market Cap", "1,234.0"),

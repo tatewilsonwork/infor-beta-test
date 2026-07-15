@@ -8,7 +8,7 @@ description: >
   placeholders. It also builds the overview slide's LTM revenue-by-segment pie on the combined
   workbook's `ltm-metrics` tab and drops it into the "[Pie Chart Placeholder]". Runs after
   `workbook-aggregation`.
-version: 0.5.31
+version: 0.5.32
 allowed-tools: [Read, Write, Bash]
 ---
 
