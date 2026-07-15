@@ -17,6 +17,12 @@ Reference resolution is a pure string-templating pass over `Stage.inputs`:
 - `$stages.<stage_id>.<name>`  named output of an earlier stage
 
 The resolver itself lives in `plan_refs.py` so this module stays a pure schema.
+So does the load-time reference pre-flight (`plan_refs.validate_plan_references`),
+which the conductor's load paths run right after pydantic validation: every
+`$stages.<id>` must name a real stage, every `$stages.<id>.<name>` a declared
+output of that stage, and every `$plan_inputs.<name>` a declared plan input.
+It is deliberately not a validator on `Plan` itself — the scheduler keeps its
+lenient ignore-unknown-refs behaviour on hand-built plans as defense-in-depth.
 """
 
 from __future__ import annotations
@@ -80,7 +86,12 @@ class Stage(BaseModel):
     )
     outputs: list[OutputSpec] = Field(
         default_factory=list,
-        description="Named outputs the stage is expected to write to its outputs.json.",
+        description=(
+            "Named outputs the stage must write to its outputs.json. Every declared "
+            "name is checked for presence when the conductor collects the stage "
+            "(null values pass — omitting the key does not; extra undeclared keys "
+            "are allowed; the type label is documentation, not validated)."
+        ),
     )
     checkpoint: CheckpointMode = Field(
         default="informational",

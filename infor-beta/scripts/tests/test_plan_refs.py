@@ -1,15 +1,21 @@
-"""Unit tests for the plan_refs reference resolver."""
+"""Unit tests for the plan_refs reference resolver + load-time pre-flight."""
 
 from pathlib import Path
 
 import pytest
+import yaml
 
 from plan_refs import (
+    PlanReferenceError,
     ReferenceResolutionError,
     UnknownReferenceError,
+    parse_ref,
     resolve_refs,
+    validate_plan_references,
 )
-from schemas import Company, DealContext
+from schemas import Company, DealContext, InputSpec, OutputSpec, Plan, Stage
+
+_PLANS_DIR = Path(__file__).resolve().parents[2] / "plans"
 
 
 @pytest.fixture
@@ -194,3 +200,135 @@ def test_stages_requires_id_and_field(ctx):
     """`$stages.x` alone (no output name) is invalid."""
     with pytest.raises(ReferenceResolutionError):
         _resolve("$stages.earnings_update", ctx=ctx, stage_outputs={"earnings_update": {}})
+
+
+# --- the shared reference grammar (parse_ref) --------------------------------
+
+
+def test_parse_ref_grammar():
+    assert parse_ref("$stages.captable.workbook_path") == ("stages", ["captable", "workbook_path"])
+    assert parse_ref("$plan_inputs.reporting_quarter") == ("plan_inputs", ["reporting_quarter"])
+    assert parse_ref("$deal.subject_company.ticker") == ("deal", ["subject_company", "ticker"])
+    assert parse_ref("not a ref") is None
+    assert parse_ref("$config.something") is None  # unknown prefix
+    assert parse_ref("$stages.") is None  # empty path
+
+
+# --- validate_plan_references (load-time pre-flight) --------------------------
+
+
+def _stage(id, inputs=None, outputs=("out",), skill=None):
+    return Stage(
+        id=id,
+        skill=skill or id,
+        inputs=inputs or {},
+        outputs=[OutputSpec(name=n, type="str") for n in outputs],
+    )
+
+
+def _plan(stages, plan_inputs=()):
+    return Plan(
+        deliverable_type="pitch",
+        description="pre-flight test plan",
+        plan_inputs=list(plan_inputs),
+        stages=stages,
+    )
+
+
+def test_preflight_accepts_valid_references():
+    plan = _plan(
+        stages=[
+            _stage("a", inputs={"q": "$plan_inputs.reporting_quarter", "c": "$deal.codename"}),
+            _stage("b", inputs={"x": "$stages.a.out", "lit": "plain string", "n": 42}),
+        ],
+        plan_inputs=[InputSpec(name="reporting_quarter", type="str")],
+    )
+    validate_plan_references(plan)  # must not raise
+
+
+def test_preflight_rejects_unknown_stage_id():
+    plan = _plan(stages=[_stage("a", inputs={"x": "$stages.ghost.out"})])
+    with pytest.raises(PlanReferenceError, match="ghost"):
+        validate_plan_references(plan)
+
+
+def test_preflight_rejects_undeclared_stage_output():
+    plan = _plan(
+        stages=[
+            _stage("a"),
+            _stage("b", inputs={"x": "$stages.a.workbook_path"}),  # a declares only `out`
+        ]
+    )
+    with pytest.raises(PlanReferenceError, match="workbook_path"):
+        validate_plan_references(plan)
+
+
+def test_preflight_rejects_unknown_plan_input():
+    plan = _plan(
+        stages=[_stage("a", inputs={"q": "$plan_inputs.reporting_quater"})],
+        plan_inputs=[InputSpec(name="reporting_quarter", type="str")],
+    )
+    with pytest.raises(PlanReferenceError, match="reporting_quater"):
+        validate_plan_references(plan)
+
+
+def test_preflight_accepts_optional_plan_input_reference():
+    """Optional (`required=False`) plan inputs are declared, so referencing one
+    passes the pre-flight; whether the analyst supplied it is a resolve-time
+    concern (the optional_plan_inputs -> None softening)."""
+    plan = _plan(
+        stages=[_stage("a", inputs={"notes": "$plan_inputs.risk_notes"})],
+        plan_inputs=[InputSpec(name="risk_notes", type="str", required=False)],
+    )
+    validate_plan_references(plan)
+
+
+def test_preflight_rejects_stage_ref_without_output_name():
+    plan = _plan(stages=[_stage("a"), _stage("b", inputs={"x": "$stages.a"})])
+    with pytest.raises(PlanReferenceError, match=r"\$stages\.<stage_id>\.<output_name>"):
+        validate_plan_references(plan)
+
+
+def test_preflight_rejects_unparseable_dollar_string():
+    """A whole-string `$…` value that matches no prefix would raise
+    UnknownReferenceError at dispatch — the pre-flight rejects it up front."""
+    plan = _plan(stages=[_stage("a", inputs={"x": "$config.something"})])
+    with pytest.raises(PlanReferenceError, match="config"):
+        validate_plan_references(plan)
+
+
+def test_preflight_walks_nested_inputs():
+    """References buried in sub-dicts (e.g. the aggregator's `workbooks:` map)
+    are still validated."""
+    plan = _plan(
+        stages=[_stage("a", inputs={"workbooks": {"captable": "$stages.ghost.workbook_path"}})]
+    )
+    with pytest.raises(PlanReferenceError, match="ghost"):
+        validate_plan_references(plan)
+
+
+def test_preflight_leaves_deal_refs_to_resolve_time():
+    """`$deal.<field>` is checked against the live DealContext at resolve time —
+    the pre-flight has no DealContext, so any $deal path passes here."""
+    plan = _plan(stages=[_stage("a", inputs={"x": "$deal.some_future_field"})])
+    validate_plan_references(plan)
+
+
+def test_preflight_reports_all_problems_at_once():
+    plan = _plan(
+        stages=[
+            _stage("a", inputs={"x": "$stages.ghost.out", "q": "$plan_inputs.missing"}),
+        ]
+    )
+    with pytest.raises(PlanReferenceError) as excinfo:
+        validate_plan_references(plan)
+    assert "ghost" in str(excinfo.value)
+    assert "missing" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("name", ["pitch.yaml", "earnings-update.yaml", "overview.yaml"])
+def test_shipped_plans_pass_reference_preflight(name):
+    """All three shipped plans load AND pass the pre-flight — including the
+    intentional overview stub (its placeholder stage has no references)."""
+    plan = Plan.model_validate(yaml.safe_load((_PLANS_DIR / name).read_text(encoding="utf-8")))
+    validate_plan_references(plan)

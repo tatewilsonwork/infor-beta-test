@@ -38,7 +38,7 @@ from pathlib import Path
 import yaml
 
 from deal_init import load_deal_context
-from plan_refs import resolve_refs
+from plan_refs import resolve_refs, validate_plan_references
 from plan_schedule import compute_waves
 from run_log import _json_default, read_stage_outputs, stage_dir, write_stage_inputs
 from schemas import Plan
@@ -50,11 +50,21 @@ PLAN_INPUTS_NAME = "plan_inputs.json"
 # Run-state loading
 # ---------------------------------------------------------------------------
 def load_plan(run_dir: Path | str) -> Plan:
-    """Load + validate the frozen plan snapshot at `<run_dir>/plan.yaml`."""
+    """Load + validate the frozen plan snapshot at `<run_dir>/plan.yaml`.
+
+    Validation is two-layered: the pydantic `Plan` schema (shape), then
+    `plan_refs.validate_plan_references` (reference pre-flight — every
+    `$stages.<id>` names a real stage, every `$stages.<id>.<name>` a declared
+    output of that stage, every `$plan_inputs.<name>` a declared plan input).
+    A typo'd reference is thus rejected here, at load, rather than mid-run when
+    it fails to resolve. `prep_wave` / `collect_wave` both load through this.
+    """
     path = Path(run_dir) / "plan.yaml"
     if not path.exists():
         raise FileNotFoundError(f"no plan snapshot at {path} — was the run dir created?")
-    return Plan.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    plan = Plan.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+    validate_plan_references(plan)
+    return plan
 
 
 def load_plan_inputs(run_dir: Path | str) -> dict:
@@ -239,12 +249,28 @@ def prep_wave(
     return prepared
 
 
+def _missing_declared_outputs(stage, outputs) -> list[str]:
+    """Declared output NAMES absent from a stage's outputs.json.
+
+    Presence-only: a declared output carrying `null` is legal (the v0.5.21
+    contract requires e.g. ltm-metrics to emit null — never omit —
+    `ltm_revenue` / `ltm_adj_ebitda`), and extra undeclared keys are allowed.
+    The `type` labels are not checked. A non-dict outputs.json (e.g. a bare
+    JSON list) misses every declared name.
+    """
+    present = outputs.keys() if isinstance(outputs, dict) else ()
+    return [spec.name for spec in stage.outputs if spec.name not in present]
+
+
 def collect_wave(run_dir: Path | str, wave: int) -> list[dict]:
     """Read + validate each stage's outputs.json for `wave` (1-based).
 
-    Returns one dict per stage: `{stage_id, ok, outputs|error}`. A stage that
-    wrote no outputs.json, or wrote one carrying an `error` key, is reported with
-    `ok=False` (the conductor then halts rather than starting the next wave).
+    Returns one dict per stage: `{stage_id, ok, outputs|error}`. A stage is
+    reported with `ok=False` (the conductor then halts rather than starting the
+    next wave) when it wrote no outputs.json, wrote one that isn't valid JSON
+    (a sub-agent truncating the file must not crash the driver), wrote one
+    carrying an `error` key, or omitted a declared output name
+    (`_missing_declared_outputs` — null values pass, extras allowed).
     """
     run_dir = Path(run_dir)
     plan = load_plan(run_dir)
@@ -257,9 +283,32 @@ def collect_wave(run_dir: Path | str, wave: int) -> list[dict]:
         except FileNotFoundError as exc:
             results.append({"stage_id": sid, "ok": False, "error": str(exc)})
             continue
+        except json.JSONDecodeError as exc:
+            results.append(
+                {
+                    "stage_id": sid,
+                    "ok": False,
+                    "error": f"stage {sid!r} wrote malformed (non-JSON) outputs.json: {exc}",
+                }
+            )
+            continue
         if isinstance(outputs, dict) and "error" in outputs:
             results.append(
                 {"stage_id": sid, "ok": False, "error": outputs["error"], "outputs": outputs}
+            )
+            continue
+        missing = _missing_declared_outputs(_stage_by_id(plan, sid), outputs)
+        if missing:
+            results.append(
+                {
+                    "stage_id": sid,
+                    "ok": False,
+                    "error": (
+                        f"stage {sid!r} outputs.json is missing declared output(s): "
+                        f"{', '.join(missing)} (null values are fine — omitting the key is not)"
+                    ),
+                    "outputs": outputs,
+                }
             )
         else:
             results.append({"stage_id": sid, "ok": True, "outputs": outputs})

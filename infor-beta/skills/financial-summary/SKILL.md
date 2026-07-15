@@ -8,7 +8,7 @@ description: >
   industry-aware: operating company vs. financial institution), gathers their last five fiscal
   years from the latest 10-Ks plus an LTM column, and emits the metric labels the deck tiles use.
   The single source of truth for the deck's financial metrics.
-version: 0.5.29
+version: 0.5.30
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 

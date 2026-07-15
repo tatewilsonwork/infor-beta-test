@@ -23,6 +23,22 @@ Unknown prefixes raise `UnknownReferenceError`. Missing fields raise
 `ReferenceResolutionError`. Both are subclasses of `ValueError` so callers
 can catch the broad class.
 
+This module is also the single owner of the reference **grammar**: `parse_ref`
+splits a candidate string into `(prefix, path_parts)` and `iter_input_strings`
+walks a stage's inputs for candidate strings. The scheduler
+(`plan_schedule.stage_dependencies`) derives the execution DAG through these
+same two functions — the refs ARE the DAG, and there is deliberately no second
+regex anywhere that could drift from this one.
+
+`validate_plan_references(plan)` is the load-time pre-flight over that grammar:
+it checks every `$stages.<id>` names a real stage, every `$stages.<id>.<name>`
+names a declared output of that stage, and every `$plan_inputs.<name>` names a
+declared plan input — so a typo'd plan is rejected when it is loaded, not
+mid-run when the reference fails to resolve. It is a standalone helper (invoked
+on the conductor's load paths) rather than a pydantic validator on `Plan`, so
+the scheduler keeps its documented leniency toward unknown-stage refs as
+defense-in-depth on hand-built plans.
+
 Optional plan inputs: a plan may declare `InputSpec`s with `required=False`
 (e.g. `section_labels`, `valuation_range`, `risk_notes`). When the analyst
 doesn't supply one, the conductor's `plan_inputs` dict simply won't carry that
@@ -37,7 +53,7 @@ raise — only the explicitly-declared-optional ones are softened.
 from __future__ import annotations
 
 import re
-from typing import AbstractSet, Any, Mapping
+from typing import AbstractSet, Any, Iterable, Mapping
 
 _REF_RE = re.compile(r"^\$(plan_inputs|deal|stages)\.(.+)$")
 
@@ -48,6 +64,45 @@ class ReferenceResolutionError(ValueError):
 
 class UnknownReferenceError(ReferenceResolutionError):
     """The reference uses a prefix this resolver doesn't know about."""
+
+
+class PlanReferenceError(ValueError):
+    """A plan's stage inputs carry a reference that can never resolve
+    (unknown stage id, undeclared stage output, or unknown plan input)."""
+
+
+def parse_ref(value: str) -> tuple[str, list[str]] | None:
+    """Parse a whole-string reference into `(prefix, path_parts)`.
+
+    Returns `("stages", ["captable", "workbook_path"])` for
+    `"$stages.captable.workbook_path"`, and `None` when the string is not a
+    reference in the grammar (`$plan_inputs.<name>` / `$deal.<field>` /
+    `$stages.<id>.<name>`). This is the ONLY parser of the reference grammar —
+    the resolver, the wave scheduler, and the load-time validator all go
+    through it, so they cannot disagree about what counts as a reference.
+    """
+    m = _REF_RE.match(value)
+    if not m:
+        return None
+    return m.group(1), m.group(2).split(".")
+
+
+def iter_input_strings(value: Any) -> Iterable[str]:
+    """Yield every string anywhere inside a (possibly nested) inputs value.
+
+    Walks dicts and lists/tuples so references buried in a sub-structure — e.g.
+    the pitch aggregator's `workbooks: {captable: $stages.captable.workbook_path,
+    ...}` mapping — are still found. Shared by the wave scheduler and the
+    load-time validator.
+    """
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for v in value.values():
+            yield from iter_input_strings(v)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            yield from iter_input_strings(v)
 
 
 def _walk_attribute_path(root: Any, parts: list[str], full_ref: str) -> Any:
@@ -81,13 +136,12 @@ def _resolve_one(
     stage_outputs: Mapping[str, Mapping[str, Any]],
     optional_plan_inputs: AbstractSet[str],
 ) -> Any:
-    m = _REF_RE.match(ref)
-    if not m:
+    parsed = parse_ref(ref)
+    if parsed is None:
         raise UnknownReferenceError(
             f"reference {ref!r} does not match `$plan_inputs.<name>`, `$deal.<field>`, or `$stages.<id>.<name>`"
         )
-    prefix, rest = m.group(1), m.group(2)
-    parts = rest.split(".")
+    prefix, parts = parsed
 
     if prefix == "plan_inputs":
         # A declared-optional plan input the analyst didn't supply resolves to
@@ -177,3 +231,73 @@ def resolve_refs(
         ]
         return type(value)(resolved) if isinstance(value, tuple) else resolved
     return value
+
+
+def validate_plan_references(plan: Any) -> None:
+    """Load-time pre-flight over every reference string in a plan's stage inputs.
+
+    Rejects, with `PlanReferenceError` listing every problem at once:
+
+    - `$stages.<id>.<name>` where `<id>` is not a stage in the plan, or `<name>`
+      is not one of that stage's declared outputs (only the first path segment
+      is checked — dotted access *into* an output value is resolved at runtime);
+    - `$plan_inputs.<name>` where `<name>` is not a declared plan input
+      (required or optional — both are declared);
+    - any whole string starting with `$` that doesn't parse as a reference at
+      all (it would raise `UnknownReferenceError` at dispatch time anyway).
+
+    `$deal.<field>` references are left to resolve time — they are checked
+    against the live DealContext, which doesn't exist at plan load.
+
+    `plan` is duck-typed (needs `.stages` / `.plan_inputs` shaped like the
+    pydantic `Plan`) so this module keeps its no-pydantic-import property.
+    Deliberately NOT a pydantic validator on `Plan`: the wave scheduler keeps
+    its lenient ignore-unknown-stage-refs behaviour on hand-built plans as
+    defense-in-depth, and callers opt into strictness on the load paths
+    (`conductor_cli.load_plan` and the conductor's Step 3).
+    """
+    stage_ids = {s.id for s in plan.stages}
+    declared_outputs = {s.id: {o.name for o in s.outputs} for s in plan.stages}
+    plan_input_names = {spec.name for spec in plan.plan_inputs}
+
+    problems: list[str] = []
+    for stage in plan.stages:
+        for candidate in iter_input_strings(stage.inputs):
+            if not candidate.startswith("$"):
+                continue
+            parsed = parse_ref(candidate)
+            if parsed is None:
+                problems.append(
+                    f"stage {stage.id!r}: {candidate!r} does not match `$plan_inputs.<name>`, "
+                    f"`$deal.<field>`, or `$stages.<id>.<name>`"
+                )
+                continue
+            prefix, parts = parsed
+            if prefix == "plan_inputs":
+                if parts[0] not in plan_input_names:
+                    problems.append(
+                        f"stage {stage.id!r}: {candidate!r} references unknown plan input "
+                        f"{parts[0]!r} (declared: {sorted(plan_input_names)})"
+                    )
+            elif prefix == "stages":
+                if len(parts) < 2:
+                    problems.append(
+                        f"stage {stage.id!r}: {candidate!r} must look like "
+                        f"`$stages.<stage_id>.<output_name>`"
+                    )
+                elif parts[0] not in stage_ids:
+                    problems.append(
+                        f"stage {stage.id!r}: {candidate!r} references unknown stage "
+                        f"{parts[0]!r} (stages: {sorted(stage_ids)})"
+                    )
+                elif parts[1] not in declared_outputs[parts[0]]:
+                    problems.append(
+                        f"stage {stage.id!r}: {candidate!r} references undeclared output "
+                        f"{parts[1]!r} of stage {parts[0]!r} "
+                        f"(declared: {sorted(declared_outputs[parts[0]])})"
+                    )
+
+    if problems:
+        raise PlanReferenceError(
+            "plan failed reference pre-flight:\n" + "\n".join(f"- {p}" for p in problems)
+        )

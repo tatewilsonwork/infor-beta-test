@@ -108,7 +108,7 @@
           "type": "object"
         },
         "outputs": {
-          "description": "Named outputs the stage is expected to write to its outputs.json.",
+          "description": "Named outputs the stage must write to its outputs.json. Every declared name is checked for presence when the conductor collects the stage (null values pass \u2014 omitting the key does not; extra undeclared keys are allowed; the type label is documentation, not validated).",
           "items": {
             "$ref": "#/$defs/OutputSpec"
           },
