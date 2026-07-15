@@ -117,8 +117,13 @@ def test_nested_references_are_found():
 
 
 def test_unknown_stage_reference_is_ignored():
-    """A typo'd `$stages.<id>` is left for the resolver to reject — the scheduler
-    drops the edge rather than crashing."""
+    """The scheduler drops the edge rather than crashing on a typo'd `$stages.<id>`.
+
+    This leniency is defense-in-depth only: since v0.5.30 the load-time pre-flight
+    (`plan_refs.validate_plan_references`, run by `conductor_cli.load_plan` and the
+    conductor's Step 3) rejects such plans before they ever reach the scheduler.
+    A hand-built plan that skipped the pre-flight still schedules; the bad ref is
+    then rejected by `plan_refs.resolve_refs` at dispatch time."""
     plan = Plan(
         deliverable_type="pitch",
         description="x",

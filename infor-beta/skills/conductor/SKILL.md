@@ -12,7 +12,7 @@ description: >
   dialogs (AskUserQuestion), dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.29
+version: 0.5.30
 allowed-tools: [Read, Write, Bash, Glob, Task, AskUserQuestion]
 ---
 
@@ -48,7 +48,7 @@ from deck_spec import (
     NO_NOTES_ANALYST_NOTES,
     PITCH_DIALOG_PLAN_INPUTS, EARNINGS_UPDATE_DIALOG_PLAN_INPUTS,
 )
-from plan_refs import resolve_refs
+from plan_refs import resolve_refs, validate_plan_references
 from plan_schedule import compute_waves
 from run_log import (
     make_run_id, create_run_dir, write_plan_snapshot,
@@ -93,7 +93,7 @@ Call `load_or_locate_deal(codename)`:
 
 ### Step 3 — Load the plan
 
-Plans live at `${CLAUDE_PLUGIN_ROOT}/plans/<deliverable>.yaml`. Resolve and read the YAML; validate by constructing a `Plan` pydantic model. If validation fails, surface the error and stop — do not attempt to run a partially-valid plan.
+Plans live at `${CLAUDE_PLUGIN_ROOT}/plans/<deliverable>.yaml`. Resolve and read the YAML; validate in two layers — construct the `Plan` pydantic model (shape), then run the **reference pre-flight** `validate_plan_references(plan)` (every `$stages.<id>` must name a real stage, every `$stages.<id>.<name>` a declared output of that stage, every `$plan_inputs.<name>` a declared plan input; `$deal.*` fields are checked later, at resolve time, against the live DealContext). If either layer fails, surface the error and stop — do not attempt to run a partially-valid plan. A typo'd reference is thus dead at load, not mid-run. (`conductor_cli.load_plan` runs both layers automatically on the frozen snapshot every `prep_wave` / `collect_wave` call.)
 
 Read the plan's `description` and present a one-paragraph summary to the analyst:
 > "Plan for `<deliverable>` has N stages: `<stage_id_1>` (skill: `<skill_1>`), `<stage_id_2>` (skill: `<skill_2>`), …. Plan inputs required: `<list>`. Checkpoints: `<list of required checkpoints>`."
@@ -129,7 +129,7 @@ An answer that just accepts a default is left OUT of `plan_inputs` (see the opti
 
 For any other deliverable (no questionnaire — the deck-spec renderers raise `ValueError`), fall back to the generic collection: for each `InputSpec` in `plan.plan_inputs` where `required is True`, prompt the analyst in a single message; for optional inputs, ask only if the analyst's initial message did not already supply them.
 
-Store the collected values as a plain dict `plan_inputs: dict[str, Any]`. Validate types informally — exact pydantic-validation of plan-input values is deferred; in v1 the type field is documentation.
+Store the collected values as a plain dict `plan_inputs: dict[str, Any]`. The typed I/O contract is enforced at the conductor boundary by **name**, not by type: plan references are pre-flighted at load (Step 3) and every declared output name must be present in a stage's `outputs.json` at collect (Step 6c) — but the `type` labels on `InputSpec` / `OutputSpec` remain documentation, so validate plan-input *values* informally (exact pydantic-validation of value types is deferred).
 
 **Optional inputs the analyst didn't supply must stay OUT of `plan_inputs` — do not pre-seed them with `None` or any placeholder.** Instead compute the set of optional plan-input names once and pass it to every `resolve_refs` call in Step 6a:
 
@@ -173,7 +173,7 @@ Maintain an in-memory `stage_outputs: dict[str, dict[str, Any]]` keyed by stage 
 **6b — Dispatch the whole wave concurrently.** Issue one `Task` (Agent) call per stage **in a single message** so they run in parallel, passing each stage's **rendered prompt** (the only channel — the `Task`/`Agent` tool has no parameter for environment variables, so the handoff paths must live in the prompt body, not be set as env vars on the call). Each sub-agent exports those paths itself before running its SKILL.md commands. Wait for every sub-agent in the wave to finish before continuing. (A single-stage wave is just one `Task` call — same as the old sequential behaviour.)
 
 **6c — Collect the wave.** After all of the wave's sub-agents return, for each stage id in the wave (in listed order):
-4. **Read outputs.** `outputs = read_stage_outputs(run_dir, stage.id)`. This raises `FileNotFoundError` if the sub-skill failed to write outputs.json — surface the failure to the analyst and stop. Do not start the next wave if any stage in this one produced no structured outputs.
+4. **Read + validate outputs.** `outputs = read_stage_outputs(run_dir, stage.id)`. This raises `FileNotFoundError` if the sub-skill failed to write outputs.json, and `json.JSONDecodeError` if it wrote a truncated / non-JSON file — surface either failure to the analyst and stop (`collect_wave` converts both to an `ok: False` result instead of crashing). Then check the stage's **declared output names**: every `OutputSpec.name` on the stage must be present as a key in `outputs` — a `null` value passes (the contract requires e.g. ltm-metrics to emit null, never omit, `ltm_revenue`/`ltm_adj_ebitda`) and extra undeclared keys are allowed, but a missing name is a failure naming the missing key(s). Type labels are not checked. Do not start the next wave if any stage in this one failed collection.
 5. **Capture log.** Persist the sub-agent's reply transcript via `write_stage_log(run_dir, stage.id, transcript)`.
 6. **Update state.** `stage_outputs[stage.id] = outputs`.
 
@@ -201,9 +201,9 @@ The conductor halts (with a clear error message and the partial-run state preser
 
 - The deliverable type or codename is missing and the analyst declines to supply it.
 - An existing deal is detected and the analyst declines to continue or rename.
-- Plan YAML fails pydantic validation.
+- Plan YAML fails pydantic validation, or fails the load-time reference pre-flight (`validate_plan_references` — a `$stages`/`$plan_inputs` reference that can never resolve).
 - A reference cannot be resolved (e.g. `$stages.x.y` where stage `x` hasn't run yet).
-- A sub-skill fails to write `outputs.json`.
+- A sub-skill fails to write `outputs.json`, writes malformed (non-JSON) `outputs.json`, or omits one of its declared output names (null values are fine — omitting the key is not).
 - A `required` checkpoint is rejected by the analyst.
 
 Never silently skip a stage. Never proceed past a missing output. Never overwrite an existing `outputs.json` (a re-run uses a new `run_id`).

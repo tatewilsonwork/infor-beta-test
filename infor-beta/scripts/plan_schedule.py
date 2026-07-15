@@ -32,47 +32,26 @@ Two kinds of edge feed the DAG:
    final-barrier form).
 
 The scheduler only *orders* stages. It does not validate references: a typo'd
-`$stages.<id>` is ignored here and left for `plan_refs.resolve_refs` to reject
-at dispatch time with a clearer message.
+`$stages.<id>` is ignored here and left for the load-time pre-flight
+(`plan_refs.validate_plan_references`, run on every conductor load path) — or,
+on a hand-built plan that skipped it, for `plan_refs.resolve_refs` at dispatch
+time — to reject with a clearer message. The grammar itself is imported from
+`plan_refs` (`parse_ref` / `iter_input_strings`), so the edges derived here can
+never disagree with what the resolver and the validator understand — the refs
+ARE the DAG.
 """
 
 from __future__ import annotations
 
-import re
-from typing import Any, Iterable
-
+from plan_refs import iter_input_strings, parse_ref
 from schemas import Plan
 
 # Skill name whose stage acts as a strict final barrier (see module docstring).
 _AGGREGATOR_SKILL = "workbook-aggregator"
 
-# Matches a whole-string stage reference `$stages.<stage_id>.<output_name>`.
-# Mirrors the `stages` branch of plan_refs._REF_RE: the stage id is everything
-# between `$stages.` and the first dot (stage ids carry no dots — they are
-# lowercase + hyphens/underscores by convention). Kept local so this module
-# stays import-light, but the grammar must not drift from the resolver's.
-_STAGE_REF_RE = re.compile(r"^\$stages\.([^.]+)\.(.+)$")
-
 
 class PlanCycleError(ValueError):
     """The plan's stage dependencies form a cycle — it cannot be scheduled."""
-
-
-def _iter_strings(value: Any) -> Iterable[str]:
-    """Yield every string anywhere inside a (possibly nested) inputs value.
-
-    Walks dicts and lists/tuples so references buried in a sub-structure — e.g.
-    the pitch aggregator's `workbooks: {captable: $stages.captable.workbook_path,
-    ...}` mapping — are still found.
-    """
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for v in value.values():
-            yield from _iter_strings(v)
-    elif isinstance(value, (list, tuple)):
-        for v in value:
-            yield from _iter_strings(v)
 
 
 def _transitive_deps(deps: dict[str, set[str]]) -> dict[str, set[str]]:
@@ -112,11 +91,14 @@ def stage_dependencies(plan: Plan) -> dict[str, set[str]]:
     deps: dict[str, set[str]] = {s.id: set() for s in plan.stages}
 
     for stage in plan.stages:
-        for s in _iter_strings(stage.inputs):
-            m = _STAGE_REF_RE.match(s)
-            if not m:
+        for s in iter_input_strings(stage.inputs):
+            parsed = parse_ref(s)
+            if parsed is None:
                 continue
-            dep_id = m.group(1)
+            prefix, parts = parsed
+            if prefix != "stages" or len(parts) < 2:
+                continue
+            dep_id = parts[0]
             if dep_id in ids and dep_id != stage.id:
                 deps[stage.id].add(dep_id)
 

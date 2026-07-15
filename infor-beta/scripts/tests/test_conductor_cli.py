@@ -20,6 +20,7 @@ from conductor_cli import (
     write_plan_inputs,
 )
 from deal_init import save_deal_context
+from plan_refs import PlanReferenceError
 from run_log import create_run_dir, stage_dir, write_plan_snapshot
 from schemas import Company, DealContext
 
@@ -159,6 +160,82 @@ def test_collect_wave_error_key_reports_failure(run_dir: Path):
     results = collect_wave(run_dir, 1)
     assert results[0]["ok"] is False
     assert results[0]["error"] == "missing input: ticker"
+
+
+def test_collect_wave_malformed_outputs_reports_failure(run_dir: Path):
+    """A sub-agent that truncates outputs.json mid-write must produce a [FAIL]
+    result, not crash the driver with an unhandled json.JSONDecodeError."""
+    (stage_dir(run_dir, "alpha") / "outputs.json").write_text(
+        '{"workbook_path": "/deals/wb', encoding="utf-8"  # truncated JSON
+    )
+    results = collect_wave(run_dir, 1)
+    assert results[0]["stage_id"] == "alpha"
+    assert results[0]["ok"] is False
+    assert "malformed" in results[0]["error"]
+
+
+def test_cli_main_collect_malformed_outputs_engages_fail_path(run_dir: Path, capsys):
+    """End-to-end through the argv entrypoint: malformed JSON prints [FAIL] and
+    exits non-zero instead of raising."""
+    (stage_dir(run_dir, "alpha") / "outputs.json").write_text("not json at all", encoding="utf-8")
+    rc = conductor_cli.main(["collect-wave", str(run_dir), "1"])
+    assert rc == 1
+    assert "[FAIL] alpha" in capsys.readouterr().out
+
+
+def test_collect_wave_missing_declared_output_reports_failure(run_dir: Path):
+    """alpha declares `workbook_path`; an outputs.json without that key fails
+    with an error that names the missing output."""
+    (stage_dir(run_dir, "alpha") / "outputs.json").write_text(
+        json.dumps({"something_else": 1}), encoding="utf-8"
+    )
+    results = collect_wave(run_dir, 1)
+    assert results[0]["ok"] is False
+    assert "workbook_path" in results[0]["error"]
+    assert results[0]["outputs"] == {"something_else": 1}  # kept for debugging
+
+
+def test_collect_wave_null_declared_output_passes(run_dir: Path):
+    """Null values are legal per the v0.5.21 contract (ltm-metrics emits null —
+    never omits — ltm_revenue/ltm_adj_ebitda): presence is checked, not truthiness."""
+    (stage_dir(run_dir, "alpha") / "outputs.json").write_text(
+        json.dumps({"workbook_path": None}), encoding="utf-8"
+    )
+    results = collect_wave(run_dir, 1)
+    assert results == [{"stage_id": "alpha", "ok": True, "outputs": {"workbook_path": None}}]
+
+
+def test_collect_wave_extra_undeclared_keys_pass(run_dir: Path):
+    (stage_dir(run_dir, "alpha") / "outputs.json").write_text(
+        json.dumps({"workbook_path": "/deals/wb.xlsx", "notes": "extra is fine"}),
+        encoding="utf-8",
+    )
+    results = collect_wave(run_dir, 1)
+    assert results[0]["ok"] is True
+
+
+def test_load_plan_rejects_typod_stage_reference(run_dir: Path):
+    """Reference pre-flight at load time: a `$stages` ref to a stage id that
+    doesn't exist in the plan is rejected when the snapshot is loaded, before
+    any wave is prepped or dispatched."""
+    bad_yaml = _PLAN_YAML.replace("$stages.alpha.workbook_path", "$stages.alhpa.workbook_path")
+    write_plan_snapshot(run_dir, bad_yaml)
+    with pytest.raises(PlanReferenceError, match="alhpa"):
+        load_plan(run_dir)
+    # prep_wave and collect_wave load through the same path, so both refuse too.
+    with pytest.raises(PlanReferenceError):
+        prep_wave(run_dir, 1, plugin_root=_PLUGIN_ROOT)
+    with pytest.raises(PlanReferenceError):
+        collect_wave(run_dir, 1)
+
+
+def test_load_plan_rejects_undeclared_output_reference(run_dir: Path):
+    """A ref to a real stage but an output name it never declares is equally dead
+    at load time."""
+    bad_yaml = _PLAN_YAML.replace("$stages.alpha.workbook_path", "$stages.alpha.deck_path")
+    write_plan_snapshot(run_dir, bad_yaml)
+    with pytest.raises(PlanReferenceError, match="deck_path"):
+        load_plan(run_dir)
 
 
 def test_plan_inputs_round_trip_serializes_path(run_dir: Path):
