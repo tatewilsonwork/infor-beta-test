@@ -6,15 +6,17 @@ Per locked decision A2 (note 12), every stage carries a `checkpoint` mode. Since
 
 The conductor **halts** after the stage's `outputs.json` is read and waits for explicit analyst approval before dispatching the next wave.
 
-Surface to the analyst:
+Surface the outputs and the approval question through the **`AskUserQuestion` tool** (one question; the UI adds an "Other" free-text box for comments automatically):
 
 > Stage `<stage_id>` (`<skill>`) finished. Outputs:
 > - `deck_path`: /Users/tate/Documents/INFOR Deals/Project OpenText/artefacts/Earnings Update - OpenText.pptx
 > - `workbook_path`: /Users/tate/Documents/INFOR Deals/Project OpenText/artefacts/OpenText - Capitalization Table.xlsx
 >
-> Review the file(s) above. Reply `approve` to continue the run, or `stop` to halt it.
+> Review the file(s) above, then answer the approval dialog — options **"Approve — continue the run"** / **"Halt the run"**.
 
-If the analyst replies `stop`, the conductor writes a summary noting the abort point and exits cleanly. The partial run on disk is preserved — re-running the conductor creates a new `run_id` and starts over.
+(If `AskUserQuestion` is unavailable on the current surface, fall back to the plain-text form: "Reply `approve` to continue the run, or `stop` to halt it.")
+
+If the analyst halts, the conductor writes a summary noting the abort point and exits cleanly. The partial run on disk is preserved — re-running the conductor creates a new `run_id` and starts over.
 
 Use `required` for stages where the analyst's review is a real-world checkpoint, e.g.:
 - buyer-list approval (D-series, note 12)
