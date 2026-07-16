@@ -171,3 +171,55 @@ def test_extra_bridges_default_none_leaves_workbook_unchanged(tmp_path: Path):
     # Without extra_bridges the workbook ends at the EBITDA bridge (result row 26).
     ws = load_workbook(_build(tmp_path)).active
     assert ws["A28"].value is None
+
+
+# ─── In-artefact source citations (v0.5.34) ──────────────────────────────────
+
+
+def test_segment_source_written_as_cell_comment(tmp_path: Path):
+    path = _build(
+        tmp_path,
+        segments=[
+            RevenueSegment("Segment A", 999.0, source="Q3 2026 10-Q, revenue disaggregation note"),
+            RevenueSegment("Segment B", 888.0),  # no source -> no comment
+        ],
+    )
+    ws = load_workbook(path).active
+    assert ws["B8"].comment is not None
+    assert ws["B8"].comment.text == "Source: Q3 2026 10-Q, revenue disaggregation note"
+    assert ws["B9"].comment is None
+
+
+def test_bridge_component_source_written_as_cell_comment(tmp_path: Path):
+    path = _build(
+        tmp_path,
+        revenue_bridge=[
+            BridgeComponent("FY2025 Revenue", 9999.0, source="FY2025 10-K, income statement"),
+            BridgeComponent("Q3 2026 YTD Revenue", 999.0),
+            BridgeComponent("Q3 2025 YTD Revenue", 888.0, subtract=True,
+                            source="Q3 2026 10-Q, comparative prior-year period"),
+        ],
+    )
+    ws = load_workbook(path).active
+    # Default 4-segment fixture geometry: bridge section 14, header 15, data 16-18.
+    assert ws["B16"].comment is not None
+    assert ws["B16"].comment.text == "Source: FY2025 10-K, income statement"
+    assert ws["B17"].comment is None
+    assert ws["B18"].comment.text == "Source: Q3 2026 10-Q, comparative prior-year period"
+
+
+def test_tuple_forms_accept_trailing_source(tmp_path: Path):
+    path = _build(
+        tmp_path,
+        segments=[("Americas", 2500.0, "Q3 10-Q, segment note"), ("EMEA", 1100.0)],
+        revenue_bridge=[
+            ("FY2025 Revenue", 3500.0, False, "FY2025 10-K, income statement"),
+            ("Q3 2026 YTD Revenue", 2700.0),
+            ("Q3 2025 YTD Revenue", 2138.0, True),
+        ],
+    )
+    ws = load_workbook(path).active
+    assert ws["B8"].comment.text == "Source: Q3 10-Q, segment note"
+    # 2 segments -> total row 10, spacer 11, bridge section 12, header 13, data 14-16.
+    assert ws["B14"].comment.text == "Source: FY2025 10-K, income statement"
+    assert ws["B15"].comment is None

@@ -12,7 +12,11 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
 
-from comment_citations import append_source_to_comment, source_line
+from comment_citations import (
+    append_source_text_to_comment,
+    append_source_to_comment,
+    source_line,
+)
 
 
 def test_source_line_from_string_date():
@@ -52,6 +56,28 @@ def test_append_creates_comment_when_cell_has_none():
     assert ws["A1"].comment is not None
     assert ws["A1"].comment.text == "Source: https://example.com/quote — retrieved 2026-07-15"
     assert ws["A1"].comment.author == "INFOR"
+
+
+def test_text_source_creates_comment_on_bare_cell():
+    # The filing-sourced variant used by financial-summary / ltm-metrics: no
+    # URL or retrieval date, just the filing + statement the figure came from.
+    ws = Workbook().active
+    ws["B6"] = 4520.0
+    append_source_text_to_comment(ws["B6"], "FY2025 10-K, Consolidated Statements of Operations")
+    assert ws["B6"].comment is not None
+    assert ws["B6"].comment.text == "Source: FY2025 10-K, Consolidated Statements of Operations"
+    assert ws["B6"].comment.author == "INFOR"
+
+
+def test_text_source_appends_to_existing_comment():
+    ws = Workbook().active
+    ws["B6"] = 4520.0
+    ws["B6"].comment = Comment("Derived from operating income + D&A", "INFOR")
+    append_source_text_to_comment(ws["B6"], "FY2025 10-K, MD&A")
+    assert ws["B6"].comment.text == (
+        "Derived from operating income + D&A\nSource: FY2025 10-K, MD&A"
+    )
+    assert ws["B6"].comment.author == "INFOR"
 
 
 def test_appended_comment_round_trips_through_save(tmp_path: Path):

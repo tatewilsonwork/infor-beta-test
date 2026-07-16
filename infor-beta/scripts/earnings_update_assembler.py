@@ -20,7 +20,7 @@ from pptx_helpers import (
     COLOR_DOWN,
     COLOR_UP,
     delete_slide,
-    fill_footnote_token,
+    fill_footnote_currency,
     find_shape,
     find_shape_in_group,
     find_table_shape,
@@ -111,18 +111,35 @@ def _fmt_mm(value: str) -> str:
 
 
 def _currency_letter(currency: str) -> str:
-    """Extract the currency letter ('US' / 'C') from a footnote scope like 'US$MM'."""
-    return currency.split("$", 1)[0].strip() or currency.strip()
+    """Map a footnote currency scope to its token replacement.
+
+    ``'US$MM'`` / ``'USD'`` -> ``'US'`` and ``'C$MM'`` / ``'CAD'`` -> ``'C'``
+    (explicit map — the only two dollar renderings the footnote supports). Any
+    other scope returns its bare code with the ``'MM'`` suffix / ``'$'``
+    stripped (``'GBPMM'`` -> ``'GBP'``), which `fill_footnote_currency` renders
+    as the ISO code without a dollar sign — never silently mislabelled as C$.
+    """
+    code = currency.strip()
+    if code.upper().endswith("MM"):
+        code = code[:-2].rstrip()
+    code = code.rstrip("$").strip()
+    upper = code.upper()
+    if upper in {"US", "USD"}:
+        return "US"
+    if upper in {"C", "CAD"}:
+        return "C"
+    return code or currency.strip()
 
 
 def _fill_footnote(shape, currency: str) -> None:
-    """Swap the '[x]$MM' currency-letter token in the library footnote.
+    """Swap the '[x]$MM' currency token in the library footnote.
 
-    Derives the currency letter from the deck's currency scope, then defers the
-    in-place token swap to the shared `fill_footnote_token` helper so the rest of
-    the standardized source/note lines are preserved verbatim.
+    Derives the currency letter (or bare ISO code) from the deck's currency
+    scope, then defers the in-place token swap to the shared
+    `fill_footnote_currency` helper so the rest of the standardized source/note
+    lines are preserved verbatim.
     """
-    fill_footnote_token(shape, _currency_letter(currency))
+    fill_footnote_currency(shape, _currency_letter(currency))
 
 
 def _write_flexible_bullets(shape, bullets, items=None) -> None:

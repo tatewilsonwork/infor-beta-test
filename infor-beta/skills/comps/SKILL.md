@@ -6,7 +6,7 @@ description: >
   three verticals (peer groups) relevant to the target, selects six public companies per
   vertical with their Capital IQ tickers, writes a short description for each, and fills the
   INFOR Comps Template — the companion workbook behind the deck's comps slide.
-version: 0.5.33
+version: 0.5.34
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -131,18 +131,21 @@ sanitized = subprocess.run(
 ).stdout.strip() or company_name
 out_dir = Path(os.environ.get("DEAL_DIR", ".")) / "artefacts"       # cwd for direct /comps
 
+# FORMAT ILLUSTRATION ONLY — the tickers/labels below are obviously-synthetic
+# placeholders showing the call shape; NEVER reuse them as data. Every real
+# ticker comes from your Step 1-2 peer research, listing-verified.
 verticals = [
-    Vertical("Cloud ERP & Back-Office", [
-        CompCompany("NYSE:NOW", "Enterprise workflow & IT service mgmt"),
-        CompCompany("NasdaqGS:WDAY", "Cloud HR & finance suite"),
+    Vertical("[Vertical #1 label]", [
+        CompCompany("NYSE:AAAA", "Placeholder peer description (<=50 chars)"),
+        CompCompany("NasdaqGS:BBBB", "Placeholder peer description (<=50 chars)"),
         # ... six per vertical ...
     ]),
-    Vertical("Payments & Merchant Acquiring", [
-        CompCompany("NYSE:FIS", "Banking & payments technology"),
+    Vertical("[Vertical #2 label]", [
+        CompCompany("TSX:CCCC", "Placeholder peer description (<=50 chars)"),
         # ... six per vertical ...
     ]),
-    Vertical("Capital Markets Technology", [
-        CompCompany("NasdaqGS:SSNC", "Investment & fund administration software"),
+    Vertical("[Vertical #3 label]", [
+        CompCompany("NYSE:DDDD", "Placeholder peer description (<=50 chars)"),
         # ... six per vertical ...
     ]),
 ]

@@ -1,5 +1,8 @@
 """Unit tests for the EarningsUpdateContent typed handoff."""
 
+import re
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -10,6 +13,13 @@ from schemas import (
     KpiRow,
     ManagementQuote,
     SourceNote,
+)
+from schemas.earnings_update_content import (
+    OVERVIEW_BULLET_MAX_CHARS,
+    OVERVIEW_BULLETS_MAX,
+    OVERVIEW_BULLETS_MIN,
+    OVERVIEW_TOTAL_MAX_CHARS,
+    OVERVIEW_TOTAL_MIN_CHARS,
 )
 
 
@@ -70,18 +80,58 @@ def test_valid_earnings_update_content_round_trips():
     assert restored.broker_rows[0].variance_sign == 1
 
 
-def test_company_overview_requires_6_to_10_bullets():
+def test_company_overview_requires_6_to_8_bullets():
     with pytest.raises(ValidationError):
         _valid_content(company_overview_bullets=[{"text": "Too few", "level": 0}] * 5)
+    # 9 bullets x 90 chars = 810 total (inside the char budget), so the bullet
+    # COUNT is what fails here.
     with pytest.raises(ValidationError):
-        _valid_content(company_overview_bullets=[{"text": "Too many", "level": 0}] * 11)
+        _valid_content(company_overview_bullets=[{"text": "x" * 90, "level": 0}] * 9)
 
 
 def test_company_overview_rejects_text_over_char_budget():
-    # 10 bullets of ~120 chars each blows past the 1,050-char ceiling.
+    # 8 bullets of 120 chars each (960) blows past the 820-char ceiling.
     long_bullet = {"text": "x" * 120, "level": 0}
     with pytest.raises(ValidationError):
-        _valid_content(company_overview_bullets=[long_bullet] * 10)
+        _valid_content(company_overview_bullets=[long_bullet] * 8)
+
+
+def test_company_overview_rejects_text_under_char_budget():
+    # 6 bullets of 80 chars each (480) undershoots the 560-char floor.
+    short_bullet = {"text": "x" * 80, "level": 0}
+    with pytest.raises(ValidationError):
+        _valid_content(company_overview_bullets=[short_bullet] * 6)
+
+
+def test_company_overview_bullet_char_cap_is_220():
+    with pytest.raises(ValidationError):
+        CompanyOverviewBullet(text="x" * (OVERVIEW_BULLET_MAX_CHARS + 1), level=0)
+    CompanyOverviewBullet(text="x" * OVERVIEW_BULLET_MAX_CHARS, level=0)
+
+
+def test_skill_md_overview_budget_matches_schema_constants():
+    # Drift-lock: the earningsupdate-content SKILL.md prose must quote exactly
+    # the bullet budget the validator enforces. The two diverged once — the
+    # Test #5 (OTEX) recalibration (2026-05-29) tightened the prose to 6-8 /
+    # <=220 / 560-820 but left the validator at the v0.5.0 650-1,050 range.
+    skill_md = (
+        Path(__file__).resolve().parents[2]
+        / "skills" / "earningsupdate-content" / "SKILL.md"
+    )
+    text = skill_md.read_text(encoding="utf-8")
+    match = re.search(
+        r"Company overview bullets: (\d+)–(\d+) bullets, each ≤(\d+) chars, "
+        r"\*\*(\d+)–(\d+) chars total\*\*",
+        text,
+    )
+    assert match, "SKILL.md overview-budget line not found — keep its wording in sync with this test"
+    assert tuple(int(g) for g in match.groups()) == (
+        OVERVIEW_BULLETS_MIN,
+        OVERVIEW_BULLETS_MAX,
+        OVERVIEW_BULLET_MAX_CHARS,
+        OVERVIEW_TOTAL_MIN_CHARS,
+        OVERVIEW_TOTAL_MAX_CHARS,
+    )
 
 
 def test_company_overview_rejects_trailing_period_or_semicolon():
@@ -115,6 +165,78 @@ def test_quote_and_summary_caps_are_enforced():
 def test_kpi_rows_reject_bps_rate_deltas():
     with pytest.raises(ValidationError):
         KpiRow(name="Gross Margin", prior_value="60%", current_value="62%", delta_str="+200 bps", delta_sign=1)
+
+
+# ─── delta_sign / variance_sign must agree with the display string (v0.5.34) ──
+# The assemblers color the tile / variance cell purely off the sign field, so a
+# contradictory pair would paint an earnings beat red (or a miss green).
+
+
+def _kpi(delta_str: str, delta_sign: int) -> KpiRow:
+    return KpiRow(name="Revenue", prior_value="100", current_value="125",
+                  delta_str=delta_str, delta_sign=delta_sign)
+
+
+def _broker(variance: str, variance_sign: int) -> BrokerRow:
+    return BrokerRow(label="Revenue", reported="1,283", estimate="1,339",
+                     variance=variance, variance_sign=variance_sign)
+
+
+@pytest.mark.parametrize("delta_str, wrong_sign", [
+    ("+$25.0", -1),      # leading + reads positive
+    ("+$25.0", 0),
+    ("-$1.0", 1),        # leading - reads negative
+    ("−$1.0", 1),        # typographic minus
+    ("($25.0)", 1),      # accounting parentheses read negative
+    ("(3.2)%", 1),
+    ("Flat", 1),         # zero forms read 0
+    ("0.0%", -1),
+    ("+0.0%", 1),        # a zero magnitude wins over the leading '+'
+])
+def test_kpi_delta_sign_contradiction_rejected(delta_str, wrong_sign):
+    with pytest.raises(ValidationError):
+        _kpi(delta_str, wrong_sign)
+
+
+@pytest.mark.parametrize("delta_str, sign", [
+    ("+$25.0", 1),
+    ("-$1.0", -1),
+    ("($25.0)", -1),
+    ("(3.2)%", -1),
+    ("Flat", 0),
+    ("+0.0%", 0),
+    ("+2.0%", 1),
+])
+def test_kpi_delta_sign_agreement_accepted(delta_str, sign):
+    assert _kpi(delta_str, sign).delta_sign == sign
+
+
+@pytest.mark.parametrize("sign", [-1, 0, 1])
+def test_kpi_unsigned_delta_accepts_any_declared_sign(sign):
+    # No sign marker on the string -> the sign field is the only signal.
+    assert _kpi("12.5%", sign).delta_sign == sign
+
+
+@pytest.mark.parametrize("variance, wrong_sign", [
+    ("+$5.0", -1),
+    ("(56)", 1),
+    ("-0.02", 1),
+    ("flat", -1),
+])
+def test_broker_variance_sign_contradiction_rejected(variance, wrong_sign):
+    with pytest.raises(ValidationError):
+        _broker(variance, wrong_sign)
+
+
+@pytest.mark.parametrize("variance, sign", [
+    ("+$5.0", 1),
+    ("(56)", -1),
+    ("-0.02", -1),
+    ("56", 1),      # unsigned magnitude: declared sign accepted as-is
+    ("56", -1),
+])
+def test_broker_variance_sign_agreement_accepted(variance, sign):
+    assert _broker(variance, sign).variance_sign == sign
 
 
 def test_source_note_requires_non_empty_fields():

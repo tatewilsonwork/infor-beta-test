@@ -7,7 +7,7 @@ description: >
   (or EBITDA) bridge. Activates as the earnings-update plan stage `ltm-metrics`, supplying the
   companion data behind the overview slide's LTM revenue pie placeholder. Segment by service /
   product line when disclosed, else by geography.
-version: 0.5.33
+version: 0.5.34
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -71,16 +71,19 @@ unchanged: only the Revenue and EBITDA bridges are built.
 4. Build the **revenue bridge** components: FY revenue (additive), current-year YTD revenue (additive), prior-year YTD revenue (subtractive). The workbook computes the LTM total via a formula.
 5. Build the **EBITDA bridge** the same way. Prefer **Adjusted EBITDA** if the company discloses it (pass `ebitda_label="LTM Adj. EBITDA"`); fall back to unadjusted EBITDA (`ebitda_label="LTM EBITDA"`) if no Adj. figure is available. If EBITDA is not directly disclosed, derive it from operating income + D&A (+ disclosed adjustments) for each period, and note the basis.
 6. Build the workbook with the shared helper. All arithmetic (% of total, totals, the bridge sums) lives in cell formulas — Excel does the math, not the LLM.
+   - **In-artefact citation — REQUIRED.** Every figure you extract must carry its source ON the cell, so the artefact is auditable without this chat transcript. Set `source=` on **every** `RevenueSegment` and `BridgeComponent`, naming the filing **and** the statement/note it came from (e.g. `"FY2025 10-K, Consolidated Statements of Operations"`, `"Q3 2026 10-Q, revenue disaggregation note"`, or the attached filename plus the section). The builder writes each as a `Source: <…>` cell comment on the amount cell (shared `comment_citations` helper), and the workbook aggregator carries the comments into the combined workbook. Never skip a source — a bridge figure with no citation is indistinguishable from an invented one.
    - **Units — millions, with an `"MM"` suffix (required).** Pass every bridge component in **millions** of the filing's reporting currency, and set `currency` to a label carrying an `"MM"` suffix (`US$MM`, `C$MM`) — never `US$` / full dollars. In the pitch plan the `financial-summary` tab links these bridge totals **value-for-value** (`=INDEX/MATCH` into the `(=) <result_label>` row), so the scale here must match its columns exactly; a mismatch (e.g. `US$` here vs. `US$MM` there) makes the linked LTM bar 10⁶× off.
 7. Write the workbook to `$DEAL_DIR/artefacts/` (bootstrap the folder if needed), then write `$STAGE_OUTPUTS`:
 
 ```json
 {
   "workbook_path": "/absolute/path/to/<Company> - LTM Metrics.xlsx",
-  "ltm_revenue": 4062.0,
-  "ltm_adj_ebitda": 2045.0
+  "ltm_revenue": 9999.9,
+  "ltm_adj_ebitda": 999.9
 }
 ```
+
+(The two figures above are synthetic shape placeholders — emit your actual bridge totals.)
 
 `ltm_revenue` and `ltm_adj_ebitda` are the bridge totals **in millions, in the filing's reporting currency** — the same currency as the bridge components. The downstream `captable` stage reads them and writes them to the cap table's LTM column (D47 / D48), applying the cap table's FX rate F7 to convert into the output currency, so emit them unconverted here. Use `bridge_total(...)` to compute each from the same component list you pass to the workbook. When a bridge is absent, emit the key as **`null` — never omit it**: the plans reference `$stages.ltm-metrics.ltm_revenue` / `.ltm_adj_ebitda`, and a missing key halts the conductor's reference resolution, whereas a `null` flows through to captable's CapIQ-formula fallback.
 
@@ -100,15 +103,21 @@ inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())
 deal_dir = Path(os.environ.get("DEAL_DIR", "."))
 out_dir = deal_dir / "artefacts"
 
+# FORMAT ILLUSTRATION ONLY — the segment names / values below are obviously-
+# synthetic placeholders showing the call shape; NEVER reuse them as data.
+# Every real value comes from the target's filings, with a source per figure.
+fy_src = "FY2025 10-K, Consolidated Statements of Operations"        # use the REAL filing + section
+ytd_src = "Q3 2026 10-Q, Consolidated Statements of Operations"
+prior_src = "Q3 2026 10-Q, comparative prior-year period"
 revenue_bridge = [
-    BridgeComponent("FY2025 Revenue", 5400.0),
-    BridgeComponent("Q3 2026 YTD Revenue", 3050.0),
-    BridgeComponent("Q3 2025 YTD Revenue", 2388.0, subtract=True),
+    BridgeComponent("FY2025 Revenue", 9999.0, source=fy_src),
+    BridgeComponent("Q3 2026 YTD Revenue", 999.0, source=ytd_src),
+    BridgeComponent("Q3 2025 YTD Revenue", 888.0, subtract=True, source=prior_src),
 ]
 ebitda_bridge = [
-    BridgeComponent("FY2025 Adj. EBITDA", 1820.0),
-    BridgeComponent("Q3 2026 YTD Adj. EBITDA", 1040.0),
-    BridgeComponent("Q3 2025 YTD Adj. EBITDA", 815.0, subtract=True),
+    BridgeComponent("FY2025 Adj. EBITDA", 8888.0, source=fy_src),
+    BridgeComponent("Q3 2026 YTD Adj. EBITDA", 888.0, source=ytd_src),
+    BridgeComponent("Q3 2025 YTD Adj. EBITDA", 777.0, subtract=True, source=prior_src),
 ]
 
 # Pitch only: one bridge per ltm_bridge_specs entry, with the components you
@@ -120,9 +129,9 @@ for spec in inputs.get("ltm_bridge_specs", []):
         section_title=f"{spec['result_label']} Bridge",
         result_label=spec["result_label"],
         components=[
-            BridgeComponent(f"FY2025 {spec['tile_label']}", 540.0),
-            BridgeComponent(f"Q3 2026 YTD {spec['tile_label']}", 305.0),
-            BridgeComponent(f"Q3 2025 YTD {spec['tile_label']}", 238.0, subtract=True),
+            BridgeComponent(f"FY2025 {spec['tile_label']}", 999.0, source=fy_src),
+            BridgeComponent(f"Q3 2026 YTD {spec['tile_label']}", 99.0, source=ytd_src),
+            BridgeComponent(f"Q3 2025 YTD {spec['tile_label']}", 88.0, subtract=True, source=prior_src),
         ],
     ))
 
@@ -132,10 +141,9 @@ workbook_path = build_ltm_metrics_workbook(
     currency="US$MM",                              # match the deck currency footnote
     segmentation_basis="Service line",             # or "Geography" on fallback
     segments=[
-        RevenueSegment("Cloud Services & Subscriptions", 1932.0),
-        RevenueSegment("Customer Support", 1480.0),
-        RevenueSegment("License", 360.0),
-        RevenueSegment("Professional Service & Other", 290.0),
+        RevenueSegment("[Segment A]", 999.0, source="Q3 2026 10-Q, revenue disaggregation note"),
+        RevenueSegment("[Segment B]", 888.0, source="Q3 2026 10-Q, revenue disaggregation note"),
+        RevenueSegment("[Segment C]", 77.7, source="Q3 2026 10-Q, revenue disaggregation note"),
     ],
     revenue_bridge=revenue_bridge,
     ebitda_bridge=ebitda_bridge,

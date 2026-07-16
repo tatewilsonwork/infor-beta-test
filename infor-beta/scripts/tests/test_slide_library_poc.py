@@ -13,7 +13,7 @@ import pytest
 from schemas import Company, PitchDeckContent, Plan
 from pptx_helpers import find_shape
 from pitch_deck_wireframe import build_pitch_deck_slide_plan, write_slide_plan
-from pitch_deck_assembler import assemble_pitch_deck
+from pitch_deck_assembler import _output_currency_letter, assemble_pitch_deck
 from slide_library_registry import load_slide_library_registry
 
 
@@ -998,3 +998,32 @@ def test_assemble_excludes_investment_highlights_slide(tmp_path: Path):
     tail = _all_slides_text(prs)
     assert "These materials are confidential and proprietary" in tail
     assert "Neil Selfe, Managing Principal" in tail
+
+
+# ─── Footnote currency mapping from the cap table (v0.5.34) ──────────────────
+
+
+def _cap_table_with_currency(tmp_path: Path, code: str) -> Path:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cap with Links"
+    ws["F5"] = code
+    path = tmp_path / f"cap-{code}.xlsx"
+    wb.save(path)
+    return path
+
+
+def test_output_currency_letter_maps_usd_and_cad_explicitly(tmp_path: Path):
+    assert _output_currency_letter(_cap_table_with_currency(tmp_path, "USD")) == "US"
+    assert _output_currency_letter(_cap_table_with_currency(tmp_path, "CAD")) == "C"
+
+
+def test_output_currency_letter_returns_iso_code_for_non_dollar_currency(tmp_path: Path):
+    # A non-dollar filer renders its ISO code in the footnote — never a silent
+    # 'C' (pre-v0.5.34, GBP mapped to C$MM and CHF matched the startswith('C')).
+    assert _output_currency_letter(_cap_table_with_currency(tmp_path, "GBP")) == "GBP"
+    assert _output_currency_letter(_cap_table_with_currency(tmp_path, "CHF")) == "CHF"
+
+
+def test_output_currency_letter_defaults_to_c_only_when_unreadable(tmp_path: Path):
+    assert _output_currency_letter(tmp_path / "missing.xlsx") == "C"

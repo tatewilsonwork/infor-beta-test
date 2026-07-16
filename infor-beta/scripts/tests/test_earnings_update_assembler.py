@@ -8,7 +8,7 @@ from openpyxl import Workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
-from earnings_update_assembler import assemble_earnings_update_deck
+from earnings_update_assembler import _currency_letter, assemble_earnings_update_deck
 from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
 from pptx_helpers import find_shape, find_shape_in_group
 from schemas import Company, EarningsUpdateContent
@@ -332,3 +332,21 @@ def test_assemble_earnings_update_deck_inserts_cap_table_via_libreoffice(tmp_pat
     assert next((s for s in slide2.shapes if s.name == "Rectangle 3"), None) is None
     pictures = [s for s in slide2.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
     assert pictures, "expected a picture shape on slide 2 after LibreOffice insertion"
+
+# ─── Footnote currency mapping (v0.5.34) ─────────────────────────────────────
+
+
+def test_currency_letter_maps_dollar_scopes_explicitly():
+    assert _currency_letter("US$MM") == "US"
+    assert _currency_letter("C$MM") == "C"
+    assert _currency_letter("USD") == "US"
+    assert _currency_letter("CAD") == "C"
+
+
+def test_currency_letter_returns_iso_code_for_non_dollar_currency():
+    # A GBP filer's footnote must render the ISO code, never a wrong dollar
+    # sign and never a silent 'C' default.
+    assert _currency_letter("GBPMM") == "GBP"
+    assert _currency_letter("GBP") == "GBP"
+    assert _currency_letter("EUR MM") == "EUR"
+    assert _currency_letter("CHF") == "CHF"  # would have read as 'C' pre-v0.5.34

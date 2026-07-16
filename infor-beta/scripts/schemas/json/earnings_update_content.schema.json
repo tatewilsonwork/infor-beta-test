@@ -72,7 +72,7 @@
         },
         "text": {
           "description": "Bullet body text, without terminal period/semicolon.",
-          "maxLength": 250,
+          "maxLength": 220,
           "minLength": 1,
           "title": "Text",
           "type": "string"
@@ -211,7 +211,7 @@
       "items": {
         "$ref": "#/$defs/CompanyOverviewBullet"
       },
-      "maxItems": 10,
+      "maxItems": 8,
       "minItems": 6,
       "title": "Company Overview Bullets",
       "type": "array"

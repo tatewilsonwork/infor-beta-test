@@ -167,6 +167,71 @@ def test_bare_text_metric_value_raises(tmp_path: Path):
     with pytest.raises(ValueError):
         _build(tmp_path, metrics=bad)
 
+# ─── In-artefact source citations (v0.5.34) ──────────────────────────────────
+
+
+def test_per_value_sources_written_as_cell_comments(tmp_path: Path):
+    metrics = _metrics()
+    metrics[0] = MetricSeries(
+        "Revenue", "US$MM", [3100.0, 3450.0, 3820.0, 4180.0, 4520.0],
+        result_label="LTM Revenue",
+        sources=[
+            "FY2022 10-K, Consolidated Statements of Operations",
+            None,  # a value without a citation skips its comment
+            "FY2023 10-K, Consolidated Statements of Operations",
+            "FY2024 10-K, Consolidated Statements of Operations",
+            "FY2025 10-K, Consolidated Statements of Operations",
+        ],
+    )
+    ws = load_workbook(_build(tmp_path, metrics=metrics)).active
+    assert ws["B6"].comment is not None
+    assert ws["B6"].comment.text == "Source: FY2022 10-K, Consolidated Statements of Operations"
+    assert ws["C6"].comment is None
+    assert ws["F6"].comment.text == "Source: FY2025 10-K, Consolidated Statements of Operations"
+
+
+def test_non_flow_ltm_source_written_on_ltm_cell(tmp_path: Path):
+    metrics = _metrics()
+    metrics[3] = MetricSeries(
+        "Combined Loan Balances", "US$MM",
+        [9000.0, 10000.0, 11000.0, 12000.0, 12500.0],
+        ltm_value=12500.0,
+        ltm_source="Q3 2026 10-Q, Consolidated Balance Sheets",
+    )
+    ws = load_workbook(_build(tmp_path, metrics=metrics)).active
+    assert ws["G9"].comment is not None
+    assert ws["G9"].comment.text == "Source: Q3 2026 10-Q, Consolidated Balance Sheets"
+    # Flow metrics' LTM link cells carry no comment (provenance lives on the
+    # ltm-metrics bridge components).
+    assert ws["G6"].comment is None
+
+
+def test_sources_survive_dict_metrics(tmp_path: Path):
+    metrics = [
+        {"label": "Revenue", "units": "US$MM", "fiscal_values": [1, 2, 3, 4, 5],
+         "result_label": "LTM Revenue", "sources": ["FY 10-K"] * 5},
+        {"label": "Gross Profit", "units": "US$MM", "fiscal_values": [1, 2, 3, 4, 5],
+         "result_label": "LTM Gross Profit"},
+        {"label": "Adjusted EBITDA", "units": "US$MM", "fiscal_values": [1, 2, 3, 4, 5],
+         "result_label": "LTM Adj. EBITDA"},
+        {"label": "Net Income", "units": "US$MM", "fiscal_values": [1, 2, 3, 4, 5],
+         "result_label": "LTM Net Income"},
+    ]
+    ws = load_workbook(_build(tmp_path, metrics=metrics)).active
+    assert ws["B6"].comment.text == "Source: FY 10-K"
+    assert ws["B7"].comment is None
+
+
+def test_source_count_mismatch_raises(tmp_path: Path):
+    metrics = _metrics()
+    metrics[0] = MetricSeries(
+        "Revenue", "US$MM", [3100.0, 3450.0, 3820.0, 4180.0, 4520.0],
+        result_label="LTM Revenue", sources=["FY2025 10-K"],  # 1 source for 5 values
+    )
+    with pytest.raises(ValueError):
+        _build(tmp_path, metrics=metrics)
+
+
 # ─── Configurable metric count (v0.5.26): 8 metrics = the two-slide deck ─────
 
 

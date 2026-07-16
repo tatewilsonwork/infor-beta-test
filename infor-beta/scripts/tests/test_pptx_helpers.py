@@ -23,6 +23,7 @@ from pptx_helpers import (
     COLOR_UP,
     PALATINO,
     delete_slide,
+    fill_footnote_currency,
     find_shape,
     find_shape_in_group,
     set_cell_text,
@@ -131,6 +132,41 @@ def _make_exec_summary_shape(slide, name, body_color="203864"):
     _seed(tf.add_paragraph(), 360000, glyph="-", size_pt=11)        # sub (dash)
     _seed(tf.add_paragraph(), 180000, glyph=None)                   # glyph-less spacer
     return tb
+
+
+# ─── fill_footnote_currency tests ────────────────────────────────────────────
+
+class TestFillFootnoteCurrency(unittest.TestCase):
+    """The library footnote ships an 'All figures in [x]$MM' token line. US / C
+    substitute the dollar letter; any other (ISO) code must also swallow the
+    dollar sign so a GBP filer's footnote never reads like a dollar scope."""
+
+    def setUp(self):
+        self.prs = Presentation()
+        self.slide = self.prs.slides.add_slide(self.prs.slide_layouts[5])
+
+    def _footnote(self, text="All figures in [x]$MM unless otherwise noted"):
+        return _make_shape_with_bold_italic_run(self.slide, "Footnote", text)
+
+    def test_us_letter_keeps_dollar_sign(self):
+        shape = self._footnote()
+        fill_footnote_currency(shape, "US")
+        self.assertEqual(shape.text_frame.text, "All figures in US$MM unless otherwise noted")
+
+    def test_c_letter_keeps_dollar_sign(self):
+        shape = self._footnote()
+        fill_footnote_currency(shape, "C")
+        self.assertEqual(shape.text_frame.text, "All figures in C$MM unless otherwise noted")
+
+    def test_iso_code_replaces_dollar_sign_too(self):
+        shape = self._footnote()
+        fill_footnote_currency(shape, "GBP")
+        self.assertEqual(shape.text_frame.text, "All figures in GBP MM unless otherwise noted")
+
+    def test_iso_code_without_dollar_token_falls_back_to_plain_swap(self):
+        shape = self._footnote("Figures in [x]MM")
+        fill_footnote_currency(shape, "GBP")
+        self.assertEqual(shape.text_frame.text, "Figures in GBPMM")
 
 
 # ─── set_text tests ──────────────────────────────────────────────────────────

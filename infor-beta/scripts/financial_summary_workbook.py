@@ -51,6 +51,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
+from comment_citations import append_source_text_to_comment
 from naming import safe_filename
 
 # No template_layout anchors here: this workbook is authored from scratch (no
@@ -103,6 +104,16 @@ class MetricSeries:
       latest reported value used as the point-in-time "LTM" figure — a number,
       or a ``"="`` formula when that latest value is itself combined. Ignored
       when ``result_label`` is set.
+    - ``sources``: optional per-value source citations, aligned with
+      ``fiscal_values`` (same length; ``None`` entries skip that cell). Each
+      names the filing + statement the figure came from — e.g. ``"FY2023 10-K,
+      Consolidated Statements of Operations"`` — and is written as a
+      ``Source: …`` cell comment on the matching value cell, so every figure
+      stays auditable in the artefact itself.
+    - ``ltm_source``: optional source citation for the LTM cell — used when the
+      cell carries a literal ``ltm_value`` (non-flow metric). A flow metric's
+      LTM cell is a link into the `ltm-metrics` tab, whose bridge components
+      carry their own citations, so it normally needs no source here.
     """
 
     label: str
@@ -110,6 +121,8 @@ class MetricSeries:
     fiscal_values: list[float | str] = field(default_factory=list)
     result_label: str | None = None
     ltm_value: float | str | None = None
+    sources: "list[str | None] | None" = None
+    ltm_source: str | None = None
 
 
 def _coerce_value(value: "float | int | str") -> float | str:
@@ -138,6 +151,8 @@ def _normalize_metric(metric: "MetricSeries | dict") -> MetricSeries:
             fiscal_values=[_coerce_value(v) for v in metric.fiscal_values],
             result_label=metric.result_label,
             ltm_value=(None if metric.ltm_value is None else _coerce_value(metric.ltm_value)),
+            sources=metric.sources,
+            ltm_source=metric.ltm_source,
         )
     return MetricSeries(
         label=metric["label"],
@@ -145,6 +160,8 @@ def _normalize_metric(metric: "MetricSeries | dict") -> MetricSeries:
         fiscal_values=[_coerce_value(v) for v in metric.get("fiscal_values", [])],
         result_label=metric.get("result_label"),
         ltm_value=(None if metric.get("ltm_value") is None else _coerce_value(metric["ltm_value"])),
+        sources=metric.get("sources"),
+        ltm_source=metric.get("ltm_source"),
     )
 
 
@@ -216,6 +233,12 @@ def build_financial_summary_workbook(
                 f"metric {m.label!r} has {len(m.fiscal_values)} fiscal values; "
                 f"expected {n_fy} to match the fiscal-year labels"
             )
+        if m.sources is not None and len(m.sources) != n_fy:
+            raise ValueError(
+                f"metric {m.label!r} has {len(m.sources)} source citations; "
+                f"expected {n_fy} to match the fiscal values (use None for a "
+                f"value without a citation)"
+            )
         if not m.label.strip():
             raise ValueError("metric label cannot be blank")
         if m.result_label is None and m.ltm_value is None and show_ltm:
@@ -273,6 +296,8 @@ def build_financial_summary_workbook(
             cell.number_format = _VALUE_FORMAT
             cell.border = _BORDER
             cell.alignment = Alignment(horizontal="center")
+            if m.sources is not None and m.sources[j]:
+                append_source_text_to_comment(cell, m.sources[j])
 
         if show_ltm:
             cell = ws.cell(row=r, column=ltm_col)
@@ -284,9 +309,14 @@ def build_financial_summary_workbook(
             cell.number_format = _VALUE_FORMAT
             cell.border = _BORDER
             cell.alignment = Alignment(horizontal="center")
+            if m.ltm_source:
+                append_source_text_to_comment(cell, m.ltm_source)
         elif m.result_label is not None:
             # Suppression: LTM == latest FY, so the most-recent FY cell carries
             # the link to the LTM tab instead of the literal value (req 5).
+            # The FY cell's source comment (if any) stays — LTM == that FY
+            # figure by definition here, so the citation still describes the
+            # number shown.
             cell = ws.cell(row=r, column=last_fy_col)
             cell.value = _ltm_link(ltm_sheet_name, m.result_label)
             cell.number_format = _VALUE_FORMAT

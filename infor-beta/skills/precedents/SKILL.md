@@ -7,7 +7,7 @@ description: >
   + EV/EBITDA for operating companies, or P/E + P/B + P/TBV for financial institutions — and
   fills the INFOR Precedents Template, hyperlinking each figure's source. The companion workbook
   behind the deck's precedent-transactions slide.
-version: 0.5.33
+version: 0.5.34
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
@@ -155,25 +155,28 @@ sanitized = subprocess.run(
 out_dir = Path(os.environ.get("DEAL_DIR", ".")) / "artefacts"       # cwd for direct /precedents
 
 # Operating-family example (Revenue + EBITDA). Pick ONE family for the whole table.
+# FORMAT ILLUSTRATION ONLY — the deals/figures below are obviously-synthetic
+# placeholders showing the call shape; NEVER reuse them as data. Every real deal
+# comes from your Step 1-2 research, each figure from its linked source.
 groups = [
-    PrecedentGroup("Vertical Software", [
+    PrecedentGroup("[Group #1 label]", [
         # Row sourced from a disclosed multiple -> literal into the ratio column.
         PrecedentTransaction(
-            input_currency="USD", announce_date=date(2022, 8, 25),
-            target="Micro Focus International", acquiror="OpenText", tev=6000.0, hq_country="GBR",
-            ev_ebitda_ltm=6.3, ev_revenue_ltm=2.3,            # disclosed multiples (S/U)
-            tev_link="https://investors.opentext.com/press-releases/.../default.aspx",
-            ebitda_link="https://investors.opentext.com/press-releases/.../default.aspx",
-            revenue_link="https://investors.opentext.com/press-releases/.../default.aspx",
+            input_currency="USD", announce_date=date(2020, 1, 1),
+            target="Example Target Inc.", acquiror="Example Acquiror Corp.", tev=9999.9, hq_country="ZZZ",
+            ev_ebitda_ltm=9.9, ev_revenue_ltm=9.9,            # disclosed multiples (S/U)
+            tev_link="https://example.com/press-release",
+            ebitda_link="https://example.com/press-release",
+            revenue_link="https://example.com/press-release",
         ),
         # Row sourced from disclosed $ figures -> ratio formulas compute on refresh.
         PrecedentTransaction(
-            input_currency="USD", announce_date=date(2025, 5, 6),
-            target="AvidXchange Holdings", acquiror="TPG / Corpay", tev=2200.0, hq_country="USA",
-            revenue_ltm=440.0, ebitda_ltm=85.0,               # source-FX $MM (K/O)
-            tev_link="https://www.tpg.com/news-and-insights/...",
-            revenue_link="https://www.sec.gov/...",
-            ebitda_link="https://www.sec.gov/...",
+            input_currency="USD", announce_date=date(2020, 1, 1),
+            target="Example Target II Ltd.", acquiror="Example Sponsor LP", tev=8888.8, hq_country="ZZZ",
+            revenue_ltm=999.9, ebitda_ltm=99.9,               # source-FX $MM (K/O)
+            tev_link="https://example.com/press-release",
+            revenue_link="https://example.com/filing",
+            ebitda_link="https://example.com/filing",
         ),
         # ... up to six per group ...
     ]),
