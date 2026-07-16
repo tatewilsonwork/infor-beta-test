@@ -12,7 +12,7 @@ description: >
   dialogs (AskUserQuestion), dispatches each stage to its skill via the Agent tool with a
   file-based input / output handoff, and emits a run log under
   ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
-version: 0.5.32
+version: 0.5.33
 allowed-tools: [Read, Write, Bash, Glob, Task, AskUserQuestion]
 ---
 

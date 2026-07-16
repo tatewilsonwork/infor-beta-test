@@ -268,7 +268,7 @@ stages:
     outputs:
       - name: combined_workbook_path
         type: Path
-        description: Absolute path to the combined workbook (one tab per producing skill); replaces the individual workbooks.
+        description: Absolute path to the combined workbook (one tab per producing skill); replaces the individual workbooks once the merge is verified (a degraded or partially-linked merge preserves them).
     checkpoint: informational
 
   # Financial Summary charts: build the deck's metric charts (one per metric row

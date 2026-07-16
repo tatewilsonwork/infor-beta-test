@@ -6,8 +6,11 @@ comps, ...) as siblings, each emitting a standalone `.xlsx` under the deal's
 workbooks into a single combined workbook named `<deliverable>-<deal name>.xlsx`
 (e.g. `earningsupdate-Project Atlas.xlsx`, `pitch-Project Atlas.xlsx`), with
 each source contributing its sheets under a tab named after the producing
-skill. The individual source workbooks are deleted once the merge succeeds
-(the combined file replaces them).
+skill. The individual source workbooks are deleted only once the merge is
+VERIFIED — it ran on the platform's intended backend, the cross-tab relink
+succeeded, and the combined file carries no external-workbook references —
+otherwise they are preserved so the merge can be retried (see
+`combine_workbooks` / `CombineResult`).
 
 Two merge backends, mirroring `excel_to_powerpoint.py`:
 
@@ -74,6 +77,7 @@ import sys
 import tempfile
 import time
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
@@ -204,6 +208,31 @@ def _resolve_sources(
     return kept, skipped
 
 
+@dataclass(frozen=True)
+class CombineResult:
+    """Outcome of `combine_workbooks` — the combined path plus the verification
+    facts the source-deletion gate was decided on, so the calling stage can put
+    them in its outputs instead of the analyst discovering a degraded merge from
+    a broken workbook later.
+
+    Implements `__fspath__`, so the result can be passed anywhere a path is
+    accepted (`Path(result)`, `load_workbook(result)`), but callers should
+    prefer the explicit `output_path`.
+    """
+
+    output_path: Path
+    backend: str                    # "com" | "openpyxl" — the backend that ran
+    degraded: bool                  # win32 only: COM failed, openpyxl fallback ran
+    relink_ok: bool                 # the cross-tab relink pass completed
+    external_refs: tuple[str, ...]  # external-workbook references still present
+    sources_deleted: bool           # the individual source workbooks were removed
+    kept_sources: tuple[Path, ...]  # source workbooks still on disk
+    warnings: tuple[str, ...]       # analyst-facing warnings (also on stderr)
+
+    def __fspath__(self) -> str:
+        return str(self.output_path)
+
+
 def combine_workbooks(
     *,
     sources: Mapping[str, str | Path | None],
@@ -212,8 +241,12 @@ def combine_workbooks(
     deal_name: str,
     delete_sources: bool = True,
     theme_path: Path | str | None = None,
-) -> Path:
-    """Merge the source workbooks into one combined `.xlsx` and return its path.
+) -> CombineResult:
+    """Merge the source workbooks into one combined `.xlsx`.
+
+    Returns a `CombineResult` carrying the combined workbook's path plus the
+    merge-verification facts (backend, degradation, relink success, external
+    references, whether the sources were deleted).
 
     `sources` maps a producing-skill name (used as the tab name) to that
     skill's workbook path. None values and non-existent paths are skipped, so
@@ -222,7 +255,20 @@ def combine_workbooks(
     combine.
 
     When `delete_sources` is True (the default), the individual source files
-    are removed after a successful merge — the combined workbook replaces them.
+    are removed only after the merge is VERIFIED — all of:
+
+      - the merge ran on the platform's intended backend (openpyxl IS the
+        intended backend off-Windows; on Windows, a COM failure that fell back
+        to the lossy openpyxl merge is a degraded result — the full-fidelity
+        sources are the only way to retry with CapIQ links/charts intact);
+      - the cross-tab relink pass succeeded;
+      - the combined workbook carries no external-workbook references (an
+        `xl/externalLinks` part or a `[n]`-indexed sheet formula would point at
+        the very files being deleted — a permanent #REF!/#N/A).
+
+    Otherwise the sources are preserved and a warning is printed to stderr
+    (and returned on the result) so the analyst can retry the merge.
+    `delete_sources=False` always keeps the sources, as before.
 
     `theme_path` overrides the brand theme stamped on the combined workbook;
     it defaults to the shipped `templates/INFORFG.thmx`. Theming is skipped
@@ -246,12 +292,18 @@ def combine_workbooks(
     used_openpyxl = False
     if sys.platform == "win32":
         try:
-            _combine_via_com(kept, output_path, theme)
-        except RuntimeError:
-            _combine_via_openpyxl(kept, output_path, theme)
+            relink_ok = _combine_via_com(kept, output_path, theme)
+        except RuntimeError as exc:
+            print(
+                f"[workbook-aggregator] Excel COM merge failed ({exc}); falling "
+                "back to the openpyxl merge (CapIQ connections and charts will "
+                "not survive).",
+                file=sys.stderr,
+            )
+            relink_ok = _combine_via_openpyxl(kept, output_path, theme)
             used_openpyxl = True
     else:
-        _combine_via_openpyxl(kept, output_path, theme)
+        relink_ok = _combine_via_openpyxl(kept, output_path, theme)
         used_openpyxl = True
 
     # The openpyxl merge writes formula strings with NO cached values, so the
@@ -264,12 +316,65 @@ def combine_workbooks(
     if used_openpyxl:
         _recalc_with_libreoffice(output_path)
 
-    if delete_sources:
-        for _skill, path in kept:
-            if path.resolve() != output_path.resolve():
-                path.unlink(missing_ok=True)
+    # ── Source-deletion gate ────────────────────────────────────────────────
+    # Deleting the sources is the one irreversible act in this stage, so it is
+    # gated on VERIFIED success: intended backend, relink succeeded, and no
+    # external-workbook references left in the combined file. Anything short of
+    # that preserves the sources for a retry — a degraded/partially-linked
+    # combined workbook plus deleted sources is unrecoverable.
+    degraded = used_openpyxl and sys.platform == "win32"
+    external_refs = tuple(_find_external_workbook_refs(output_path))
 
-    return output_path
+    warnings: list[str] = []
+    if degraded:
+        warnings.append(
+            "the merge DEGRADED to the openpyxl fallback (Excel COM failed on "
+            "this Windows machine): live CapIQ connections, charts, and full "
+            "formatting did not survive"
+        )
+    if not relink_ok:
+        warnings.append(
+            "the cross-tab relink FAILED: the combined workbook's cap-table LTM "
+            "/ ownership-denominator / output-currency / financial-summary links "
+            "may be broken or still bound to the standalone source workbooks"
+        )
+    if external_refs:
+        shown = "; ".join(external_refs[:5])
+        more = f" (+{len(external_refs) - 5} more)" if len(external_refs) > 5 else ""
+        warnings.append(
+            "the combined workbook still carries EXTERNAL workbook references — "
+            f"deleting the sources would break them permanently: {shown}{more}"
+        )
+    for message in warnings:
+        print(f"[workbook-aggregator] WARNING: {message}", file=sys.stderr)
+
+    deletable = [p for _skill, p in kept if p.resolve() != output_path.resolve()]
+    sources_deleted = False
+    kept_sources: tuple[Path, ...] = tuple(deletable)
+    if delete_sources:
+        if warnings:
+            print(
+                "[workbook-aggregator] the individual source workbooks were "
+                "PRESERVED (not deleted) so the merge can be retried: "
+                + ", ".join(str(p) for p in deletable),
+                file=sys.stderr,
+            )
+        else:
+            for path in deletable:
+                path.unlink(missing_ok=True)
+            sources_deleted = True
+            kept_sources = ()
+
+    return CombineResult(
+        output_path=output_path,
+        backend="openpyxl" if used_openpyxl else "com",
+        degraded=degraded,
+        relink_ok=relink_ok,
+        external_refs=external_refs,
+        sources_deleted=sources_deleted,
+        kept_sources=kept_sources,
+        warnings=tuple(warnings),
+    )
 
 
 def _recalc_with_libreoffice(workbook_path: Path) -> bool:
@@ -285,7 +390,13 @@ def _recalc_with_libreoffice(workbook_path: Path) -> bool:
     file, ``False`` if LibreOffice (`soffice`/`libreoffice`) is unavailable or the
     conversion produced nothing — in which case the merged workbook keeps its
     un-evaluated formulas (the analyst's Excel recalcs them on open) rather than the
-    stage aborting. Never raises.
+    stage aborting. Never raises: ANY failure inside (the conversion, the file
+    replace, or the post-recalc `_strip_lo_union_operators` fix — which can raise
+    `zipfile.BadZipFile`/`OSError`/`UnicodeDecodeError` on a bad LibreOffice
+    export) degrades to that same path. If the merged file was already replaced
+    by the LibreOffice re-save when the failure hit, the pre-recalc original is
+    restored — the re-save may carry the `~` union operators the strip step could
+    not fix, and Excel would repair-strip those formulas on open.
     """
     soffice = shutil.which("soffice") or shutil.which("libreoffice")
     if soffice is None:
@@ -297,9 +408,12 @@ def _recalc_with_libreoffice(workbook_path: Path) -> bool:
         )
         return False
 
-    from excel_to_powerpoint import _soffice_convert  # recalc-on-load helper
-
+    original_bytes: bytes | None = None
+    replaced = False
     try:
+        from excel_to_powerpoint import _soffice_convert  # recalc-on-load helper
+
+        original_bytes = workbook_path.read_bytes()
         with tempfile.TemporaryDirectory() as tmp_dir:
             _soffice_convert(
                 soffice, workbook_path, "xlsx:Calc MS Excel 2007 XML", Path(tmp_dir)
@@ -313,9 +427,15 @@ def _recalc_with_libreoffice(workbook_path: Path) -> bool:
                 )
                 return False
             shutil.copyfile(recalced, workbook_path)
+            replaced = True
         _strip_lo_union_operators(workbook_path)
         return True
-    except RuntimeError as exc:
+    except Exception as exc:
+        if replaced and original_bytes is not None:
+            try:
+                workbook_path.write_bytes(original_bytes)
+            except OSError:
+                pass  # restore is best-effort; the note below still fires
         print(
             f"[workbook-aggregator] LibreOffice recalc failed ({exc}); leaving the "
             "combined workbook's formulas un-evaluated.",
@@ -402,6 +522,62 @@ def _strip_lo_union_operators(workbook_path: Path) -> int:
     return fixed
 
 
+# ─── External-workbook reference verification ───────────────────────────────
+# An external-workbook reference in a SAVED .xlsx sheet formula is stored in
+# the indexed form `[n]` (e.g. `'[1]ltm-metrics'!$B$3`), where n names an
+# `xl/externalLinks/externalLinkN.xml` part. A digit-only bracket never appears
+# in a purely internal A1-style stored formula (structured table references
+# carry column names, not bare digits), so the pattern is an exact signal.
+_EXTERNAL_WORKBOOK_REF = re.compile(r"\[\d+\]")
+
+
+def _formula_has_external_ref(formula: str) -> bool:
+    """True when a sheet formula carries a `[n]`-indexed external-workbook ref.
+
+    Bracket text inside string literals is ignored (same raw-`"` / `&quot;`
+    string-walking as `_excel_union_commas` — the formula text comes straight
+    from sheet XML, so quotes may appear in either form).
+    """
+    parts = re.split(r'("|&quot;)', formula)
+    in_string = False
+    for part in parts:
+        if part in ('"', "&quot;"):
+            in_string = not in_string
+        elif not in_string and _EXTERNAL_WORKBOOK_REF.search(part):
+            return True
+    return False
+
+
+def _find_external_workbook_refs(workbook_path: Path) -> list[str]:
+    """Scan the combined workbook for external-workbook references.
+
+    Returns one finding per hit: an `xl/externalLinks/…` part (a workbook-level
+    link record) or a sheet formula still carrying an indexed `[n]` external
+    reference (a live cell binding — the v0.5.16 `'[1]ltm-metrics'` symptom a
+    failed relink leaves behind). An empty list means the combined workbook is
+    self-contained and the standalone sources are safe to delete. Fail-closed:
+    a scan error is itself returned as a finding, so an unreadable combined
+    workbook blocks source deletion instead of green-lighting it.
+    """
+    findings: list[str] = []
+    try:
+        with zipfile.ZipFile(workbook_path) as z:
+            names = z.namelist()
+            findings.extend(
+                n for n in names if n.startswith("xl/externalLinks/") and n.endswith(".xml")
+            )
+            for name in names:
+                if not re.fullmatch(r"xl/worksheets/sheet\d+\.xml", name):
+                    continue
+                xml = z.read(name).decode("utf-8", "replace")
+                for match in _SHEET_FORMULA_RE.finditer(xml):
+                    if _formula_has_external_ref(match.group(2)):
+                        findings.append(f"{name}: ={match.group(2)[:70]}")
+    except Exception as exc:
+        findings.append(f"external-reference scan failed ({exc})")
+    return findings
+
+
 # ─── Cross-tab relink ────────────────────────────────────────────────────────
 # Once every workbook is merged into one file, these cells are rewritten from
 # the skills' standalone scalar handoffs to live cross-tab formulas, so the
@@ -432,6 +608,18 @@ _OWN_SHARES_SCALE = 1_000_000   # cap table is in millions; ownership is full un
 _CAP_OUTPUT_CCY_CELL = "F5"
 _OUTPUT_CCY_LINKS = {"comps": "F3", "precedents": "C2"}
 _OUTPUT_CCY_LINK_FONT = ("Palatino Linotype", 9.0, "0000FF")  # name, size, aRGB-less hex
+
+# Shared relink-failure trace. Best-effort by design — a relink failure must not
+# lose the successfully merged workbook — but never silent: an unrelinked
+# financial-summary tab is the v0.5.16 blank-LTM-bar symptom. The caller
+# (`combine_workbooks`) additionally keeps the standalone sources when the
+# relink reports failure, so the links stay repairable.
+_RELINK_FAILURE_NOTE = (
+    "[workbook-aggregator] cross-tab relink failed ({exc}); the combined "
+    "workbook is saved, but its cap-table LTM / ownership-denominator / "
+    "currency / financial-summary links may be broken or still bound to the "
+    "standalone source workbooks."
+)
 
 
 def _relink_source_sheet(wb, preferred: str):
@@ -568,7 +756,7 @@ def _find_label_row_openpyxl(ws, prefixes) -> int | None:
     return None
 
 
-def _relink_cross_tab_openpyxl(combined, skill_to_tab: dict[str, str]) -> None:
+def _relink_cross_tab_openpyxl(combined, skill_to_tab: dict[str, str]) -> bool:
     """Wire the cap table's LTM cells + ownership denominator to sibling tabs.
 
     No-op unless the relevant tabs exist. The LTM bridge total rows are dynamic
@@ -576,36 +764,46 @@ def _relink_cross_tab_openpyxl(combined, skill_to_tab: dict[str, str]) -> None:
     `(=) LTM Revenue` / `(=) LTM Adj. EBITDA` labels rather than a fixed cell.
     CapIQ links are already lost on the openpyxl path, so this only restores the
     cross-tab references; the COM path preserves the live CapIQ formulas too.
+
+    Best-effort like its COM counterpart — never raises; a relink failure must
+    not lose the successfully merged workbook. Returns True when the pass
+    completed, False on failure (with a stderr trace) so the caller can gate
+    source deletion on it.
     """
-    cap = skill_to_tab.get("captable")
-    ltm = skill_to_tab.get("ltm-metrics")
-    own = skill_to_tab.get("ownership")
-    names = set(combined.sheetnames)
-    if cap in names and ltm in names:
-        ltm_ws = combined[ltm]
-        rev = _find_label_row_openpyxl(ltm_ws, (_LTM_REVENUE_LABEL,))
-        ebitda = _find_label_row_openpyxl(ltm_ws, _LTM_EBITDA_LABELS)
-        q = _quote_sheet(ltm)
-        if rev is not None:
-            combined[cap][_CAP_LTM_REVENUE_CELL] = f"={q}!B{rev}*F7"
-        if ebitda is not None:
-            combined[cap][_CAP_LTM_EBITDA_CELL] = f"={q}!B{ebitda}*F7"
-    if cap in names and own in names:
-        combined[own][_OWN_DENOM_CELL] = (
-            f"={_quote_sheet(cap)}!{_CAP_BASIC_SHARES_CELL}*{_OWN_SHARES_SCALE}"
-        )
-    if cap in names:
-        from openpyxl.styles import Font
+    try:
+        cap = skill_to_tab.get("captable")
+        ltm = skill_to_tab.get("ltm-metrics")
+        own = skill_to_tab.get("ownership")
+        names = set(combined.sheetnames)
+        if cap in names and ltm in names:
+            ltm_ws = combined[ltm]
+            rev = _find_label_row_openpyxl(ltm_ws, (_LTM_REVENUE_LABEL,))
+            ebitda = _find_label_row_openpyxl(ltm_ws, _LTM_EBITDA_LABELS)
+            q = _quote_sheet(ltm)
+            if rev is not None:
+                combined[cap][_CAP_LTM_REVENUE_CELL] = f"={q}!B{rev}*F7"
+            if ebitda is not None:
+                combined[cap][_CAP_LTM_EBITDA_CELL] = f"={q}!B{ebitda}*F7"
+        if cap in names and own in names:
+            combined[own][_OWN_DENOM_CELL] = (
+                f"={_quote_sheet(cap)}!{_CAP_BASIC_SHARES_CELL}*{_OWN_SHARES_SCALE}"
+            )
+        if cap in names:
+            from openpyxl.styles import Font
 
-        name, size, color = _OUTPUT_CCY_LINK_FONT
-        for skill, cell_ref in _OUTPUT_CCY_LINKS.items():
-            tab = skill_to_tab.get(skill)
-            if tab in names:
-                cell = combined[tab][cell_ref]
-                cell.value = f"={_quote_sheet(cap)}!{_CAP_OUTPUT_CCY_CELL}"
-                cell.font = Font(name=name, size=size, color=color)
+            name, size, color = _OUTPUT_CCY_LINK_FONT
+            for skill, cell_ref in _OUTPUT_CCY_LINKS.items():
+                tab = skill_to_tab.get(skill)
+                if tab in names:
+                    cell = combined[tab][cell_ref]
+                    cell.value = f"={_quote_sheet(cap)}!{_CAP_OUTPUT_CCY_CELL}"
+                    cell.font = Font(name=name, size=size, color=color)
 
-    _relink_financial_summary_openpyxl(combined, skill_to_tab)
+        _relink_financial_summary_openpyxl(combined, skill_to_tab)
+        return True
+    except Exception as exc:
+        print(_RELINK_FAILURE_NOTE.format(exc=exc), file=sys.stderr)
+        return False
 
 
 def _find_label_row_com(ws, prefixes) -> int | None:
@@ -622,9 +820,11 @@ def _find_label_row_com(ws, prefixes) -> int | None:
     return None
 
 
-def _relink_cross_tab_com(combined, skill_to_tab: dict[str, str]) -> None:
+def _relink_cross_tab_com(combined, skill_to_tab: dict[str, str]) -> bool:
     """COM counterpart of `_relink_cross_tab_openpyxl`; best-effort (never raises
-    — a relink failure must not lose the successfully merged workbook)."""
+    — a relink failure must not lose the successfully merged workbook). Returns
+    True when the pass completed, False on failure (with a stderr trace) so the
+    caller can gate source deletion on it."""
     try:
         cap = skill_to_tab.get("captable")
         ltm = skill_to_tab.get("ltm-metrics")
@@ -657,17 +857,10 @@ def _relink_cross_tab_com(combined, skill_to_tab: dict[str, str]) -> None:
                     rng.Font.Size = size
                     rng.Font.Color = bgr
         _relink_financial_summary_com(combined, skill_to_tab)
+        return True
     except Exception as exc:
-        # Best-effort by design — a relink failure must not lose the successfully
-        # merged workbook — but never silent: an unrelinked financial-summary tab
-        # is the v0.5.16 blank-LTM-bar symptom, so leave a diagnostic trace.
-        print(
-            f"[workbook-aggregator] cross-tab relink failed ({exc}); the combined "
-            f"workbook is saved, but its cap-table LTM / ownership-denominator / "
-            f"currency / financial-summary links may still point at the deleted "
-            f"source files.",
-            file=sys.stderr,
-        )
+        print(_RELINK_FAILURE_NOTE.format(exc=exc), file=sys.stderr)
+        return False
 
 
 def _open_workbook(excel, path: Path, *, read_only: bool):
@@ -716,7 +909,7 @@ def _rename_and_clean_base(combined, skill: str, used_names: set, skill_to_tab: 
 
 def _combine_via_com(
     sources: list[tuple[str, Path]], output_path: Path, theme_path: Path | None = None
-) -> None:
+) -> bool:
     """Merge with Excel COM, preserving formulas, links, charts, and formatting.
 
     When a `captable` source is present it is opened as the BASE workbook (and
@@ -727,6 +920,9 @@ def _combine_via_com(
     table's LTM cells to the ltm-metrics tab and the ownership denominator to the
     cap table, and (when `theme_path` is given) the INFOR brand theme is stamped
     on so a blank-base merge doesn't ship the default Office theme.
+
+    Returns True when the cross-tab relink pass succeeded, False when it failed
+    (the merged file is still saved) — the caller gates source deletion on it.
     """
     try:
         import pythoncom
@@ -812,7 +1008,7 @@ def _combine_via_com(
                 combined.Sheets(name).Delete()
 
         # Wire the combined workbook's cross-tab links (best-effort).
-        _relink_cross_tab_com(combined, skill_to_tab)
+        relink_ok = _relink_cross_tab_com(combined, skill_to_tab)
 
         # Stamp the INFOR brand theme so the combined workbook keeps INFOR
         # colours/fonts even when the base is a blank workbook (no cap table).
@@ -827,6 +1023,7 @@ def _combine_via_com(
             output_path.unlink()
         combined.SaveAs(str(output_path), FileFormat=_XL_OPEN_XML_WORKBOOK)
         combined.Close(SaveChanges=False)
+        return relink_ok
     except RuntimeError:
         raise  # already normalized (e.g. _open_workbook, the partial-append bail)
     except Exception as exc:
@@ -843,8 +1040,12 @@ def _combine_via_com(
 
 def _combine_via_openpyxl(
     sources: list[tuple[str, Path]], output_path: Path, theme_path: Path | None = None
-) -> None:
-    """Best-effort merge with openpyxl. CapIQ links and charts do NOT survive."""
+) -> bool:
+    """Best-effort merge with openpyxl. CapIQ links and charts do NOT survive.
+
+    Returns True when the cross-tab relink pass succeeded, False when it failed
+    (the merged file is still saved) — the caller gates source deletion on it.
+    """
     from openpyxl import Workbook, load_workbook
 
     combined = Workbook()
@@ -866,7 +1067,7 @@ def _combine_via_openpyxl(
 
     if not combined.sheetnames:
         combined.create_sheet(title="Sheet")
-    _relink_cross_tab_openpyxl(combined, skill_to_tab)
+    relink_ok = _relink_cross_tab_openpyxl(combined, skill_to_tab)
 
     # Stamp the INFOR brand theme (a fresh openpyxl Workbook carries the default
     # Office theme, so copied cells' theme-colour refs would otherwise resolve
@@ -877,6 +1078,7 @@ def _combine_via_openpyxl(
             combined.loaded_theme = theme_xml
 
     combined.save(output_path)
+    return relink_ok
 
 
 def _copy_sheet(src_ws, dst_ws) -> None:
