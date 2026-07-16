@@ -1,7 +1,7 @@
 ---
 name: pitch-wireframe
 description: Builds the typed SlidePlan for the INFOR slide-library pitch deck, using the blank INFOR Slide Library order as canonical; the market-entry section expands to two targets per slide, the Financial Summary section to four metrics per slide, and the Key Investment Highlights slide can be omitted.
-version: 0.5.33
+version: 0.5.34
 allowed-tools:
   - Read
   - Write

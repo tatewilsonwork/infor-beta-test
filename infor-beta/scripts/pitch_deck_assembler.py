@@ -33,7 +33,7 @@ from naming import safe_filename
 from pptx_helpers import (
     clone_slide_after,
     delete_slide,
-    fill_footnote_token,
+    fill_footnote_currency,
     find_shape,
     find_table_shape,
     fit_overview_textbox,
@@ -367,12 +367,16 @@ def _fill_risk_table(slide, content: PitchDeckContent) -> None:
 
 
 def _output_currency_letter(workbook_path) -> str:
-    """Derive the footnote currency letter ('US' / 'C') from the cap table.
+    """Derive the footnote currency token from the cap table's output currency.
 
-    Reads the cap table's output-currency cell (``F5`` on ``Cap with Links``) so
-    the ``[x]$MM`` footnote token resolves to ``US$MM`` / ``C$MM`` instead of
-    being hardcoded. Falls back to ``C`` (the template default) if the cell is
-    missing or unreadable, so a footnote never ships the literal ``[x]``.
+    Reads the cap table's output-currency cell (``F5`` on ``Cap with Links``).
+    USD / CAD map explicitly to the ``'US'`` / ``'C'`` dollar letters (so the
+    ``[x]$MM`` footnote token resolves to ``US$MM`` / ``C$MM``); **any other
+    code is returned as-is** and `fill_footnote_currency` renders the ISO code
+    without a dollar sign (``GBP MM``) — a non-dollar filer is never silently
+    mislabelled as C$. Falls back to ``C`` (the template default) only when the
+    cell is missing or unreadable, so a footnote never ships the literal
+    ``[x]``.
     """
     try:
         from openpyxl import load_workbook
@@ -382,11 +386,13 @@ def _output_currency_letter(workbook_path) -> str:
         code = str(ws["F5"].value or "").strip().upper()
     except Exception:
         code = ""
-    if code.startswith("US"):
+    if not code:
+        return "C"  # template default — the cell is empty/unreadable
+    if code in {"USD", "US$", "US"}:
         return "US"
-    if code.startswith("C"):  # CAD / C$
+    if code in {"CAD", "C$", "C"}:
         return "C"
-    return "C"
+    return code  # non-dollar ISO code, rendered verbatim in the footnote
 
 
 def _ownership_has_bloomberg(workbook_path) -> bool:
@@ -447,7 +453,7 @@ def _fill_market_entry_targets(
             None,
         )
         if footnote is not None:
-            fill_footnote_token(footnote, currency_letter)
+            fill_footnote_currency(footnote, currency_letter)
 
     if not targets:
         return
@@ -738,7 +744,7 @@ def assemble_pitch_deck(
     _write_flexible_bullets(overview_shape, content.company_overview_bullets)
     fit_overview_textbox(slide7, overview_shape)
     if currency_letter is not None:
-        fill_footnote_token(find_shape(slide7, "Text Placeholder 1"), currency_letter)
+        fill_footnote_currency(find_shape(slide7, "Text Placeholder 1"), currency_letter)
 
     # Financial Summary slide(s) — metric labels only (from the financial-summary
     # stage); charts remain placeholders. Left as template placeholders when no
@@ -779,7 +785,7 @@ def assemble_pitch_deck(
         slide_kih = prs.slides[layout.investment_highlights]
         _fill_investment_highlights(slide_kih, content)
         if currency_letter is not None:
-            fill_footnote_token(find_shape(slide_kih, "Text Placeholder 13"), currency_letter)
+            fill_footnote_currency(find_shape(slide_kih, "Text Placeholder 13"), currency_letter)
 
     # Market-entry targets, two per slide. The section was grown above; fill
     # each slide with its pair and title it '(N of M)'.

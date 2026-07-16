@@ -8,7 +8,7 @@ description: >
   industry-aware: operating company vs. financial institution), gathers their last five fiscal
   years from the latest 10-Ks plus an LTM column, and emits the metric labels the deck tiles use.
   The single source of truth for the deck's financial metrics.
-version: 0.5.33
+version: 0.5.34
 allowed-tools: [Read, Write, Bash, WebSearch, WebFetch]
 ---
 
@@ -106,6 +106,17 @@ reported figures (e.g. "Ending Combined Loan & Advance Bal." = loans + advances)
 value (and, for a non-flow combined metric, the `ltm_value`) as an Excel **formula string** of the
 components — `"=9000+800"`, not `9800` — so the arithmetic lives in the cell and stays auditable
 (Excel does the math, not you). The builder writes a `"="` string straight through as a formula.
+
+**In-artefact citation — REQUIRED.** Every figure you extract must carry its source ON the cell, so
+the artefact is auditable without this chat transcript. Pass `sources=[...]` on each `MetricSeries`
+— one entry per fiscal value, naming the filing **and** the statement/section it came from (e.g.
+`"FY2023 10-K, Consolidated Statements of Operations"`, or the attached filing's filename plus the
+section) — and set `ltm_source` on each **non-flow** metric's point-in-time LTM figure. The builder
+writes each as a `Source: <…>` cell comment on the value cell (shared `comment_citations` helper),
+and the workbook aggregator carries the comments into the combined workbook. Never skip a source —
+a headline figure with no citation is indistinguishable from an invented one. (Flow metrics' LTM
+cells are links into the `ltm-metrics` tab, whose bridge components carry their own citations, so
+they need no `ltm_source`.)
 
 ### Step 4 — Decide the LTM column (suppression rule)
 
@@ -208,16 +219,22 @@ sanitized = subprocess.run(
 ).stdout.strip() or company_name
 out_dir = Path(os.environ.get("DEAL_DIR", ".")) / "artefacts"
 
+# FORMAT ILLUSTRATION ONLY — the labels/values below are obviously-synthetic
+# placeholders showing the call shape; NEVER reuse them as data. Every real
+# value comes from the target's filings (Step 3), with a source per figure.
 fiscal_labels = ["FY2021", "FY2022", "FY2023", "FY2024", "FY2025"]   # oldest -> newest
+src = "FY<year> 10-K, Consolidated Statements of Operations"          # one REAL source per value
 metrics = [
-    MetricSeries("Revenue", "US$MM", [3100.0, 3450.0, 3820.0, 4180.0, 4520.0],
-                 result_label="LTM Revenue"),
-    MetricSeries("Gross Profit", "US$MM", [1240.0, 1410.0, 1570.0, 1740.0, 1900.0],
-                 result_label="LTM Gross Profit"),
-    MetricSeries("Adjusted EBITDA", "US$MM", [820.0, 940.0, 1080.0, 1210.0, 1330.0],
-                 result_label="LTM Adj. EBITDA"),
-    MetricSeries("Net Income", "US$MM", [410.0, 470.0, 540.0, 600.0, 660.0],
-                 result_label="LTM Net Income"),
+    MetricSeries("Revenue", "US$MM", [1111.1, 2222.2, 3333.3, 4444.4, 5555.5],
+                 result_label="LTM Revenue", sources=[src] * 5),
+    MetricSeries("Gross Profit", "US$MM", [111.1, 222.2, 333.3, 444.4, 555.5],
+                 result_label="LTM Gross Profit", sources=[src] * 5),
+    MetricSeries("Adjusted EBITDA", "US$MM", [99.9, 99.9, 99.9, 99.9, 99.9],
+                 result_label="LTM Adj. EBITDA", sources=[src] * 5),
+    MetricSeries("Net Income", "US$MM", [88.8, 88.8, 88.8, 88.8, 88.8],
+                 result_label="LTM Net Income", sources=[src] * 5),
+    # A non-flow metric would instead carry ltm_value=9999.9 and
+    # ltm_source="Q<q> 10-Q, Consolidated Balance Sheets" (no result_label).
 ]
 
 workbook_path = build_financial_summary_workbook(

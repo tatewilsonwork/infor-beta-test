@@ -585,6 +585,24 @@ def fill_footnote_token(shape, letter, *, token="[x]"):
     set_text(shape, lines)
 
 
+def fill_footnote_currency(shape, letter):
+    """Fill the footnote's '[x]$MM' token for a dollar letter OR a bare ISO code.
+
+    `letter` is what the assemblers' currency helpers return: ``"US"`` / ``"C"``
+    for the two dollar currencies (substituted into the token as before, giving
+    ``US$MM`` / ``C$MM``), or a bare ISO code (``"GBP"``, ``"EUR"``, …) for any
+    other currency — the code then replaces the letter AND the dollar sign
+    (``[x]$MM`` -> ``GBP MM``), so a non-dollar filer's footnote renders its
+    ISO code instead of mislabelling the figures with a dollar sign.
+    """
+    if letter in ("US", "C"):
+        fill_footnote_token(shape, letter)
+    elif any("[x]$" in p.text for p in shape.text_frame.paragraphs):
+        fill_footnote_token(shape, f"{letter} ", token="[x]$")
+    else:
+        fill_footnote_token(shape, letter)
+
+
 # ─── Bullet writer with plain-text fallback ──────────────────────────────────
 
 def write_bullets_or_plain(shape, items, *, autofit=False):

@@ -12,6 +12,11 @@ One "LTM Metrics" tab stacks three blocks, separated by a blank spacer row:
 
 Arithmetic lives in cell formulas (% of total, the total row, the bridge sums)
 so the workbook stays analyst-auditable, matching the cap-table convention.
+Each hand-extracted input (a segment's LTM revenue, a bridge component) can
+carry a ``source`` citation — the filing + statement/note it came from — which
+is written as a ``Source: …`` cell comment on the amount cell (shared
+`comment_citations` helper), so the figures stay auditable in the artefact
+itself; the workbook aggregator carries the comments into the combined file.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
+from comment_citations import append_source_text_to_comment
 from naming import safe_filename
 
 # No template_layout anchors here: this workbook is authored from scratch (no
@@ -47,19 +53,31 @@ _MINUS = "−"  # typographic minus sign used in bridge labels
 
 @dataclass(frozen=True)
 class RevenueSegment:
-    """One row of the LTM revenue overview."""
+    """One row of the LTM revenue overview.
+
+    ``source`` (optional) names the filing + statement/note the segment figure
+    came from (e.g. ``"Q3 2026 10-Q, revenue disaggregation note"``); it is
+    written as a ``Source: …`` comment on the amount cell.
+    """
 
     name: str
     ltm_revenue: float
+    source: str | None = None
 
 
 @dataclass(frozen=True)
 class BridgeComponent:
-    """One additive (or subtractive) line of an LTM bridge."""
+    """One additive (or subtractive) line of an LTM bridge.
+
+    ``source`` (optional) names the filing + statement the component figure
+    came from (e.g. ``"FY2025 10-K, Consolidated Statements of Operations"``);
+    it is written as a ``Source: …`` comment on the amount cell.
+    """
 
     name: str
     value: float
     subtract: bool = False
+    source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,10 +98,14 @@ class Bridge:
 def _coerce_segments(
     segments: list[RevenueSegment] | list[tuple],
 ) -> list[RevenueSegment]:
-    return [
-        seg if isinstance(seg, RevenueSegment) else RevenueSegment(seg[0], float(seg[1]))
-        for seg in segments
-    ]
+    out: list[RevenueSegment] = []
+    for seg in segments:
+        if isinstance(seg, RevenueSegment):
+            out.append(seg)
+        else:
+            source = seg[2] if len(seg) > 2 else None
+            out.append(RevenueSegment(seg[0], float(seg[1]), source))
+    return out
 
 
 def _coerce_components(
@@ -98,7 +120,8 @@ def _coerce_components(
         else:
             name, value = c[0], float(c[1])
             subtract = bool(c[2]) if len(c) > 2 else False
-            out.append(BridgeComponent(name, value, subtract))
+            source = c[3] if len(c) > 3 else None
+            out.append(BridgeComponent(name, value, subtract, source))
     return out
 
 
@@ -174,6 +197,8 @@ def _write_bridge(
         v.number_format = "#,##0.0"
         ws.cell(row=r, column=1).border = _BORDER
         v.border = _BORDER
+        if comp.source:
+            append_source_text_to_comment(v, comp.source)
 
     last_data = first_data + len(components) - 1
     result_row = last_data + 1
@@ -212,7 +237,10 @@ def build_ltm_metrics_workbook(
 ) -> Path:
     """Write an LTM metrics .xlsx (overview + bridges) and return its path.
 
-    `segments` and the bridge components may be dataclasses or plain tuples.
+    `segments` and the bridge components may be dataclasses or plain tuples
+    (`(name, value[, source])` for segments; `(name, value[, subtract[, source]])`
+    for components). A `source` string is written as a `Source: …` comment on
+    that figure's amount cell — in-artefact provenance for every extracted value.
     `segmentation_basis` is a human label such as "Service line" or "Geography".
     `ebitda_label` is "LTM Adj. EBITDA" by default; pass "LTM EBITDA" when no
     Adjusted figure is disclosed. Either bridge may be omitted.
@@ -269,6 +297,8 @@ def build_ltm_metrics_workbook(
         v.number_format = "#,##0.0"
         ws.cell(row=r, column=1).border = _BORDER
         v.border = _BORDER
+        if seg.source:
+            append_source_text_to_comment(v, seg.source)
 
     last_data = first_data + len(rows) - 1
     total_row = last_data + 1

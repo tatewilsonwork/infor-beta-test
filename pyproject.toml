@@ -1,6 +1,6 @@
 [project]
 name = "infor-beta"
-version = "0.5.22"
+version = "0.5.34"
 description = "INFOR Financial Group internal Claude Code plugin — clean-break rebuild of infor-workflows."
 requires-python = ">=3.11"
 dependencies = [
@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7,<9",
+    "pytest>=9,<10",
 ]
 
 [tool.pytest.ini_options]

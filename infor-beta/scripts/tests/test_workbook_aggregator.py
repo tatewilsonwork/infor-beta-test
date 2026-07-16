@@ -203,6 +203,48 @@ def test_merge_preserves_comments_and_hyperlinks(tmp_path: Path):
     assert ws2["B2"].hyperlink.target == "https://example.com/filing"
 
 
+def test_builder_source_comments_survive_openpyxl_merge(tmp_path: Path):
+    # v0.5.34: financial-summary / ltm-metrics cite each extracted figure as a
+    # "Source: …" comment on the value cell; the openpyxl merge must carry them
+    # into the combined workbook like the cap table's F7/F16 citations.
+    from financial_summary_workbook import MetricSeries, build_financial_summary_workbook
+    from ltm_metrics import BridgeComponent, RevenueSegment, build_ltm_metrics_workbook
+
+    fs = build_financial_summary_workbook(
+        company_name="SampleCo",
+        currency_note="Figures in US$MM unless noted",
+        period_note="FY = fiscal year; LTM = trailing twelve months as of Q3 2026",
+        fiscal_labels=["FY2021", "FY2022", "FY2023", "FY2024", "FY2025"],
+        metrics=[
+            MetricSeries("Revenue", "US$MM", [1, 2, 3, 4, 5], result_label="LTM Revenue",
+                         sources=["FY 10-K, income statement"] * 5),
+            MetricSeries("Gross Profit", "US$MM", [1, 2, 3, 4, 5], result_label="LTM Gross Profit"),
+            MetricSeries("Adjusted EBITDA", "US$MM", [1, 2, 3, 4, 5], result_label="LTM Adj. EBITDA"),
+            MetricSeries("Net Income", "US$MM", [1, 2, 3, 4, 5], result_label="LTM Net Income"),
+        ],
+        output_dir=tmp_path,
+    )
+    ltm = build_ltm_metrics_workbook(
+        company_name="SampleCo",
+        period_label="LTM ended March 31, 2026",
+        currency="US$MM",
+        segmentation_basis="Service line",
+        segments=[RevenueSegment("Segment A", 9.0, source="Q3 10-Q, segment note")],
+        revenue_bridge=[BridgeComponent("FY Revenue", 9.0, source="FY 10-K, income statement")],
+        output_dir=tmp_path,
+    )
+
+    out = tmp_path / "out.xlsx"
+    _combine_via_openpyxl([("financial-summary", fs), ("ltm-metrics", ltm)], out)
+    wb = load_workbook(out)
+    assert wb["financial-summary"]["B6"].comment is not None
+    assert wb["financial-summary"]["B6"].comment.text == "Source: FY 10-K, income statement"
+    # One segment -> overview data row 8; bridge data row 13 (spacer 10,
+    # section 11, header 12).
+    assert wb["ltm-metrics"]["B8"].comment.text == "Source: Q3 10-Q, segment note"
+    assert wb["ltm-metrics"]["B13"].comment.text == "Source: FY 10-K, income statement"
+
+
 # --- combine_workbooks end-to-end (openpyxl path off-Windows) ---------------
 
 
