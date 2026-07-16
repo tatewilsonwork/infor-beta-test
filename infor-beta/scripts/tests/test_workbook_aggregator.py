@@ -212,17 +212,25 @@ def test_combine_writes_named_file_and_deletes_sources(tmp_path: Path, monkeypat
     a = _make_anchored_captable(tmp_path / "cap.xlsx", sheet="Cap")
     b = _make_workbook(tmp_path / "ltm.xlsx", {"LTM": [[2]]})
 
-    out = combine_workbooks(
+    result = combine_workbooks(
         sources={"captable": a, "ltm-metrics": b},
         output_dir=tmp_path,
         deliverable_type="earnings-update",
         deal_name="Project Atlas",
     )
 
+    out = result.output_path
     assert out.name == "earningsupdate-Project Atlas.xlsx"
     assert out.exists()
     assert load_workbook(out).sheetnames == ["captable", "ltm-metrics"]
-    # Sources replaced by the combined workbook.
+    # Verified merge — sources replaced by the combined workbook, no warnings.
+    assert result.backend == "openpyxl"
+    assert result.degraded is False  # off-Windows, openpyxl IS the intended backend
+    assert result.relink_ok is True
+    assert result.external_refs == ()
+    assert result.warnings == ()
+    assert result.sources_deleted is True
+    assert result.kept_sources == ()
     assert not a.exists()
     assert not b.exists()
 
@@ -231,7 +239,7 @@ def test_combine_skips_none_and_missing_sources(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
     a = _make_workbook(tmp_path / "cap.xlsx", {"Cap": [[1]]})
 
-    out = combine_workbooks(
+    result = combine_workbooks(
         sources={
             "captable": a,
             "comps": None,
@@ -241,21 +249,25 @@ def test_combine_skips_none_and_missing_sources(tmp_path: Path, monkeypatch):
         deliverable_type="pitch",
         deal_name="Project Atlas",
     )
-    assert load_workbook(out).sheetnames == ["captable"]
+    assert load_workbook(result.output_path).sheetnames == ["captable"]
 
 
 def test_combine_keeps_sources_when_requested(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
     a = _make_workbook(tmp_path / "cap.xlsx", {"Cap": [[1]]})
-    out = combine_workbooks(
+    result = combine_workbooks(
         sources={"captable": a},
         output_dir=tmp_path,
         deliverable_type="pitch",
         deal_name="Atlas",
         delete_sources=False,
     )
-    assert out.exists()
+    assert result.output_path.exists()
     assert a.exists()
+    # The opt-out is not a warning condition — the merge itself was clean.
+    assert result.sources_deleted is False
+    assert result.warnings == ()
+    assert [p.name for p in result.kept_sources] == ["cap.xlsx"]
 
 
 def test_combine_raises_when_no_valid_sources(tmp_path: Path, monkeypatch):
@@ -267,6 +279,138 @@ def test_combine_raises_when_no_valid_sources(tmp_path: Path, monkeypatch):
             deliverable_type="pitch",
             deal_name="Atlas",
         )
+
+
+# --- source-deletion gate (data-integrity) -----------------------------------
+
+
+def test_relink_failure_keeps_sources(tmp_path: Path, monkeypatch, capsys):
+    # A failed cross-tab relink leaves the combined workbook with broken /
+    # externally-bound links; deleting the sources would make that permanent.
+    monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
+    monkeypatch.setattr(
+        workbook_aggregator, "_relink_cross_tab_openpyxl", lambda wb, tabs: False
+    )
+    a = _make_workbook(tmp_path / "fs.xlsx", {"FS": [[1]]})
+    b = _make_workbook(tmp_path / "ltm.xlsx", {"LTM": [[2]]})
+
+    result = combine_workbooks(
+        sources={"financial-summary": a, "ltm-metrics": b},
+        output_dir=tmp_path,
+        deliverable_type="pitch",
+        deal_name="Atlas",
+    )
+
+    assert result.output_path.exists()  # the merged workbook is not lost
+    assert result.relink_ok is False
+    assert result.sources_deleted is False
+    assert a.exists() and b.exists()
+    assert {p.resolve() for p in result.kept_sources} == {a.resolve(), b.resolve()}
+    assert any("relink FAILED" in w for w in result.warnings)
+    assert "PRESERVED" in capsys.readouterr().err
+
+
+def test_relink_cross_tab_openpyxl_reports_failure_instead_of_raising(monkeypatch, capsys):
+    # The relink pass itself must never raise (the merged workbook would be
+    # lost) — it traces to stderr and reports False to the caller.
+    def boom(combined, skill_to_tab):
+        raise KeyError("Worksheet ltm-metrics does not exist")
+
+    monkeypatch.setattr(workbook_aggregator, "_relink_financial_summary_openpyxl", boom)
+    assert workbook_aggregator._relink_cross_tab_openpyxl(Workbook(), {}) is False
+    assert "cross-tab relink failed" in capsys.readouterr().err
+
+
+def test_relink_cross_tab_openpyxl_reports_success():
+    assert workbook_aggregator._relink_cross_tab_openpyxl(Workbook(), {}) is True
+
+
+def test_win32_com_failure_fallback_keeps_sources(tmp_path: Path, monkeypatch, capsys):
+    # On Windows the intended backend is COM. When it fails, the documented-lossy
+    # openpyxl fallback still produces a combined workbook (CapIQ links / charts
+    # gone), but the full-fidelity sources must survive for a retry.
+    monkeypatch.setattr("workbook_aggregator.sys.platform", "win32")
+
+    def com_boom(sources, output_path, theme):
+        raise RuntimeError("Excel COM workbook aggregation failed: no Excel")
+
+    monkeypatch.setattr(workbook_aggregator, "_combine_via_com", com_boom)
+    a = _make_workbook(tmp_path / "cap.xlsx", {"Cap": [[1]]})
+
+    result = combine_workbooks(
+        sources={"captable": a},
+        output_dir=tmp_path,
+        deliverable_type="pitch",
+        deal_name="Atlas",
+    )
+
+    assert result.output_path.exists()
+    assert result.backend == "openpyxl"
+    assert result.degraded is True
+    assert result.sources_deleted is False
+    assert a.exists()
+    assert any("DEGRADED" in w for w in result.warnings)
+    err = capsys.readouterr().err
+    assert "falling back" in err and "PRESERVED" in err
+
+
+def test_external_refs_block_deletion(tmp_path: Path, monkeypatch):
+    # A '[n]'-indexed formula in the combined workbook is a live binding to an
+    # external workbook — exactly what a failed relink leaves behind. Deleting
+    # the sources would turn it into a permanent #REF!/#N/A.
+    monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
+    a = _make_workbook(
+        tmp_path / "fs.xlsx",
+        {"FS": [["=INDEX('[1]ltm-metrics'!$B:$B, MATCH(\"k\", '[1]ltm-metrics'!$A:$A, 0))"]]},
+    )
+
+    result = combine_workbooks(
+        sources={"financial-summary": a},
+        output_dir=tmp_path,
+        deliverable_type="pitch",
+        deal_name="Atlas",
+    )
+
+    assert result.external_refs  # the external binding was detected post-merge
+    assert result.sources_deleted is False
+    assert a.exists()
+    assert any("EXTERNAL workbook references" in w for w in result.warnings)
+
+
+def test_find_external_workbook_refs_detects_bindings_and_link_parts(tmp_path: Path):
+    from workbook_aggregator import _find_external_workbook_refs
+
+    # Formula-level '[n]' binding.
+    p = _make_workbook(tmp_path / "a.xlsx", {"S": [["='[1]ltm-metrics'!B10"]]})
+    refs = _find_external_workbook_refs(p)
+    assert len(refs) == 1 and "ltm-metrics" in refs[0]
+
+    # Workbook-level xl/externalLinks part (no referencing formula needed).
+    q = _make_workbook(tmp_path / "b.xlsx", {"S": [[1]]})
+    with zipfile.ZipFile(q, "a") as z:
+        z.writestr("xl/externalLinks/externalLink1.xml", "<externalLink/>")
+    assert "xl/externalLinks/externalLink1.xml" in _find_external_workbook_refs(q)
+
+
+def test_find_external_workbook_refs_ignores_internal_formulas_and_strings(tmp_path: Path):
+    from workbook_aggregator import _find_external_workbook_refs
+
+    # Internal formulas, a '[1]' inside a string literal, and a bracketed cell
+    # VALUE are all clean — no false positives on a self-contained workbook.
+    p = _make_workbook(
+        tmp_path / "c.xlsx",
+        {"S": [["=SUM(A1:A2)", '=COUNTIF(A:A,"[1]x")', "literal [1] text"]]},
+    )
+    assert _find_external_workbook_refs(p) == []
+
+
+def test_find_external_workbook_refs_fails_closed_on_unreadable_file(tmp_path: Path):
+    from workbook_aggregator import _find_external_workbook_refs
+
+    bad = tmp_path / "bad.xlsx"
+    bad.write_text("not a zip")
+    refs = _find_external_workbook_refs(bad)
+    assert refs and "scan failed" in refs[0]  # a finding, not a green light
 
 
 # --- cross-tab relink --------------------------------------------------------
@@ -302,13 +446,13 @@ def test_relink_wires_cross_tab_formulas(tmp_path: Path, monkeypatch):
     )
     own = _make_anchored_ownership(tmp_path / "own.xlsx")
 
-    out = combine_workbooks(
+    result = combine_workbooks(
         sources={"captable": cap, "ltm-metrics": ltm, "ownership": own},
         output_dir=tmp_path,
         deliverable_type="pitch",
         deal_name="Atlas",
     )
-    wb = load_workbook(out)
+    wb = load_workbook(result.output_path)
     assert wb["captable"]["D47"].value == "='ltm-metrics'!B10*F7"
     assert wb["captable"]["D48"].value == "='ltm-metrics'!B15*F7"
     assert wb["ownership"]["F35"].value == "='captable'!F17*1000000"
@@ -320,13 +464,13 @@ def test_relink_is_noop_without_ltm_bridge_labels(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
     cap = _make_anchored_captable(tmp_path / "cap.xlsx")
     ltm = _make_workbook(tmp_path / "ltm.xlsx", {"LTM Metrics": [["Total", 100]]})
-    out = combine_workbooks(
+    result = combine_workbooks(
         sources={"captable": cap, "ltm-metrics": ltm},
         output_dir=tmp_path,
         deliverable_type="pitch",
         deal_name="Atlas",
     )
-    wb = load_workbook(out)
+    wb = load_workbook(result.output_path)
     assert wb["captable"]["D47"].value is None
     assert wb["captable"]["D48"].value is None
 
@@ -355,13 +499,13 @@ def test_financial_summary_ltm_link_resolves_after_merge(tmp_path: Path, monkeyp
     )
     ltm = _make_workbook(tmp_path / "ltm.xlsx", {"LTM Metrics": [["(=) LTM Revenue", 4520.0]]})
 
-    out = combine_workbooks(
+    result = combine_workbooks(
         sources={"financial-summary": fs, "ltm-metrics": ltm},
         output_dir=tmp_path,
         deliverable_type="pitch",
         deal_name="Atlas",
     )
-    wb = load_workbook(out)
+    wb = load_workbook(result.output_path)
     assert "financial-summary" in wb.sheetnames
     assert "ltm-metrics" in wb.sheetnames  # the link's target tab is present post-merge
     assert wb["financial-summary"]["G6"].value == (
@@ -430,13 +574,13 @@ def test_combined_workbook_carries_infor_theme(tmp_path: Path, monkeypatch):
     # default Office theme; the aggregator must inject the INFOR theme instead.
     monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
     a = _make_workbook(tmp_path / "cap.xlsx", {"Cap with Links": [["a"]]})
-    out = combine_workbooks(
+    result = combine_workbooks(
         sources={"captable": a},
         output_dir=tmp_path,
         deliverable_type="pitch",
         deal_name="Atlas",
     )
-    with zipfile.ZipFile(out) as z:
+    with zipfile.ZipFile(result.output_path) as z:
         theme_xml = z.read("xl/theme/theme1.xml").decode("utf-8", "replace")
     accent1 = re.search(r"<a:accent1>\s*<a:srgbClr val=\"([0-9A-Fa-f]{6})\"", theme_xml)
     assert accent1 is not None and accent1.group(1).upper() == _INFOR_ACCENT1
@@ -447,14 +591,14 @@ def test_theme_override_can_be_disabled(tmp_path: Path, monkeypatch):
     # (no INFOR injection) — proving the stamp is driven by theme_path.
     monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
     a = _make_workbook(tmp_path / "cap.xlsx", {"Cap with Links": [["a"]]})
-    out = combine_workbooks(
+    result = combine_workbooks(
         sources={"captable": a},
         output_dir=tmp_path,
         deliverable_type="pitch",
         deal_name="Atlas",
         theme_path=tmp_path / "does-not-exist.thmx",
     )
-    with zipfile.ZipFile(out) as z:
+    with zipfile.ZipFile(result.output_path) as z:
         theme_xml = z.read("xl/theme/theme1.xml").decode("utf-8", "replace")
     accent1 = re.search(r"<a:accent1>\s*<a:srgbClr val=\"([0-9A-Fa-f]{6})\"", theme_xml)
     assert accent1 is not None and accent1.group(1).upper() != _INFOR_ACCENT1
@@ -474,13 +618,13 @@ def test_combine_invokes_recalc_on_openpyxl_path(tmp_path: Path, monkeypatch):
         lambda p: seen.append(Path(p)) or True,
     )
     a = _make_workbook(tmp_path / "cap.xlsx", {"Cap": [[1]]})
-    out = combine_workbooks(
+    result = combine_workbooks(
         sources={"captable": a},
         output_dir=tmp_path,
         deliverable_type="pitch",
         deal_name="Atlas",
     )
-    assert seen == [out]
+    assert seen == [result.output_path]
 
 
 def test_recalc_returns_false_when_libreoffice_absent(tmp_path: Path, monkeypatch):
@@ -523,6 +667,42 @@ def test_recalc_returns_false_when_conversion_yields_nothing(tmp_path: Path, mon
     monkeypatch.setattr("excel_to_powerpoint._soffice_convert", lambda *a, **k: None)
     assert _recalc_with_libreoffice(wb_path) is False
     assert load_workbook(wb_path)["S"]["B1"].value == "=1+1"
+
+
+@pytest.mark.parametrize(
+    "strip_exc",
+    [
+        zipfile.BadZipFile("File is not a zip file"),
+        OSError("disk full"),
+        UnicodeDecodeError("utf-8", b"\x9c", 0, 1, "invalid start byte"),
+    ],
+    ids=["BadZipFile", "OSError", "UnicodeDecodeError"],
+)
+def test_recalc_never_raises_when_strip_step_fails(tmp_path: Path, monkeypatch, capsys, strip_exc):
+    # The documented "never raises" contract: a failure inside the post-recalc
+    # union-operator fix (BadZipFile / OSError / UnicodeDecodeError all escape a
+    # RuntimeError-only catch) must degrade to the leave-formulas-un-evaluated
+    # path — returning False AND rolling back the LibreOffice re-save, which may
+    # still carry the '~' unions Excel would repair-strip on open.
+    wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["Total", "=1+1"]]})
+    original = wb_path.read_bytes()
+    monkeypatch.setattr(workbook_aggregator.shutil, "which", lambda name: "/usr/bin/soffice")
+
+    def fake_convert(soffice, src, out_fmt, out_dir):
+        wb = load_workbook(src)
+        wb["S"]["C1"] = "RECALCED"
+        wb.save(Path(out_dir) / f"{Path(src).stem}.xlsx")
+
+    monkeypatch.setattr("excel_to_powerpoint._soffice_convert", fake_convert)
+
+    def strip_boom(path):
+        raise strip_exc
+
+    monkeypatch.setattr(workbook_aggregator, "_strip_lo_union_operators", strip_boom)
+
+    assert _recalc_with_libreoffice(wb_path) is False  # degraded, not raised
+    assert wb_path.read_bytes() == original  # the pre-recalc merged file stands
+    assert "LibreOffice recalc failed" in capsys.readouterr().err
 
 
 # --- LibreOffice '~' union-operator fix ---------------------------------------
