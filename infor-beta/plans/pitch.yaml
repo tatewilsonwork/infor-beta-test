@@ -238,12 +238,9 @@ stages:
       - name: deck_path
         type: Path
         description: Absolute path to the generated .pptx deck (16-slide base, adjusted by the deck-spec slide mix).
-    # Pre-delivery gate: the assembled deck is built from untrusted external
-    # inputs (filings, exports, web data), so the analyst must approve it before
-    # the final artefacts are produced. `deck` sits alone in its wave ahead of
-    # `workbook-aggregation` and `financial-charts`, so this wave-boundary gate
-    # genuinely holds both final artefacts (combined workbook + charted deck).
-    checkpoint: required
+    # Draft-content review only. Charts and workbook aggregation still mutate
+    # the deliverables after this point; delivery approval occurs at `final-qa`.
+    checkpoint: informational
 
   # Final consolidation: merge every companion workbook into one file named
   # pitch-<codename>.xlsx (one tab per producing skill) and delete the
@@ -290,3 +287,16 @@ stages:
         type: Path
         description: The final pitch deck, with the Financial Summary charts inserted (same file, modified in place).
     checkpoint: informational
+
+  # True delivery gate: inspects the exact post-chart deck and post-aggregation
+  # workbook after every mutating stage has finished. Nothing follows this stage.
+  - id: final-qa
+    skill: final-artifact-qa
+    inputs:
+      deck_path: $stages.financial-charts.deck_path
+      combined_workbook_path: $stages.workbook-aggregation.combined_workbook_path
+    outputs:
+      - name: ready_for_delivery
+        type: bool
+        description: True only when the exact final deck and workbook pass every blocking check.
+    checkpoint: required

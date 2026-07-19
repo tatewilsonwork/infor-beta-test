@@ -98,6 +98,7 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "captable",
         "deck",
         "workbook-aggregation",
+        "final-qa",
     ]
     assert [stage.skill for stage in plan.stages] == [
         "earningsupdate-wireframe",
@@ -106,6 +107,7 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "captable",
         "deck-assembler",
         "workbook-aggregator",
+        "final-artifact-qa",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     captable_stage = next(s for s in plan.stages if s.id == "captable")
@@ -115,10 +117,14 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
     assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
     assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
-    # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before workbook aggregation produces the final artefact.
-    assert deck_stage.checkpoint == "required"
-    assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
+    final_qa_stage = next(s for s in plan.stages if s.id == "final-qa")
+    # The assembled deck review is draft-only. Delivery approval belongs to the
+    # exact deck + workbook after aggregation has finished.
+    assert deck_stage.checkpoint == "informational"
+    assert final_qa_stage.checkpoint == "required"
+    assert all(
+        s.checkpoint == "informational" for s in plan.stages if s.id != "final-qa"
+    )
 
 
 def test_overview_stub_plan_is_valid():

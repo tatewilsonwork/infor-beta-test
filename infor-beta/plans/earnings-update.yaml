@@ -98,12 +98,9 @@ stages:
       - name: deck_path
         type: Path
         description: Absolute path to the generated earnings update .pptx deck with the cap table inserted.
-    # Pre-delivery gate: the assembled deck is built from untrusted external
-    # inputs (filings, EEO snip, web data), so the analyst must approve it
-    # before the final combined workbook is produced. `deck` sits alone in its
-    # wave ahead of `workbook-aggregation`, so this wave-boundary gate
-    # genuinely holds the final artefact.
-    checkpoint: required
+    # Draft-content review only. The combined workbook is still created after
+    # this point; delivery approval occurs at `final-qa` on the exact files.
+    checkpoint: informational
 
   # Final consolidation: merge every companion workbook into one file named
   # earningsupdate-<codename>.xlsx (one tab per producing skill) and delete the
@@ -123,3 +120,16 @@ stages:
         type: Path
         description: Absolute path to the combined workbook (one tab per producing skill); replaces the individual workbooks once the merge is verified (a degraded or partially-linked merge preserves them).
     checkpoint: informational
+
+  # True delivery gate: inspects the exact deck and post-aggregation workbook
+  # after every mutating stage has finished. Nothing follows this stage.
+  - id: final-qa
+    skill: final-artifact-qa
+    inputs:
+      deck_path: $stages.deck.deck_path
+      combined_workbook_path: $stages.workbook-aggregation.combined_workbook_path
+    outputs:
+      - name: ready_for_delivery
+        type: bool
+        description: True only when the exact final deck and workbook pass every blocking check.
+    checkpoint: required

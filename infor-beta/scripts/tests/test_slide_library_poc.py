@@ -279,16 +279,18 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
         "captable",
         "deck",
         "workbook-aggregation",
+        "final-qa",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
     assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
-    # Aggregation runs last so the deck stage can still read the standalone cap table.
-    assert plan.stages[-1].id == "workbook-aggregation"
-    # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before workbook aggregation produces the final artefact.
-    assert deck_stage.checkpoint == "required"
-    assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
+    # Aggregation runs after deck insertion; final QA alone approves delivery.
+    assert plan.stages[-1].id == "final-qa"
+    assert deck_stage.checkpoint == "informational"
+    assert next(s for s in plan.stages if s.id == "final-qa").checkpoint == "required"
+    assert all(
+        s.checkpoint == "informational" for s in plan.stages if s.id != "final-qa"
+    )
 
 
 def test_pitch_library_poc_plan_stage_order():
@@ -307,6 +309,7 @@ def test_pitch_library_poc_plan_stage_order():
         "deck",
         "workbook-aggregation",
         "financial-charts",
+        "final-qa",
     ]
     assert plan.stages[0].skill == "pitch-wireframe"
     assert plan.stages[1].skill == "pitch-content"
@@ -319,14 +322,16 @@ def test_pitch_library_poc_plan_stage_order():
     assert plan.stages[8].skill == "deck-assembler"
     assert plan.stages[9].skill == "workbook-aggregator"
     assert plan.stages[10].skill == "financial-charts"
-    # financial-charts runs last: it charts the combined workbook and edits the deck.
+    assert plan.stages[11].skill == "final-artifact-qa"
+    # financial-charts performs the final mutation; final-qa then approves the files.
     fc_stage = next(s for s in plan.stages if s.id == "financial-charts")
     assert fc_stage.inputs["combined_workbook_path"] == "$stages.workbook-aggregation.combined_workbook_path"
     assert fc_stage.inputs["deck_path"] == "$stages.deck.deck_path"
-    # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before aggregation + charts produce the final artefacts.
-    assert next(s for s in plan.stages if s.id == "deck").checkpoint == "required"
-    assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
+    assert next(s for s in plan.stages if s.id == "deck").checkpoint == "informational"
+    assert next(s for s in plan.stages if s.id == "final-qa").checkpoint == "required"
+    assert all(
+        s.checkpoint == "informational" for s in plan.stages if s.id != "final-qa"
+    )
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"

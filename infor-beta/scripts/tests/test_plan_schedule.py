@@ -28,14 +28,13 @@ def _stage(id, skill=None, inputs=None):
 
 
 def test_pitch_plan_waves():
-    """The pitch plan schedules 11 stages into 7 dependency waves.
+    """The pitch plan schedules 12 stages into 8 dependency waves.
 
     Wave 0 overlaps the research-heavy roots (financial-summary / comps /
     precedents / wireframe). financial-summary precedes ltm-metrics because it
     selects the deck's metrics and tells ltm-metrics which extra ones to bridge.
-    `workbook-aggregation` is alone in its wave (it consolidates + deletes the
-    source workbooks), then `financial-charts` runs strictly last: it charts the
-    combined workbook (where the LTM links resolve) and edits the assembled deck.
+    `workbook-aggregation` is alone in its wave, `financial-charts` performs the
+    final mutation, then `final-qa` inspects those exact final artefacts.
     """
     waves = compute_waves(_load_plan("pitch.yaml"))
     assert waves == [
@@ -46,7 +45,17 @@ def test_pitch_plan_waves():
         ["deck"],
         ["workbook-aggregation"],
         ["financial-charts"],
+        ["final-qa"],
     ]
+
+
+def test_pitch_final_qa_is_last_scheduled_wave_and_required():
+    plan = _load_plan("pitch.yaml")
+    waves = compute_waves(plan)
+    checkpoints = {stage.id: stage.checkpoint for stage in plan.stages}
+
+    assert waves[-1] == ["final-qa"]
+    assert checkpoints["final-qa"] == "required"
 
 
 def test_earnings_update_plan_waves():
@@ -56,7 +65,19 @@ def test_earnings_update_plan_waves():
         ["content", "captable"],
         ["deck"],
         ["workbook-aggregation"],
+        ["final-qa"],
     ]
+
+
+def test_earnings_final_qa_follows_aggregation_and_is_required():
+    plan = _load_plan("earnings-update.yaml")
+    waves = compute_waves(plan)
+    checkpoints = {stage.id: stage.checkpoint for stage in plan.stages}
+    wave_index = {stage_id: index for index, wave in enumerate(waves) for stage_id in wave}
+
+    assert waves[-1] == ["final-qa"]
+    assert wave_index["final-qa"] > wave_index["workbook-aggregation"]
+    assert checkpoints["final-qa"] == "required"
 
 
 def test_financial_charts_depends_on_deck_and_aggregation():
@@ -68,21 +89,22 @@ def test_financial_charts_depends_on_deck_and_aggregation():
     assert {"deck", "workbook-aggregation"} <= deps["financial-charts"]
 
 
-def test_required_deck_gate_precedes_final_artefact_waves():
-    """Both shipped plans mark `deck` as the `required` pre-delivery checkpoint
-    (v0.5.31). Checkpoints are evaluated at the wave boundary and only stop
-    DOWNSTREAM waves, so the gate is only real if `deck` is scheduled in an
-    earlier wave than the final-artefact stages — lock that here so a plan edit
-    can't silently move aggregation or charts alongside (or ahead of) the gate."""
+def test_required_final_gate_follows_all_artefact_mutations():
+    """Draft deck review is informational; final QA alone approves delivery."""
     for name in ("pitch.yaml", "earnings-update.yaml"):
         plan = _load_plan(name)
         checkpoints = {s.id: s.checkpoint for s in plan.stages}
-        assert checkpoints["deck"] == "required", name
-        assert all(m == "informational" for sid, m in checkpoints.items() if sid != "deck"), name
+        assert checkpoints["deck"] == "informational", name
+        assert checkpoints["final-qa"] == "required", name
+        assert all(
+            mode == "informational"
+            for stage_id, mode in checkpoints.items()
+            if stage_id != "final-qa"
+        ), name
         wave_index = {sid: i for i, wave in enumerate(compute_waves(plan)) for sid in wave}
-        assert wave_index["deck"] < wave_index["workbook-aggregation"], name
+        assert wave_index["workbook-aggregation"] < wave_index["final-qa"], name
         if "financial-charts" in wave_index:
-            assert wave_index["deck"] < wave_index["financial-charts"], name
+            assert wave_index["financial-charts"] < wave_index["final-qa"], name
 
 
 def test_every_stage_scheduled_exactly_once():
@@ -212,6 +234,23 @@ def test_post_aggregation_consumer_does_not_cycle():
     assert waves[-1] == ["charts"]
     wave_index = {sid: i for i, wave in enumerate(waves) for sid in wave}
     assert wave_index["charts"] > wave_index["agg"]
+
+
+def test_stage_cannot_run_after_required_final_approval():
+    approval = _stage("approval", inputs={"x": "$stages.build.out"})
+    approval.checkpoint = "required"
+    plan = Plan(
+        deliverable_type="pitch",
+        description="x",
+        stages=[
+            _stage("build"),
+            approval,
+            _stage("mutate", inputs={"approved": "$stages.approval.out"}),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="after required approval"):
+        compute_waves(plan)
 
 
 # --- cycle detection --------------------------------------------------------

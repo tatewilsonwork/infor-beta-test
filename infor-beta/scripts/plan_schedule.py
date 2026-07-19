@@ -143,4 +143,13 @@ def compute_waves(plan: Plan) -> list[list[str]]:
         waves.append(ready)
         done.update(ready)
 
+    required_ids = {stage.id for stage in plan.stages if stage.checkpoint == "required"}
+    terminal_ids = set(waves[-1]) if waves else set()
+    non_terminal = required_ids - terminal_ids
+    if non_terminal:
+        raise ValueError(
+            "a stage cannot run after required approval; required checkpoint(s) "
+            f"must be terminal: {sorted(non_terminal)!r}"
+        )
+
     return waves
