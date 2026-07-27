@@ -46,45 +46,6 @@ COLOR_DOWN = "C00000"  # red   — negative delta / miss
 INFOR_ACCENTS = ["0E213F", "46566E", "ADB9CA", "A4844B", "767171", "E5E3E3"]
 
 
-# ─── Palatino text measurement ───────────────────────────────────────────────
-# Per-character advance widths for Palatino Linotype (regular), in inches per
-# point of font size, measured from the font file (PIL `getlength`, kerning
-# excluded — so string sums err ~2-5% wide, the safe direction for "does this
-# fit on one line" checks). Used to size table labels / estimate cell wrap
-# without needing the font installed at runtime (the Cowork/Linux runtime has
-# no Palatino).
-_PALATINO_CHAR_WIDTH_PER_PT = {
-    " ": 0.00347, "!": 0.00386, '"': 0.00515, "#": 0.00665, "$": 0.00694,
-    "%": 0.01167, "&": 0.01081, "'": 0.00289, "(": 0.00463, ")": 0.00463,
-    "*": 0.0054, "+": 0.00694, ",": 0.00347, "-": 0.00463, ".": 0.00347,
-    "/": 0.00444, "0": 0.00694, "1": 0.00694, "2": 0.00694, "3": 0.00694,
-    "4": 0.00694, "5": 0.00694, "6": 0.00694, "7": 0.00694, "8": 0.00694,
-    "9": 0.00694, ":": 0.00347, ";": 0.00347, "<": 0.00694, "=": 0.00694,
-    ">": 0.00694, "?": 0.00617, "@": 0.00949, "A": 0.01081, "B": 0.00849,
-    "C": 0.00985, "D": 0.01075, "E": 0.00849, "F": 0.00772, "G": 0.0106,
-    "H": 0.01156, "I": 0.00468, "J": 0.00463, "K": 0.01008, "L": 0.00849,
-    "M": 0.01314, "N": 0.01154, "O": 0.01092, "P": 0.00839, "Q": 0.01092,
-    "R": 0.00928, "S": 0.00729, "T": 0.00851, "U": 0.01081, "V": 0.01003,
-    "W": 0.01389, "X": 0.00926, "Y": 0.00926, "Z": 0.00926, "[": 0.00463,
-    "\\": 0.00842, "]": 0.00463, "^": 0.00694, "_": 0.00694, "`": 0.00463,
-    "a": 0.00694, "b": 0.00768, "c": 0.00617, "d": 0.00849, "e": 0.00665,
-    "f": 0.00463, "g": 0.00772, "h": 0.00808, "i": 0.00404, "j": 0.00325,
-    "k": 0.00772, "l": 0.00404, "m": 0.01226, "n": 0.00808, "o": 0.00758,
-    "p": 0.00835, "q": 0.00778, "r": 0.00549, "s": 0.00589, "t": 0.00453,
-    "u": 0.00838, "v": 0.00785, "w": 0.01158, "x": 0.00717, "y": 0.00772,
-    "z": 0.00694, "{": 0.00463, "|": 0.00694, "}": 0.00463, "~": 0.00694,
-}
-_PALATINO_DEFAULT_CHAR_WIDTH_PER_PT = 0.00712  # lowercase average — non-ASCII fallback
-
-
-def palatino_text_width_in(text, font_pt):
-    """Estimated single-line width (inches) of Palatino text at `font_pt`."""
-    return font_pt * sum(
-        _PALATINO_CHAR_WIDTH_PER_PT.get(ch, _PALATINO_DEFAULT_CHAR_WIDTH_PER_PT)
-        for ch in text
-    )
-
-
 # ─── Shape lookup ────────────────────────────────────────────────────────────
 
 def find_shape(slide, name):

@@ -39,7 +39,6 @@ from pptx_helpers import (
     find_table_shape,
     fit_overview_textbox,
     iter_all_shapes,
-    palatino_text_width_in,
     set_cell_text,
     set_table_height,
     set_text,
@@ -188,15 +187,14 @@ def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
                 set_text(shape, [content.investment_highlights_tagline])
 
 
-# Market-entry cell sizing: the label column is white at 11 pt (stepping down
-# per-label when a long label would wrap — see _me_label_size_pt); the target
-# value columns are 9 pt. The value cells carry the long Overview / Strategic
-# Rationale copy, and PowerPoint grows a table row to fit its text (a stored row
-# height is only a MINIMUM). At 10 pt the real per-target copy wrapped tall
-# enough that PowerPoint re-expanded the whole table to ~6.3" on open — past the
-# 5.71" clamp `set_table_height` writes. 9 pt keeps that copy inside the
-# clamped rows so the rendered table stays at 5.71"; pair it with concise
-# Overview / Strategic Rationale cells (see pitch-content) for headroom.
+# Market-entry cell sizing: the label column is white at `_ME_LABEL_SIZE`, the
+# target value columns 9 pt. The value cells carry the long Overview / Strategic
+# Rationale copy, and the layout engine grows a table row to fit its text (a stored
+# row height is only a MINIMUM). At the library's 10 pt the real per-target copy
+# wrapped tall enough to re-expand the whole table to ~6.3" on open — past the
+# 5.71" clamp `set_table_height` writes. 9 pt keeps that copy inside the clamped
+# rows; pair it with concise Overview / Strategic Rationale cells (see
+# pitch-content) for headroom.
 _ME_VALUE_SIZE = 9
 _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
 
@@ -207,21 +205,15 @@ _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
 # table's bottom above the slide edge (table top is 1.2" on a 7.5" slide).
 _ME_TABLE_HEIGHT = Inches(5.71)
 
-# Usable cell width = column width minus the library's 0.1" side insets.
-_ME_CELL_SIDE_INSETS_IN = 0.2
-# A label that would wrap in the label column steps down until it fits on one
-# line (a wrapped label is what re-grew the 0.28" rows to 5.91" total in the
-# live run — 'Geographic Footprint' is wider than the 1.457" usable column at
-# 11 pt). Pair with concise row labels from pitch-content (≤ ~18 chars).
-_ME_LABEL_SIZE_STEPS = (11, 10, 9)
-
-
-def _me_label_size_pt(label: str, usable_width_in: float) -> int:
-    """Largest step size at which `label` fits the label column on one line."""
-    for pt in _ME_LABEL_SIZE_STEPS:
-        if palatino_text_width_in(label, pt) <= usable_width_in:
-            return pt
-    return _ME_LABEL_SIZE_STEPS[-1]
+# Row-label size in the market-entry table's narrow (1.457" usable) label column.
+# A label too wide for the column wraps and re-grows its row, which is one of the
+# two mechanisms behind PRL17's 5.91"-rendered table. Until v0.5.39 the assembler
+# pre-empted that by measuring each label against a Palatino advance-width table
+# and stepping the over-wide ones down individually; the converge loop now measures
+# the rendered table and caps the label column when it actually overruns, which
+# also keeps the column uniform. Pair with concise labels from pitch-content
+# (≤ ~18 chars) so the cap is rarely needed.
+_ME_LABEL_SIZE = 11
 
 
 # Slide 10 Considerations/Mitigants table sizing. The library ships the header
@@ -359,17 +351,13 @@ def _fill_market_entry_targets(
     table_frame = find_table_shape(slide)
     table = table_frame.table
     n_cols = len(table.columns)  # label column + target columns (3 in the library)
-    usable = [
-        max(0.5, Emu(col.width).inches - _ME_CELL_SIDE_INSETS_IN) for col in table.columns
-    ]
     # Table row 0 is the blank logo/header row; data labels start at row 1. With
     # the fixed 12-row structure every data row is populated — no blank rows.
     for i, label in enumerate(row_labels):
         row = i + 1
         if row >= len(table.rows):
             break
-        label_pt = _me_label_size_pt(label, usable[0])
-        set_cell_text(table.cell(row, 0), label, size_pt=label_pt, color_hex=_ME_LABEL_COLOR)
+        set_cell_text(table.cell(row, 0), label, size_pt=_ME_LABEL_SIZE, color_hex=_ME_LABEL_COLOR)
         for col in range(1, n_cols):
             target = targets[col - 1] if (col - 1) < len(targets) else None
             value = target.cells[i] if target is not None else ""

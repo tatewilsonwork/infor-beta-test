@@ -106,8 +106,21 @@ TEXT_SCALES = (100.0, 95.0, 90.0, 85.0, 80.0, 75.0, 70.0)
 # estimator wrote. Not modelled in the probe, so it only ever buys headroom.
 _LINE_SPACE_REDUCTION = 8.0
 
-# Point-size reductions applied to a table's body cells. 3 pt takes the library's
-# 10 pt Considerations body to 7 pt and market-entry values from 9 pt to 6 pt.
+# Points taken off the LARGEST body size in a table. Each step caps every body run
+# at `max_size - k`, so the shrink lands where there is most to give and a column
+# that is already small is left alone until the larger ones have caught up.
+#
+# That matters on the market-entry table, whose label column is 11 pt against 9 pt
+# values: step 1 caps at 10 pt, taking the labels down and leaving the values at
+# the 9 pt they were deliberately set to. Subtracting a point from every run
+# instead would drop the values to 8 pt for a defect the labels caused — which is
+# what the retired `_me_label_size_pt` avoided by measuring label widths against a
+# Palatino advance-width table. Capping gets the same targeted outcome with no
+# character metrics, and as a bonus keeps the column uniform rather than mixing
+# 11 pt and 10 pt labels in one column.
+#
+# On a uniform body (the Considerations table's 10 pt, the broker table's 9 pt) a
+# cap is identical to a subtraction.
 TABLE_SIZE_DROPS = (0, 1, 2, 3)
 _MIN_TABLE_PT = 6.0
 
@@ -247,18 +260,20 @@ def _body_runs(table):
 
 
 def _shrink_table_body(shape, drop_pt: float, clamp_height: int | None) -> None:
-    """Reduce the body cells by `drop_pt` points and re-clamp the declared rows.
+    """Cap the body cells at (largest size - `drop_pt`) and re-clamp the declared rows.
 
-    Runs with no explicit size are left alone — nothing in this shape's XML says
-    what they render at. Every INFOR table is written through `set_cell_text`,
-    which always sets one, so that case does not arise in practice.
+    A cap rather than a subtraction, so a mixed-size body shrinks its largest
+    column first — see `TABLE_SIZE_DROPS`. Runs with no explicit size are left
+    alone: nothing in this shape's XML says what they render at. Every INFOR table
+    is written through `set_cell_text`, which always sets one.
     """
     table = shape.table
-    if drop_pt:
+    sizes = [run.font.size.pt for run in _body_runs(table) if run.font.size is not None]
+    if drop_pt and sizes:
+        cap = max(_MIN_TABLE_PT, max(sizes) - drop_pt)
         for run in _body_runs(table):
-            if run.font.size is None:
-                continue
-            run.font.size = Pt(max(_MIN_TABLE_PT, run.font.size.pt - drop_pt))
+            if run.font.size is not None and run.font.size.pt > cap:
+                run.font.size = Pt(cap)
     target = clamp_height if clamp_height is not None else shape.height
     set_table_height(shape, target)
 

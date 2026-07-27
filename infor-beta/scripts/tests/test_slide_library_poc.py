@@ -574,37 +574,60 @@ def test_market_entry_table_formatting_no_blank_rows(tmp_path: Path):
     assert table.cell(2, 0).text_frame.paragraphs[0].runs[0].font.size == Pt(11)  # 'Headquarters'
 
 
-def test_market_entry_long_label_steps_down_instead_of_wrapping(tmp_path: Path):
-    """'Geographic Footprint' is wider than the 1.457" label column at 11 pt; a
-    wrapped label re-grows its 0.28" row at render time and pushed the whole
-    table to 5.91" in the live run. The assembler steps such a label down one
-    size so every declared row height stays achievable and the rendered table
-    lands on the 5.71" clamp."""
-    from pptx_helpers import palatino_text_width_in
+def test_market_entry_labels_are_written_at_one_uniform_size(tmp_path: Path):
+    """The fill writes every row label at 11 pt and clamps; it measures nothing.
 
+    Until v0.5.39 it sized each label against a per-character Palatino
+    advance-width table and stepped the over-wide ones (e.g. 'Geographic
+    Footprint', 1.50" at 11 pt in a 1.457" column) down individually, because a
+    wrapped label re-grows its row — one of the two mechanisms behind PRL17's
+    5.91" table. The converge loop now measures the rendered table and caps the
+    label column only when it actually overruns, which also keeps the column
+    uniform instead of mixing 11 pt and 10 pt labels.
+    """
     deck_path = _assemble(tmp_path, _sample_content())
     table_shape = next(
         s for s in Presentation(deck_path).slides[13].shapes if getattr(s, "has_table", False)
     )
     table = table_shape.table
-    labels = _sample_content().market_entry_row_labels
-    usable_in = Emu(table.columns[0].width).inches - 0.2  # minus 2 x 0.1" side insets
-    for i, label in enumerate(labels):
-        run = table.cell(i + 1, 0).text_frame.paragraphs[0].runs[0]
-        size_pt = run.font.size.pt
-        assert palatino_text_width_in(label, size_pt) <= usable_in, (
-            f"label {label!r} must fit its column on one line at the written size"
-        )
-        if palatino_text_width_in(label, 11) <= usable_in:
-            assert size_pt == 11, f"label {label!r} fits at 11 pt and must stay 11 pt"
-        else:
-            assert size_pt < 11, f"over-wide label {label!r} must step down"
-    # The declared rows sum to exactly the clamp. There is deliberately no
-    # per-row content-height floor any more: whether the RENDERED table stays
-    # inside the clamp is measured by the converge loop, not estimated here
-    # (test_market_entry_long_content_converges).
+
+    sizes = {
+        table.cell(i + 1, 0).text_frame.paragraphs[0].runs[0].font.size
+        for i in range(len(_sample_content().market_entry_row_labels))
+    }
+    assert sizes == {Pt(11)}, f"labels must go in at one uniform 11 pt, got {sizes}"
+    # The declared rows sum to exactly the clamp. There is deliberately no per-row
+    # content-height floor any more: whether the RENDERED table stays inside the
+    # clamp is measured by the converge loop (test_market_entry_long_content_converges).
     assert sum(Emu(r.height).inches for r in table.rows) == pytest.approx(5.71, abs=0.001)
     assert Emu(table_shape.height).inches == pytest.approx(5.71, abs=0.001)
+
+
+@pytest.mark.skipif(
+    find_soffice() is None, reason="the converge loop measures on a LibreOffice render"
+)
+def test_market_entry_repair_caps_the_label_column_before_the_value_columns(tmp_path: Path):
+    """A shrink lands where there is most to give: labels 11 -> 10, values stay 9.
+
+    This is the behaviour that made deleting the Palatino width table safe. The
+    repair caps every body run at (largest size - k) rather than subtracting k from
+    each, so a defect the 11 pt labels caused does not drag the 9 pt value copy —
+    deliberately set below the library's 10 pt for headroom — down with it.
+    """
+    deck_path = _assemble(tmp_path, _sample_content(), converge=True)
+    table = next(
+        s for s in Presentation(deck_path).slides[13].shapes if getattr(s, "has_table", False)
+    ).table
+
+    labels = {table.cell(i + 1, 0).text_frame.paragraphs[0].runs[0].font.size for i in range(12)}
+    values = {table.cell(i + 1, 1).text_frame.paragraphs[0].runs[0].font.size for i in range(12)}
+    assert len(labels) == 1 and len(values) == 1, "each column stays uniform"
+    label_pt, value_pt = labels.pop().pt, values.pop().pt
+    assert label_pt <= 11 and value_pt <= 9
+    assert value_pt == 9, (
+        f"the value columns must keep their 9 pt while the labels absorb the shrink, "
+        f"got labels {label_pt} / values {value_pt}"
+    )
 
 
 def test_market_entry_odd_count_blanks_unused_column_and_logo(tmp_path: Path):

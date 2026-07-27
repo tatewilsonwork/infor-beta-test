@@ -136,11 +136,13 @@ never double-count the same defect.
 
 Relationship to the estimation code
 -----------------------------------
-This module measures; it does not estimate. It deliberately shares nothing with
-`pptx_helpers.palatino_text_width_in`, `estimate_text_height_in`, or the
-assemblers' row-minimum ladders — that hand-calibrated Python text-layout engine
-is what Phase B step 3 replaces with measure-then-adjust, and a contract built on
-the same estimates could not catch the estimates being wrong.
+This module measures; it does not estimate. That was a deliberate separation while
+the estimation code still existed — a contract built on the same character-width
+table and em constants could not have caught those constants being wrong — and as
+of v0.5.39 the estimation code is gone: `palatino_text_width_in`,
+`estimate_text_height_in`, `fit_text_scale`, `set_table_height`'s row minimums and
+the assemblers' font ladders were all replaced by `deck_repair`, which decides
+sizes from this module's measurements.
 
 Usage
 -----
