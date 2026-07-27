@@ -1,6 +1,5 @@
 """Unit tests for the POC earnings-update deck assembler (slide-library based)."""
 
-import shutil
 from pathlib import Path
 
 import pytest
@@ -9,6 +8,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
 from earnings_update_assembler import _currency_letter, assemble_earnings_update_deck
+from excel_to_powerpoint import find_soffice
 from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
 from pptx_helpers import find_shape, find_shape_in_group
 from schemas import Company, EarningsUpdateContent
@@ -320,7 +320,7 @@ def test_assemble_earnings_update_deck_inserts_cap_table_via_libreoffice(tmp_pat
 
     if sys.platform == "win32":
         pytest.skip("Windows uses the Excel COM path; LibreOffice fallback exercised on other OSes")
-    if shutil.which("soffice") is None and shutil.which("libreoffice") is None:
+    if find_soffice() is None:
         pytest.skip("LibreOffice not installed; cannot exercise the fallback renderer")
     pytest.importorskip("pypdfium2", reason="pypdfium2 required for the LibreOffice fallback")
 

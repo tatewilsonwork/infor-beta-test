@@ -58,7 +58,6 @@ from __future__ import annotations
 
 import io
 import os
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -1332,14 +1331,17 @@ def _libreoffice_recalc_values(
     each metric row's resolved values (so the LTM cell is no longer a formula)."""
     from openpyxl import load_workbook
 
-    from excel_to_powerpoint import _soffice_convert  # reuse the recalc-on-load helper
+    # Shared locator + recalc-on-load helper (never a bare shutil.which — see
+    # find_soffice: the Windows MSI puts nothing on PATH).
+    from excel_to_powerpoint import _soffice_convert, find_soffice
 
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = find_soffice()
     if soffice is None:
         raise RuntimeError(
-            "LibreOffice (soffice/libreoffice) not found on PATH; required for the "
-            "non-Windows Financial Summary chart renderer. Install LibreOffice or "
-            "run the conductor on a Windows machine with Excel."
+            "LibreOffice (soffice/libreoffice) not found on PATH or in the standard "
+            "install locations; required for the non-Windows Financial Summary chart "
+            "renderer. Install LibreOffice or run the conductor on a Windows machine "
+            "with Excel."
         )
     with tempfile.TemporaryDirectory() as tmp_dir:
         _soffice_convert(soffice, workbook, "xlsx:Calc MS Excel 2007 XML", Path(tmp_dir))
@@ -1370,11 +1372,11 @@ def _render_single_chart_png(labels: list, values: list) -> bytes:
     """
     from openpyxl import Workbook
 
-    from excel_to_powerpoint import _soffice_convert, _trim_white_margins
+    from excel_to_powerpoint import _soffice_convert, _trim_white_margins, find_soffice
 
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = find_soffice()
     if soffice is None:
-        raise RuntimeError("LibreOffice (soffice/libreoffice) not found on PATH")
+        raise RuntimeError("LibreOffice (soffice/libreoffice) not found")
     try:
         import pypdfium2 as pdfium
     except ImportError as exc:
@@ -1718,11 +1720,11 @@ def _render_single_pie_png(labels: list, values: list) -> bytes:
     """
     from openpyxl import Workbook
 
-    from excel_to_powerpoint import _soffice_convert, _trim_white_margins
+    from excel_to_powerpoint import _soffice_convert, _trim_white_margins, find_soffice
 
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = find_soffice()
     if soffice is None:
-        raise RuntimeError("LibreOffice (soffice/libreoffice) not found on PATH")
+        raise RuntimeError("LibreOffice (soffice/libreoffice) not found")
     try:
         import pypdfium2 as pdfium
     except ImportError as exc:

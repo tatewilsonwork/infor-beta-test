@@ -398,12 +398,16 @@ def _recalc_with_libreoffice(workbook_path: Path) -> bool:
     restored — the re-save may carry the `~` union operators the strip step could
     not fix, and Excel would repair-strip those formulas on open.
     """
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    # Shared locator, not a bare shutil.which: the Windows MSI never puts soffice
+    # on PATH, which would silently skip the recalc on a dev box that has it.
+    from excel_to_powerpoint import find_soffice
+
+    soffice = find_soffice()
     if soffice is None:
         print(
             "[workbook-aggregator] LibreOffice (soffice/libreoffice) not found on "
-            "PATH; the combined workbook keeps its un-evaluated cross-tab formulas "
-            "(Excel will recalc them on open).",
+            "PATH or in the standard install locations; the combined workbook keeps "
+            "its un-evaluated cross-tab formulas (Excel will recalc them on open).",
             file=sys.stderr,
         )
         return False
