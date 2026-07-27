@@ -928,118 +928,135 @@ def _combine_via_com(
     Returns True when the cross-tab relink pass succeeded, False when it failed
     (the merged file is still saved) — the caller gates source deletion on it.
     """
+    from excel_to_powerpoint import excel_com_app  # the ONLY Excel-COM instance owner
+
     try:
-        import pythoncom
-        import win32com.client
-    except ImportError as exc:
-        raise RuntimeError(
-            "pywin32 is required for COM-based workbook aggregation "
-            "(Windows + Microsoft Excel only)"
-        ) from exc
-
-    pythoncom.CoInitialize()
-    excel = None
-    try:
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = False
-        excel.DisplayAlerts = False
-
-        used_names: set[str] = set()
-        skill_to_tab: dict[str, str] = {}
-
-        # The cap table (when present) is the base workbook so its formatting and
-        # CapIQ links survive; the remaining sources are copied into it.
-        base = next(((s, p) for s, p in sources if s == "captable"), None)
-        if base is not None:
-            rest = [entry for entry in sources if entry != base]
-            combined = _open_workbook(excel, base[1], read_only=False)
-            seed_sheets: list[str] = []
-            _rename_and_clean_base(combined, base[0], used_names, skill_to_tab)
-        else:
-            rest = list(sources)
-            combined = excel.Workbooks.Add()
-            # Sheets present in the blank workbook; deleted once real sheets land.
-            seed_sheets = [combined.Sheets(i + 1).Name for i in range(combined.Sheets.Count)]
-
-        # Copy each source's content sheets into `combined`. All of a source's
-        # sheets are copied in ONE operation so any intra-workbook cross-sheet
-        # references survive as internal references (copying sheet-by-sheet turns
-        # them into external links to the soon-deleted source -> #REF; this is the
-        # ownership `Ownership` -> `Bloomberg Output` case). The destination MUST
-        # be the active workbook or Excel copies into a NEW workbook instead of
-        # appending here, so re-activate `combined` first; and the destination is
-        # passed POSITIONALLY (Before=None, After=<last sheet>) because the named
-        # `After=` form is silently dropped by some Excel builds, which then copy
-        # into a stray new workbook (a no-op append). CapIQ `__snl*` helper sheets
-        # are skipped at the source so they never surface as a tab.
-        for skill, path in rest:
-            src = _open_workbook(excel, path, read_only=True)
+        # The merge never renders anything, so this instance stays invisible.
+        with excel_com_app(
+            purpose="COM-based workbook aggregation", visible=False
+        ) as excel:
+            combined = src = sheet = None
             try:
-                content = [
-                    src.Worksheets(i + 1).Name
-                    for i in range(src.Worksheets.Count)
-                    if not _is_capiq_helper_sheet(src.Worksheets(i + 1).Name)
-                ]
-                if not content:
-                    continue
-                before = combined.Sheets.Count
-                combined.Activate()
-                selector = content[0] if len(content) == 1 else content
-                src.Worksheets(selector).Copy(None, combined.Sheets(combined.Sheets.Count))
-                added = combined.Sheets.Count - before
-                if added < len(content):
-                    # Excel copied to a stray workbook instead of appending; bail
-                    # to the openpyxl fallback rather than ship a partial file.
-                    raise RuntimeError(
-                        f"Excel did not append {len(content)} sheet(s) from {skill!r}"
-                    )
-                # Name each freshly-appended sheet from its OWN identity (not by
-                # position), so source/destination sheet ordering can't misassign.
-                for i in range(added):
-                    sheet = combined.Sheets(before + i + 1)
-                    new_name = _unique_sheet_name(
-                        _tab_name(skill, sheet.Name, len(content)), used_names
-                    )
-                    if sheet.Name != new_name:
-                        sheet.Name = new_name
-                    skill_to_tab.setdefault(skill, sheet.Name)
+                used_names: set[str] = set()
+                skill_to_tab: dict[str, str] = {}
+
+                # The cap table (when present) is the base workbook so its formatting
+                # and CapIQ links survive; the remaining sources are copied into it.
+                base = next(((s, p) for s, p in sources if s == "captable"), None)
+                if base is not None:
+                    rest = [entry for entry in sources if entry != base]
+                    combined = _open_workbook(excel, base[1], read_only=False)
+                    seed_sheets: list[str] = []
+                    _rename_and_clean_base(combined, base[0], used_names, skill_to_tab)
+                else:
+                    rest = list(sources)
+                    combined = excel.Workbooks.Add()
+                    # Sheets present in the blank workbook; deleted once real sheets land.
+                    seed_sheets = [
+                        combined.Sheets(i + 1).Name for i in range(combined.Sheets.Count)
+                    ]
+
+                # Copy each source's content sheets into `combined`. All of a source's
+                # sheets are copied in ONE operation so any intra-workbook cross-sheet
+                # references survive as internal references (copying sheet-by-sheet turns
+                # them into external links to the soon-deleted source -> #REF; this is the
+                # ownership `Ownership` -> `Bloomberg Output` case). The destination MUST
+                # be the active workbook or Excel copies into a NEW workbook instead of
+                # appending here, so re-activate `combined` first; and the destination is
+                # passed POSITIONALLY (Before=None, After=<last sheet>) because the named
+                # `After=` form is silently dropped by some Excel builds, which then copy
+                # into a stray new workbook (a no-op append). CapIQ `__snl*` helper sheets
+                # are skipped at the source so they never surface as a tab.
+                for skill, path in rest:
+                    src = _open_workbook(excel, path, read_only=True)
+                    try:
+                        content = [
+                            src.Worksheets(i + 1).Name
+                            for i in range(src.Worksheets.Count)
+                            if not _is_capiq_helper_sheet(src.Worksheets(i + 1).Name)
+                        ]
+                        if not content:
+                            continue
+                        before = combined.Sheets.Count
+                        combined.Activate()
+                        selector = content[0] if len(content) == 1 else content
+                        src.Worksheets(selector).Copy(
+                            None, combined.Sheets(combined.Sheets.Count)
+                        )
+                        added = combined.Sheets.Count - before
+                        if added < len(content):
+                            # Excel copied to a stray workbook instead of appending; bail
+                            # to the openpyxl fallback rather than ship a partial file.
+                            raise RuntimeError(
+                                f"Excel did not append {len(content)} sheet(s) from {skill!r}"
+                            )
+                        # Name each freshly-appended sheet from its OWN identity (not by
+                        # position), so source/destination sheet ordering can't misassign.
+                        for i in range(added):
+                            sheet = combined.Sheets(before + i + 1)
+                            new_name = _unique_sheet_name(
+                                _tab_name(skill, sheet.Name, len(content)), used_names
+                            )
+                            if sheet.Name != new_name:
+                                sheet.Name = new_name
+                            skill_to_tab.setdefault(skill, sheet.Name)
+                        sheet = None
+                    finally:
+                        try:
+                            src.Close(SaveChanges=False)
+                        finally:
+                            src = None
+
+                # Drop the blank workbook's seed sheets now that real content exists.
+                for name in seed_sheets:
+                    if combined.Sheets.Count > 1:
+                        combined.Sheets(name).Delete()
+
+                # Wire the combined workbook's cross-tab links (best-effort).
+                relink_ok = _relink_cross_tab_com(combined, skill_to_tab)
+
+                # Stamp the INFOR brand theme so the combined workbook keeps INFOR
+                # colours/fonts even when the base is a blank workbook (no cap table).
+                # Best-effort: a theme failure must never lose the merged workbook.
+                if theme_path is not None:
+                    try:
+                        combined.ApplyTheme(str(theme_path))
+                    except Exception:
+                        pass
+
+                if output_path.exists():
+                    output_path.unlink()
+                combined.SaveAs(str(output_path), FileFormat=_XL_OPEN_XML_WORKBOOK)
+                combined.Close(SaveChanges=False)
+                combined = None
+                return relink_ok
             finally:
-                src.Close(SaveChanges=False)
-
-        # Drop the blank workbook's seed sheets now that real content exists.
-        for name in seed_sheets:
-            if combined.Sheets.Count > 1:
-                combined.Sheets(name).Delete()
-
-        # Wire the combined workbook's cross-tab links (best-effort).
-        relink_ok = _relink_cross_tab_com(combined, skill_to_tab)
-
-        # Stamp the INFOR brand theme so the combined workbook keeps INFOR
-        # colours/fonts even when the base is a blank workbook (no cap table).
-        # Best-effort: a theme failure must never lose the merged workbook.
-        if theme_path is not None:
-            try:
-                combined.ApplyTheme(str(theme_path))
-            except Exception:
-                pass
-
-        if output_path.exists():
-            output_path.unlink()
-        combined.SaveAs(str(output_path), FileFormat=_XL_OPEN_XML_WORKBOOK)
-        combined.Close(SaveChanges=False)
-        return relink_ok
+                # Release the COM children in reverse creation order before
+                # `excel_com_app` quits the instance. `combined` is already None on
+                # the success path (closed above), so this only fires on the error
+                # path — where the merge is being abandoned, hence SaveChanges=False.
+                sheet = None
+                if src is not None:
+                    try:
+                        src.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+                    src = None
+                if combined is not None:
+                    try:
+                        combined.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+                    combined = None
     except RuntimeError:
-        raise  # already normalized (e.g. _open_workbook, the partial-append bail)
+        raise  # already normalized (_open_workbook, the partial-append bail,
+        #        excel_com_app's startup / pywin32 guards)
     except Exception as exc:
-        # COM failures surface as pywintypes.com_error (no Excel install, a dead
-        # instance, a failed Copy/SaveAs), not RuntimeError — normalize so the
-        # caller's `except RuntimeError` fallback to the openpyxl merge actually
-        # engages, matching the documented "or Windows without Excel" behaviour.
+        # COM failures surface as pywintypes.com_error (a dead instance, a failed
+        # Copy/SaveAs), not RuntimeError — normalize so the caller's
+        # `except RuntimeError` fallback to the openpyxl merge actually engages,
+        # matching the documented "or Windows without Excel" behaviour.
         raise RuntimeError(f"Excel COM workbook aggregation failed: {exc}") from exc
-    finally:
-        if excel is not None:
-            excel.Quit()
-        pythoncom.CoUninitialize()
 
 
 def _combine_via_openpyxl(

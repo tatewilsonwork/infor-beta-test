@@ -1,6 +1,6 @@
 [project]
 name = "infor-beta"
-version = "0.5.37"
+version = "0.5.38"
 description = "INFOR Financial Group internal Claude Code plugin — clean-break rebuild of infor-workflows."
 requires-python = ">=3.11"
 dependencies = [
@@ -28,3 +28,8 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["infor-beta/scripts/tests"]
 pythonpath = ["infor-beta/scripts"]
+markers = [
+    # Spawns a real, visible Excel via COM. Skipped unless INFOR_EXCEL_COM_TESTS
+    # is set — see the gate in infor-beta/scripts/tests/conftest.py.
+    "excel_com: Excel-COM test; opt in with INFOR_EXCEL_COM_TESTS=1",
+]
