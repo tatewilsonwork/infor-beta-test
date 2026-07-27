@@ -7,6 +7,8 @@ from openpyxl import Workbook
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
+from pptx.util import Emu
+from deck_contract import verify_deck
 from earnings_update_assembler import _currency_letter, assemble_earnings_update_deck
 from excel_to_powerpoint import find_soffice
 from earnings_update_wireframe import build_earnings_update_slide_plan, write_slide_plan
@@ -99,6 +101,9 @@ def _assemble_sample_deck(tmp_path: Path, content: EarningsUpdateContent | None 
     content_path = tmp_path / "content.json"
     content_path.write_text(content.model_dump_json(indent=2), encoding="utf-8")
 
+    # Converge loop off by default — it renders (seconds per call). The tests that
+    # exist to exercise it pass converge=True explicitly.
+    kwargs.setdefault("converge", False)
     return assemble_earnings_update_deck(
         slide_plan_path=slide_plan_path,
         content_path=content_path,
@@ -279,6 +284,54 @@ def test_assemble_earnings_update_deck_enables_autofit_on_overflow_shapes(tmp_pa
         assert autofit is not None, (
             f"{shape.name} must have <a:normAutofit/> to shrink on overflow"
         )
+
+
+def test_business_updates_are_sized_to_the_band_above_the_broker_table(tmp_path: Path):
+    """The library ships TextBox 6 one line tall with 2.4" of empty band beneath it.
+
+    Until v0.5.39 the assembler wrote the bullets and relied on autofit alone —
+    which PowerPoint ignores without an explicit scale, so the copy rendered
+    full-size straight through the 'Broker Estimates vs Actuals' header. Identical
+    to the defect `fit_overview_textbox` was written for in v0.5.23, on a shape
+    nobody had rendered until the Phase B contract looked.
+    """
+    deck_path = _assemble_sample_deck(tmp_path)
+
+    slide = Presentation(deck_path).slides[2]
+    updates = find_shape(slide, "TextBox 6")
+    header = next(
+        s for s in slide.shapes
+        if getattr(s, "has_text_frame", False) and "Broker Estimates" in s.text_frame.text
+    )
+    band = Emu(header.top).inches - 0.12 - Emu(updates.top).inches
+    assert Emu(updates.height).inches == pytest.approx(band, abs=0.02), (
+        f"business-updates box is {Emu(updates.height).inches:.3f}\" tall but the band "
+        f"above the broker table is {band:.3f}\" — it was left at the library's one-line "
+        f"height and will render through the header"
+    )
+
+
+@pytest.mark.skipif(
+    find_soffice() is None, reason="the converge loop measures on a LibreOffice render"
+)
+def test_assembled_earnings_deck_converges_against_the_contract(tmp_path: Path):
+    """The production path: a freshly assembled deck satisfies the deck contract.
+
+    The frozen `earnings-update-deck.pptx` fixture does NOT — it is a v0.5.5-era
+    artefact whose Business Updates box was never sized and whose broker table
+    renders under the summary box. Both are caught by `verify_deck`; this asserts
+    the current assembler no longer produces either.
+    """
+    deck_path = _assemble_sample_deck(tmp_path, converge=True)
+
+    findings = verify_deck(deck_path, vision=False, out_dir=tmp_path / "qa")
+    geometric = [
+        f
+        for f in findings
+        if f.blocking
+        and f.kind in {"rendered-overflow", "masked-overflow", "table-taller-than-library"}
+    ]
+    assert geometric == [], "\n".join(str(f) for f in geometric)
 
 
 def test_assemble_earnings_update_deck_does_not_bold_overview_headers(tmp_path: Path):

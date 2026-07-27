@@ -28,6 +28,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu, Inches
 
+from deck_repair import assert_converged, converge_deck
 from excel_to_powerpoint import insert_excel_into_placeholder
 from naming import safe_filename
 from pptx_helpers import (
@@ -40,6 +41,7 @@ from pptx_helpers import (
     iter_all_shapes,
     palatino_text_width_in,
     set_cell_text,
+    set_table_height,
     set_text,
     write_bullets_or_plain,
 )
@@ -148,65 +150,6 @@ def _rounded_rectangles(slide):
     return [shape for shape in slide.shapes if shape.name == "Rounded Rectangle 19"]
 
 
-def _set_table_height(table_frame, total_height: int, min_heights: list[int] | None = None) -> None:
-    """Resize a table to an exact total height by scaling its row heights.
-
-    Mirrors setting a table's height in PowerPoint (drag the bottom handle / set
-    Height in the Size pane): the graphic-frame extent and every row height are
-    scaled to `total_height` proportionally, so the rows still sum to exactly the
-    target (rounding remainder folded into the last row). Call AFTER the cells are
-    filled — row heights are only meaningful once content is in place.
-
-    `min_heights` (EMU, one per row) are per-row *content* minimums: a stored row
-    height is only a MINIMUM, so PowerPoint re-grows any row whose text needs more
-    than we declared and the rendered table ends up taller than the clamp (the
-    live-run "5.91-inch table" report — one wrapped label re-grew its 0.28" row).
-    Rows whose proportional share would fall below their minimum are pinned at the
-    minimum and the shortfall is taken from the rows with headroom, so the
-    *rendered* total still lands on `total_height`. If even the minimums exceed
-    the target the minimums win (the table then overflows by the true content
-    excess — content must shrink, not the declared heights).
-    """
-    table = table_frame.table
-    rows = list(table.rows)
-    if not rows or sum(r.height for r in rows) <= 0:
-        return
-    target = int(total_height)
-    mins = [int(m) for m in min_heights] if min_heights is not None else [0] * len(rows)
-
-    # Waterfall: pin rows whose proportional share of the remaining budget would
-    # dip below their content minimum; re-share the rest until stable.
-    free = set(range(len(rows)))
-    budget = target
-    alloc: dict[int, float] = {}
-    while free:
-        base = sum(rows[i].height for i in free)
-        if base <= 0 or budget <= 0:
-            for i in free:
-                alloc[i] = mins[i]
-            break
-        alloc = {i: rows[i].height * budget / base for i in free} | {
-            i: float(mins[i]) for i in range(len(rows)) if i not in free
-        }
-        pinned = [i for i in free if alloc[i] < mins[i]]
-        if not pinned:
-            break
-        for i in pinned:
-            free.discard(i)
-            budget -= mins[i]
-
-    heights = [max(int(round(alloc[i])), mins[i]) for i in range(len(rows))]
-    # Fold the rounding remainder into the last unpinned row so rows sum exactly.
-    spill = target - sum(heights)
-    for i in reversed(range(len(rows))):
-        if heights[i] + spill >= mins[i]:
-            heights[i] += spill
-            break
-    for row, h in zip(rows, heights):
-        row.height = max(0, h)
-    table_frame.height = sum(max(0, h) for h in heights)
-
-
 def _write_flexible_bullets(shape, bullets) -> None:
     """Write bullets, falling back to plain paragraphs if a library shape has no bullet glyph template."""
     write_bullets_or_plain(shape, [_bullet_tuple(bullet) for bullet in bullets])
@@ -251,7 +194,7 @@ def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
 # Rationale copy, and PowerPoint grows a table row to fit its text (a stored row
 # height is only a MINIMUM). At 10 pt the real per-target copy wrapped tall
 # enough that PowerPoint re-expanded the whole table to ~6.3" on open — past the
-# 5.71" clamp `_set_table_height` writes. 9 pt keeps that copy inside the
+# 5.71" clamp `set_table_height` writes. 9 pt keeps that copy inside the
 # clamped rows so the rendered table stays at 5.71"; pair it with concise
 # Overview / Strategic Rationale cells (see pitch-content) for headroom.
 _ME_VALUE_SIZE = 9
@@ -363,7 +306,7 @@ def _fill_risk_table(slide, content: PitchDeckContent) -> None:
     for idx, (risk, mitigants) in enumerate(body):
         set_cell_text(table.cell(idx + 1, 0), risk, size_pt=body_size)
         set_cell_text(table.cell(idx + 1, 1), mitigants, size_pt=body_size)
-    _set_table_height(table_frame, library_height, minimums)
+    set_table_height(table_frame, library_height, minimums)
 
 
 def _output_currency_letter(workbook_path) -> str:
@@ -464,7 +407,7 @@ def _fill_market_entry_targets(
     usable = [
         max(0.5, Emu(col.width).inches - _ME_CELL_SIDE_INSETS_IN) for col in table.columns
     ]
-    # Per-row rendered content minimums (see _set_table_height): every row floors
+    # Per-row rendered content minimums (see set_table_height): every row floors
     # at a single 11 pt label line; filled cells raise it by their estimated wrap.
     row_mins_in = [_ME_MIN_ROW_IN] * len(table.rows)
     # Table row 0 is the blank logo/header row; data labels start at row 1. With
@@ -510,7 +453,7 @@ def _fill_market_entry_targets(
     # off the slide. Done last, after every cell is populated; the per-row
     # content minimums keep the declared heights achievable so PowerPoint's
     # render-time row growth can't push the total past the clamp.
-    _set_table_height(
+    set_table_height(
         table_frame, _ME_TABLE_HEIGHT, min_heights=[Inches(m) for m in row_mins_in]
     )
 
@@ -578,6 +521,7 @@ def assemble_pitch_deck(
     captable_workbook_path: Path | str | None = None,
     ownership_workbook_path: Path | str | None = None,
     financial_metric_labels: list[str] | None = None,
+    converge: bool = True,
 ) -> Path:
     """Fill the INFOR slide-library pitch deck.
 
@@ -804,6 +748,17 @@ def assemble_pitch_deck(
     # Disclaimer + contact are static library entries — left untouched.
 
     prs.save(output_path)
+
+    # Write -> verify -> repair -> re-verify against the deck contract, BEFORE the
+    # Excel pictures go in: the repair loop re-saves through python-pptx, and doing
+    # that after the COM insertions would round-trip the pasted pictures for no
+    # reason. A picture cannot overflow its box — only text and tables re-grow — so
+    # nothing the insertions add needs fitting.
+    if converge:
+        assert_converged(
+            output_path,
+            converge_deck(output_path, library=template, out_dir=out_dir / ".qa"),
+        )
 
     # Paste the generated cap table into slide 7's placeholder (mirrors the
     # earnings overview insertion). Done after save so the picture write re-opens

@@ -193,12 +193,45 @@ def set_text(shape, lines, size_pt=None, color_hex=None):
 
 # ─── set_cell_text ───────────────────────────────────────────────────────────
 
+def _declare_paragraph_size(paragraph, size_pt):
+    """Put an explicit size on a run-less paragraph, so it reserves only that line.
+
+    A cell blanked with a zero-length run (`<a:t/>`) and no declared size takes its
+    line height from the table style's default — which on the INFOR library is far
+    larger than the body copy. Every row then renders taller than the assembler
+    declared, and no amount of font stepping helps because the empty cell's size is
+    not what was stepped.
+
+    Measured on the market-entry table's unused third column (odd target count):
+    12 rows grew a little each and the table rendered **0.587" past the slide
+    edge**; declaring the size here takes it to 0.007", i.e. clean. The size itself
+    does not matter (1 pt, 4 pt and 9 pt all measure identically) — what matters is
+    that the paragraph declares one at all.
+    """
+    pPr = paragraph._p.find(qn("a:pPr"))
+    if pPr is None:
+        pPr = etree.Element(qn("a:pPr"))
+        paragraph._p.insert(0, pPr)  # pPr must be the first child of <a:p>
+    defRPr = pPr.find(qn("a:defRPr"))
+    if defRPr is None:
+        defRPr = etree.SubElement(pPr, qn("a:defRPr"))
+    endParaRPr = paragraph._p.find(qn("a:endParaRPr"))
+    if endParaRPr is None:
+        endParaRPr = etree.SubElement(paragraph._p, qn("a:endParaRPr"))  # must be last
+    for node in (defRPr, endParaRPr):
+        node.set("sz", str(int(round(size_pt * 100))))
+
+
 def set_cell_text(cell, text, size_pt=9, color_hex=None):
     """Overwrite a table cell as a single Palatino run at size_pt.
 
     Unlike `set_text`, this DOES set font.name + font.size explicitly because
     PowerPoint's table-cell default fallback is Calibri — inheriting from the
     template has been observed to slip back to Calibri across rewrites.
+
+    Blanking a cell (``text=""``) leaves a genuinely empty paragraph that declares
+    `size_pt`, rather than a zero-length run — see `_declare_paragraph_size` for
+    the row-growth defect that fixes.
     """
     tf = cell.text_frame
     while len(tf.paragraphs) > 1:
@@ -207,6 +240,9 @@ def set_cell_text(cell, text, size_pt=9, color_hex=None):
     p = tf.paragraphs[0]
     for r in list(p.runs):
         r._r.getparent().remove(r._r)
+    if not text:
+        _declare_paragraph_size(p, size_pt)
+        return
     run = p.add_run()
     run.text = text
     run.font.name = PALATINO
@@ -394,6 +430,71 @@ def enable_normal_autofit(shape, font_scale=None, line_space_reduction=None):
         norm.set("lnSpcReduction", str(int(round(line_space_reduction * 1000))))
 
 
+def normal_autofit_scale(shape):
+    """Stored `normAutofit` fontScale in percent, or None when there is no normAutofit.
+
+    A `<a:normAutofit/>` with no `fontScale` attribute returns 100.0: PowerPoint
+    ignores a scale-less autofit on open and renders at full size (the v0.5.23
+    finding), so full size is what it means in practice.
+    """
+    bodyPr = shape.text_frame._txBody.find(qn("a:bodyPr"))
+    if bodyPr is None:
+        return None
+    norm = bodyPr.find(qn("a:normAutofit"))
+    if norm is None:
+        return None
+    raw = norm.get("fontScale")
+    return 100.0 if raw is None else int(raw) / 1000.0
+
+
+def strip_autofit(shape):
+    """Replace whatever autofit the shape carries with an explicit `<a:noAutofit/>`.
+
+    Used to build a render probe that shows the shape at its *stored* text size.
+    LibreOffice treats ANY `<a:normAutofit>` — explicit `fontScale` included — as
+    "shrink to fit" and recomputes its own scale, so a rendered measurement of an
+    autofit shape can never show overflow. Stripping the autofit (after baking the
+    stored scale into the run sizes with `apply_text_scale`) is what makes the
+    render measure what PowerPoint will actually draw.
+    """
+    txBody = shape.text_frame._txBody
+    bodyPr = txBody.find(qn("a:bodyPr"))
+    if bodyPr is None:
+        bodyPr = etree.SubElement(txBody, qn("a:bodyPr"))
+        txBody.insert(0, bodyPr)
+    for child in list(bodyPr):
+        if child.tag in (qn("a:noAutofit"), qn("a:normAutofit"), qn("a:spAutoFit")):
+            bodyPr.remove(child)
+    etree.SubElement(bodyPr, qn("a:noAutofit"))
+
+
+# Text-size attributes carried by a run, an empty-paragraph mark, and a
+# paragraph-level default. All three drive rendered line height.
+_SIZED_TAGS = ("a:rPr", "a:endParaRPr", "a:defRPr")
+
+
+def apply_text_scale(shape, scale_pct):
+    """Multiply every EXPLICIT text size in the shape by `scale_pct` percent.
+
+    The counterpart to `strip_autofit`: together they turn "this shape carries a
+    75% autofit" into "this shape's runs are 75% of their nominal size and nothing
+    will shrink them further", which is renderable and therefore measurable.
+
+    Sizes that are *inherited* (a run with no `sz`, taking the placeholder list
+    style's) are left alone, because the effective size is not in this shape's
+    XML. That errs toward rendering the text LARGER than it will ship, which is
+    the safe direction for an overflow check. Every INFOR assembler writes
+    explicit sizes (`set_cell_text`, `write_bulleted_shape`), so in practice
+    nothing is missed.
+    """
+    factor = scale_pct / 100.0
+    for tag in _SIZED_TAGS:
+        for node in shape.text_frame._txBody.iter(qn(tag)):
+            raw = node.get("sz")
+            if raw is not None:
+                node.set("sz", str(max(100, int(round(int(raw) * factor)))))
+
+
 # ─── Overview-bullets fit (shared by the earnings-update + pitch assemblers) ─
 # Empirical Palatino Linotype layout constants for the shared overview slide's
 # ~4.5"-wide TextBox 9 (zero side insets), calibrated against PowerPoint's own
@@ -568,6 +669,66 @@ def find_table_shape(slide):
         if getattr(shape, "has_table", False):
             return shape
     raise KeyError("no table shape found on slide")
+
+
+def set_table_height(table_frame, total_height, min_heights=None):
+    """Resize a table to an exact total height by scaling its row heights.
+
+    Mirrors setting a table's height in PowerPoint (drag the bottom handle / set
+    Height in the Size pane): the graphic-frame extent and every row height are
+    scaled to `total_height` proportionally, so the rows still sum to exactly the
+    target (rounding remainder folded into the last row). Call AFTER the cells are
+    filled — row heights are only meaningful once content is in place.
+
+    A declared row height is only a render-time MINIMUM, so this clamp does not
+    by itself stop the layout engine re-growing a row whose text needs more. What
+    stops that is smaller text, and what decides how much smaller is the measured
+    render — see `deck_repair`, which steps the body font down until the rendered
+    table fits and re-clamps through this function.
+
+    `min_heights` (EMU, one per row) pins rows whose proportional share would fall
+    below a caller-supplied floor, taking the shortfall from rows with headroom.
+    Retained for callers that know a genuine structural minimum; the assemblers no
+    longer estimate one from character widths.
+    """
+    table = table_frame.table
+    rows = list(table.rows)
+    if not rows or sum(r.height for r in rows) <= 0:
+        return
+    target = int(total_height)
+    mins = [int(m) for m in min_heights] if min_heights is not None else [0] * len(rows)
+
+    # Waterfall: pin rows whose proportional share of the remaining budget would
+    # dip below their floor; re-share the rest until stable.
+    free = set(range(len(rows)))
+    budget = target
+    alloc: dict[int, float] = {}
+    while free:
+        base = sum(rows[i].height for i in free)
+        if base <= 0 or budget <= 0:
+            for i in free:
+                alloc[i] = mins[i]
+            break
+        alloc = {i: rows[i].height * budget / base for i in free} | {
+            i: float(mins[i]) for i in range(len(rows)) if i not in free
+        }
+        pinned = [i for i in free if alloc[i] < mins[i]]
+        if not pinned:
+            break
+        for i in pinned:
+            free.discard(i)
+            budget -= mins[i]
+
+    heights = [max(int(round(alloc[i])), mins[i]) for i in range(len(rows))]
+    # Fold the rounding remainder into the last unpinned row so rows sum exactly.
+    spill = target - sum(heights)
+    for i in reversed(range(len(rows))):
+        if heights[i] + spill >= mins[i]:
+            heights[i] += spill
+            break
+    for row, h in zip(rows, heights):
+        row.height = max(0, h)
+    table_frame.height = sum(max(0, h) for h in heights)
 
 
 # ─── Footnote currency token ─────────────────────────────────────────────────

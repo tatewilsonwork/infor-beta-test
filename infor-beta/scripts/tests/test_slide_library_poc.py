@@ -11,6 +11,8 @@ from pydantic import ValidationError
 import pytest
 
 from schemas import Company, PitchDeckContent, Plan
+from deck_contract import verify_deck
+from deck_repair import DeckNotConvergedError
 from pptx_helpers import find_shape
 from pitch_deck_wireframe import build_pitch_deck_slide_plan, write_slide_plan
 from pitch_deck_assembler import _output_currency_letter, assemble_pitch_deck
@@ -377,6 +379,10 @@ def _assemble(
     include_investment_highlights=None,
     **kwargs,
 ) -> Path:
+    # The deck-contract converge loop renders the deck (seconds per call), so it is
+    # OFF for the tests that are about fill logic and ON for the geometry tests that
+    # exist to exercise it — see test_converges_* below and test_deck_contract.py.
+    kwargs.setdefault("converge", False)
     plan = build_pitch_deck_slide_plan(
         company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),
         section_labels=["Overview", "Financial Summary", "Valuation", "Process"],
@@ -845,25 +851,29 @@ def _overview_font_scale(shape):
     return int(autofit.get("fontScale")) / 1000.0
 
 
+def _overview_content(n_bullets: int, chars: int) -> PitchDeckContent:
+    base = _sample_content().model_dump()
+    filler = "funding programs, growth rates and guidance in enough detail to overflow "
+    base["company_overview_bullets"] = [
+        {"text": (f"Bullet {i + 1}: " + filler * 10)[:chars], "level": 0}
+        for i in range(n_bullets)
+    ]
+    return PitchDeckContent.model_validate(base)
+
+
 def test_slide7_overview_bullets_fitted_above_ltm_band(tmp_path: Path):
     """An over-long overview block must be boxed to the band above the 'LTM
     Revenue Breakdown' header and carry an explicit autofit fontScale —
     PowerPoint ignores a scale-less <a:normAutofit/> on open, which is how live
-    runs rendered overview copy straight through the pie section."""
-    base = _sample_content().model_dump()
-    base["company_overview_bullets"] = [
-        {
-            "text": (
-                f"Bullet {i + 1}: long-form company overview copy describing brands, "
-                "funding programs, growth rates and guidance in enough detail to "
-                "overflow the library's overview band when rendered at full size"
-            ),
-            "level": 0,
-        }
-        for i in range(8)
-    ]
-    content = PitchDeckContent.model_validate(base)
-    deck_path = _assemble(tmp_path, content)
+    runs rendered overview copy straight through the pie section.
+
+    Runs the converge loop: the box sizing is the assembler's, but the *scale* is
+    now measured off the render rather than estimated from em constants, so this
+    only means anything with the loop on.
+    """
+    # ~1,050 characters: over the band at full size, inside it once shrunk.
+    content = _overview_content(7, 150)
+    deck_path = _assemble(tmp_path, content, converge=True)
 
     slide7 = Presentation(deck_path).slides[6]
     box = find_shape(slide7, "TextBox 9")
@@ -877,6 +887,56 @@ def test_slide7_overview_bullets_fitted_above_ltm_band(tmp_path: Path):
     assert scale is not None and scale < 100.0, (
         "over-long overview copy must ship an explicit normAutofit fontScale"
     )
+
+
+def test_overview_copy_past_every_shrink_fails_the_stage(tmp_path: Path):
+    """Content the loop cannot fit must fail loudly, not ship shrunk-and-spilling.
+
+    The retired estimator floored at 70% and shipped whatever that produced, so a
+    deck whose copy did not fit at 70% went out overflowing. 1,850 characters is
+    roughly double pitch-content's documented ~950-char overview budget, and no
+    scale on the ladder fits it into the band — so the assembler raises.
+
+    This is the behaviour change that makes the whole phase worth having: the
+    remedy for over-budget copy is fewer words, and now something says so.
+    """
+    content = _overview_content(10, 185)
+    with pytest.raises(DeckNotConvergedError) as excinfo:
+        _assemble(tmp_path, content, converge=True)
+
+    message = str(excinfo.value)
+    assert "TextBox 9" in message, f"the failure must name the offending shape: {message}"
+    assert "70%" in message, (
+        f"the failure must show that the shrink ladder was exhausted: {message}"
+    )
+
+
+def test_market_entry_long_content_converges(tmp_path: Path):
+    """A filled market-entry table must render inside its clamp, measured.
+
+    PRL17's 5.91"-rendered table is the historical version of this. The table is
+    clamped to 5.71" and the loop steps the body font down until the *rendered*
+    height agrees — no character-width table, no per-row height estimate.
+    """
+    base = _sample_content().model_dump()
+    cells = base["market_entry_targets"][0]["cells"]
+    long_cells = [
+        (c + " with materially more descriptive copy than the sample carries")[:120]
+        for c in cells
+    ]
+    base["market_entry_targets"] = [{"cells": long_cells} for _ in range(3)]
+    content = PitchDeckContent.model_validate(base)
+
+    deck_path = _assemble(tmp_path, content, market_entry_target_count=3, converge=True)
+
+    findings = verify_deck(deck_path, vision=False, out_dir=tmp_path / "qa")
+    geometric = [
+        f
+        for f in findings
+        if f.blocking
+        and f.kind in {"rendered-overflow", "masked-overflow", "table-taller-than-library"}
+    ]
+    assert geometric == [], "\n".join(str(f) for f in geometric)
 
 
 def test_slide7_short_overview_keeps_full_size(tmp_path: Path):

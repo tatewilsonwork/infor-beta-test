@@ -160,7 +160,7 @@ import os
 import re
 import tempfile
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from pptx import Presentation
@@ -168,6 +168,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
 from pptx.util import Emu
 
+from pptx_helpers import apply_text_scale, normal_autofit_scale, strip_autofit
 from template_layout import LIBRARY_SLIDE_MARKERS
 
 # ─── Findings ────────────────────────────────────────────────────────────────
@@ -671,20 +672,48 @@ def _strip_relationships(element):
     return element
 
 
+@dataclass(frozen=True)
+class ProbeRequest:
+    """One shape to render in isolation, optionally altered first.
+
+    ``key`` is whatever the caller wants the measurement filed under — the
+    attribution pass uses ``(slide, shape)``; the repair loop's fit ladders use
+    ``(slide, shape, candidate_size)`` so one conversion measures a whole ladder.
+    ``mutate`` receives the *copied* shape on the probe slide, so it can alter the
+    probe without touching the deck.
+
+    ``bottom`` overrides the y (inches) below which ink counts as overflow. Needed
+    when the mutation resizes the shape — a repair probe that re-clamps a table to
+    a smaller height must still be measured against the height it is aiming for,
+    not against the height the deck currently declares.
+    """
+
+    slide: int
+    shape: str
+    key: object = None
+    mutate: object = None  # Callable[[Shape], None] | None
+    bottom: float | None = None
+
+    def filed_under(self):
+        return self.key if self.key is not None else (self.slide, self.shape)
+
+
 @dataclass
-class _ProbePlan:
+class ProbePlan:
     """Where each probe landed in the probe deck."""
 
     path: Path
-    shape: dict[tuple[int, str], int] = field(default_factory=dict)
-    layout: dict[int, int] = field(default_factory=dict)
+    shape: dict[object, int] = field(default_factory=dict)     # key -> probe slide
+    layout: dict[int, int] = field(default_factory=dict)       # deck slide -> empty probe
+    box: dict[object, "_Box"] = field(default_factory=dict)    # key -> declared box
+    slide: dict[object, int] = field(default_factory=dict)     # key -> deck slide
 
     @property
     def indices(self) -> list[int]:
         return sorted({*self.shape.values(), *self.layout.values()})
 
 
-def _append_probe_slide(prs, source_slide, keep_name: str | None) -> int:
+def _append_probe_slide(prs, source_slide, keep_name: str | None, mutate=None) -> int:
     """Append a slide carrying only `keep_name` from `source_slide` (or nothing)."""
     new = prs.slides.add_slide(source_slide.slide_layout)
     for shape in list(new.shapes):  # drop the placeholders add_slide seeds
@@ -694,30 +723,95 @@ def _append_probe_slide(prs, source_slide, keep_name: str | None) -> int:
             if shape.name == keep_name:
                 new.shapes._spTree.append(_strip_relationships(deepcopy(shape._element)))
                 break
+        if mutate is not None:
+            for shape in new.shapes:
+                if shape.name == keep_name:
+                    mutate(shape)
+                    break
     return len(prs.slides._sldIdLst) - 1
 
 
-def _build_probe_deck(deck: Path, out_path: Path) -> _ProbePlan | None:
-    """Write a probe deck for every masked candidate; None when there are none."""
+def build_probe_deck(deck: Path, out_path: Path, requests) -> ProbePlan | None:
+    """Write one deck holding every requested isolation probe; None when empty.
+
+    Each request contributes one slide holding just that shape, and each distinct
+    layout contributes one empty slide so the layout's own ink can be subtracted.
+    Everything rides in a single deck because the LibreOffice conversion — not the
+    page count — is what costs.
+    """
+    requests = list(requests)
+    if not requests:
+        return None
     prs = Presentation(deck)
     originals = list(prs.slides)
-    plan = _ProbePlan(path=out_path)
+    plan = ProbePlan(path=out_path)
     layout_probe: dict[int, int] = {}
-    for index, slide in enumerate(originals):
-        names = _masking_neighbours(slide)
-        if not names:
+    for request in requests:
+        if request.slide >= len(originals):
             continue
-        key = id(slide.slide_layout)
-        if key not in layout_probe:
-            layout_probe[key] = _append_probe_slide(prs, slide, None)
-        plan.layout[index] = layout_probe[key]
-        for name in names:
-            plan.shape[(index, name)] = _append_probe_slide(prs, slide, name)
+        slide = originals[request.slide]
+        shape = next((s for s in slide.shapes if s.name == request.shape), None)
+        box = _box_of(shape) if shape is not None else None
+        if box is None:
+            continue
+        layout_key = id(slide.slide_layout)
+        if layout_key not in layout_probe:
+            layout_probe[layout_key] = _append_probe_slide(prs, slide, None)
+        plan.layout[request.slide] = layout_probe[layout_key]
+        key = request.filed_under()
+        plan.shape[key] = _append_probe_slide(prs, slide, request.shape, request.mutate)
+        plan.box[key] = box if request.bottom is None else replace(box, bottom=request.bottom)
+        plan.slide[key] = request.slide
     if not plan.shape:
         return None
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(out_path)
     return plan
+
+
+def measure_probe_overflow(deck: Path | str, requests, work_dir: Path | str) -> dict:
+    """Render each requested shape alone and report ink below its declared bottom.
+
+    Returns ``{request.filed_under(): depth_in}``, omitting probes that measured
+    nothing. Raises RuntimeError when the probe deck cannot be rendered, so a
+    caller reports the tier unavailable rather than reporting a deck clean.
+
+    This is the one measurement primitive behind both `masked-overflow` and the
+    repair loop's fit ladders. It is deliberately estimate-free: no character
+    widths, no line-height constants, no wrap model — LibreOffice lays the text
+    out and the pixels are read back.
+    """
+    import numpy as np
+    from PIL import Image
+
+    deck = Path(deck)
+    work = Path(work_dir)
+    plan = build_probe_deck(deck, work / "probe.pptx", requests)
+    if plan is None:
+        return {}
+
+    renders = _render_slides(plan.path, work / "png", plan.indices)
+    ink = {
+        index: np.array(Image.open(png).convert("L")) < _INK_MAX_LUMA
+        for index, png in renders.items()
+    }
+    slide_h = Emu(Presentation(deck).slide_height).inches
+
+    out: dict = {}
+    for key, probe in plan.shape.items():
+        if probe not in ink:
+            continue
+        box = plan.box[key]
+        if box.bottom >= slide_h:
+            continue
+        layout = plan.layout.get(plan.slide[key])
+        own = ink[probe] & ~ink[layout] if layout is not None and layout in ink else ink[probe]
+        page_h, page_w = own.shape
+        dpi = page_h / slide_h if slide_h else RENDER_DPI
+        depth = _own_ink_depth_in(own, box, page_w, page_h, dpi)
+        if depth > 0:
+            out[key] = depth
+    return out
 
 
 def _own_ink_depth_in(own, box: _Box, page_w: int, page_h: int, dpi: float) -> float:
@@ -738,44 +832,74 @@ def _own_ink_depth_in(own, box: _Box, page_w: int, page_h: int, dpi: float) -> f
     return (inked[-1] + 1) / dpi if inked else 0.0
 
 
+def bake_stored_autofit(shape) -> None:
+    """Render probe mutation: show the shape at the size PowerPoint will draw it.
+
+    LibreOffice treats any `<a:normAutofit>` as "shrink to fit" and recomputes its
+    own scale, so an autofit shape's rendered overflow always measures zero — the
+    renderer squeezes the text in no matter how much there is. **PowerPoint does
+    not**: it applies the stored `fontScale` and nothing more, which is precisely
+    the v0.5.23 defect (a scale-less autofit renders full size and spills).
+
+    So a probe of an autofit shape bakes the stored scale into the run sizes and
+    replaces the autofit with `<a:noAutofit/>`. The result is a shape whose
+    rendered height LibreOffice reports honestly — and reports ~one line taller
+    than PowerPoint, keeping it the conservative oracle.
+
+    `lnSpcReduction` is deliberately not modelled: dropping it renders the text
+    slightly taller than it will ship, which is the safe direction.
+    """
+    if not getattr(shape, "has_text_frame", False):
+        return  # a table has no autofit to bake
+    scale = normal_autofit_scale(shape)
+    if scale is None:
+        return
+    if scale != 100.0:
+        apply_text_scale(shape, scale)
+    strip_autofit(shape)
+
+
+def _attribution_requests(prs) -> list[ProbeRequest]:
+    """Every shape whose overflow the unclaimed-ink measurement cannot see.
+
+    Two reasons it cannot, and both need the same isolation probe:
+
+      - **A neighbour masks it.** The shape below claims the territory the
+        overflow lands in (`_masking_neighbours`).
+      - **An autofit hides it.** The shape carries `<a:normAutofit>`, so
+        LibreOffice shrinks the text to fit and renders no overflow at all, while
+        PowerPoint applies only the stored scale. Every INFOR overview bullet
+        block is in this class, which means without this the contract was blind to
+        the PRL14 defect on any freshly built deck.
+    """
+    requests: list[ProbeRequest] = []
+    for index, slide in enumerate(prs.slides):
+        masked = _masking_neighbours(slide)
+        for shape in _growth_prone(slide):
+            autofit = (
+                normal_autofit_scale(shape) is not None
+                if getattr(shape, "has_text_frame", False)
+                else False
+            )
+            if shape.name in masked or autofit:
+                requests.append(
+                    ProbeRequest(index, shape.name, mutate=bake_stored_autofit)
+                )
+    return requests
+
+
 def measure_attributed_overflow(deck: Path | str, work_dir: Path | str) -> dict[int, dict[str, float]]:
-    """Per slide, per masked shape: how far the shape's OWN ink runs below its box.
+    """Per slide, per shape: how far the shape's OWN ink runs below its box.
 
     Raises RuntimeError when the probe deck cannot be rendered, so the caller
     reports the tier as unavailable rather than reporting a deck clean.
     """
-    import numpy as np
-    from PIL import Image
-
     deck = Path(deck)
-    work = Path(work_dir)
-    plan = _build_probe_deck(deck, work / "probe.pptx")
-    if plan is None:
-        return {}
-
-    renders = _render_slides(plan.path, work / "png", plan.indices)
-    ink = {
-        index: np.array(Image.open(png).convert("L")) < _INK_MAX_LUMA
-        for index, png in renders.items()
-    }
-
-    prs = Presentation(deck)
-    slide_h = Emu(prs.slide_height).inches
+    requests = _attribution_requests(Presentation(deck))
+    measured = measure_probe_overflow(deck, requests, work_dir)
     out: dict[int, dict[str, float]] = {}
-    for (index, name), probe in sorted(plan.shape.items()):
-        layout = plan.layout.get(index)
-        if probe not in ink or (layout is not None and layout not in ink):
-            continue
-        own = ink[probe] & ~ink[layout] if layout is not None else ink[probe]
-        page_h, page_w = own.shape
-        dpi = page_h / slide_h if slide_h else RENDER_DPI
-        shape = next((s for s in prs.slides[index].shapes if s.name == name), None)
-        box = _box_of(shape) if shape is not None else None
-        if box is None or box.bottom >= slide_h:
-            continue
-        depth = _own_ink_depth_in(own, box, page_w, page_h, dpi)
-        if depth > 0:
-            out.setdefault(index, {})[name] = depth
+    for (index, name), depth in measured.items():
+        out.setdefault(index, {})[name] = depth
     return out
 
 
@@ -979,7 +1103,18 @@ def _check_table_heights(prs, baseline: LibraryBaseline) -> list[Finding]:
 def _check_rendered_overflow(
     prs, renders: dict[int, Path], baseline: LibraryBaseline
 ) -> list[Finding]:
-    """Rendered ink below a shape's declared bottom, over the library's own."""
+    """Rendered ink below a shape's declared bottom, over the library's own.
+
+    **Autofit shapes are excluded and handled by `masked-overflow` instead.** This
+    check measures the deck as LibreOffice draws it, and LibreOffice honours any
+    `<a:normAutofit>` by inventing its own shrink — so what it reports for such a
+    shape is neither what PowerPoint will draw nor a bound on it. On the
+    earnings-update fixture's Business Updates block the two disagree by an order
+    of magnitude: 0.14" measured here (LibreOffice's squeeze residual) against
+    1.51" once the stored scale is baked in and the autofit removed. Reporting the
+    smaller number would understate a real defect and mislead the repair loop
+    about how far it has to move.
+    """
     import numpy as np
     from PIL import Image
 
@@ -989,10 +1124,17 @@ def _check_rendered_overflow(
     for index, slide in enumerate(prs.slides):
         matched = match_library_slide(slide, baseline.signatures)
         reference = baseline.overflow.get(matched, {}) if matched is not None else {}
+        autofit_shapes = {
+            shape.name
+            for shape in _growth_prone(slide)
+            if getattr(shape, "has_text_frame", False)
+            and normal_autofit_scale(shape) is not None
+        }
         firing = {
             name: depth
             for name, depth in sorted(measured.get(index, {}).items())
-            if depth - reference.get(name, 0.0) > _OVERFLOW_TOL_IN
+            if name not in autofit_shapes
+            and depth - reference.get(name, 0.0) > _OVERFLOW_TOL_IN
         }
         if not firing:
             continue
@@ -1085,6 +1227,22 @@ def _check_masked_overflow(
                 if reached
                 else ""
             )
+            shape_obj = next((s for s in slide.shapes if s.name == name), None)
+            autofit = (
+                normal_autofit_scale(shape_obj)
+                if shape_obj is not None and getattr(shape_obj, "has_text_frame", False)
+                else None
+            )
+            why = (
+                f"measured with the shape's {autofit:.0f}% autofit baked into its run "
+                f"sizes and the autofit removed — LibreOffice would otherwise squeeze "
+                f"the text to fit and show no overflow, where PowerPoint applies only "
+                f"the stored scale"
+                if autofit is not None
+                else "measured by rendering this shape alone, because the shape(s) below "
+                "claim that territory and pixel counting cannot separate the two "
+                "shapes' ink"
+            )
             baseline_note = (
                 f" (the library's {_concept_name(matched)} slide renders {allowed:.2f}\" past"
                 f" the same box, so {excess:.2f}\" of this is the fill's)"
@@ -1097,9 +1255,7 @@ def _check_masked_overflow(
                     SEVERITY_BLOCKING,
                     index,
                     f"renders {depth:.2f}\" of its own content below its declared bottom "
-                    f"edge ({box.bottom:.2f}\"){into}{baseline_note} — measured by rendering "
-                    f"this shape alone, because the shape(s) below claim that territory and "
-                    f"pixel counting cannot separate the two shapes' ink",
+                    f"edge ({box.bottom:.2f}\"){into}{baseline_note} — {why}",
                     shape=name,
                     measured_in=depth,
                     limit_in=allowed + _OVERFLOW_TOL_IN,
