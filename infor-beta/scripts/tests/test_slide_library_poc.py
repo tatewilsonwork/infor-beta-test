@@ -12,6 +12,7 @@ import pytest
 
 from schemas import Company, PitchDeckContent, Plan
 from deck_contract import verify_deck
+from excel_to_powerpoint import find_soffice
 from deck_repair import DeckNotConvergedError
 from pptx_helpers import find_shape
 from pitch_deck_wireframe import build_pitch_deck_slide_plan, write_slide_plan
@@ -684,10 +685,8 @@ def test_slide10_risk_table_clamped_to_library_height(tmp_path: Path):
     assert sum(r.height for r in frame.table.rows) == target, "row heights must sum to the target"
 
 
-def test_slide10_risk_table_steps_font_down_when_content_over_tall(tmp_path: Path):
-    # Five rows of three near-cap (160-char) mitigants cannot render inside the
-    # 5.18" clamp at the template's 10 pt — the body steps down (header stays
-    # 12 pt) instead of letting PowerPoint re-grow the table past the clamp.
+def _over_tall_risk_content() -> PitchDeckContent:
+    """Five rows of three near-cap (160-char) mitigants — PRL18's shape of defect."""
     long_mitigant = (
         "Demonstrate the durability of the platform through multi-year cohort retention, "
         "audited unit economics and a fully documented regulatory compliance record"
@@ -697,18 +696,59 @@ def test_slide10_risk_table_steps_font_down_when_content_over_tall(tmp_path: Pat
         {"risk": f"Detailed acquiror consideration number {i} on diligence depth", "mitigants": [long_mitigant] * 3}
         for i in range(1, 6)
     ]
-    deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(base))
+    return PitchDeckContent.model_validate(base)
+
+
+def test_slide10_risk_table_is_written_at_the_library_sizes(tmp_path: Path):
+    """The fill no longer pre-shrinks: over-tall copy still goes in at 12/10 pt.
+
+    Until v0.5.39 the assembler estimated each row's height and stepped the body
+    down before writing — and PRL18 still shipped a 5.36" table, because the
+    estimate said it fit. Deciding the size is now the converge loop's job, so the
+    fill's contract is simply "the library's sizes, clamped to the library's
+    height".
+    """
+    deck_path = _assemble(tmp_path, _over_tall_risk_content())
+    frame = next(
+        s for s in Presentation(deck_path).slides[9].shapes if getattr(s, "has_table", False)
+    )
+    assert frame.table.cell(0, 0).text_frame.paragraphs[0].runs[0].font.size == Pt(12)
+    assert frame.table.cell(1, 1).text_frame.paragraphs[0].runs[0].font.size == Pt(10)
+    assert frame.height == _library_risk_table_height()
+
+
+@pytest.mark.skipif(
+    find_soffice() is None, reason="the converge loop measures on a LibreOffice render"
+)
+def test_slide10_risk_table_steps_font_down_when_content_over_tall(tmp_path: Path):
+    """Same outcome as before, decided by measurement instead of estimation.
+
+    Over-tall copy must end up below the template's 10 pt with the header left at
+    12 pt, and the table must still land on the library height — but now because
+    the rendered table was measured overrunning, not because a character-width
+    model predicted it would.
+    """
+    deck_path = _assemble(tmp_path, _over_tall_risk_content(), converge=True)
     frame = next(
         s for s in Presentation(deck_path).slides[9].shapes if getattr(s, "has_table", False)
     )
     table = frame.table
+
     header_run = table.cell(0, 0).text_frame.paragraphs[0].runs[0]
     assert header_run.font.size == Pt(12), "header must stay 12 pt"
-    body_run = table.cell(1, 1).text_frame.paragraphs[0].runs[0]
-    assert body_run.font.size in (Pt(9), Pt(8)), "over-tall body copy must step below 10 pt"
+    body_size = table.cell(1, 1).text_frame.paragraphs[0].runs[0].font.size
+    assert Pt(6) <= body_size < Pt(10), (
+        f"over-tall body copy must step below 10 pt, got {body_size.pt}"
+    )
     target = _library_risk_table_height()
     assert frame.height == target, "the stepped-down table still lands on the library height"
     assert sum(r.height for r in table.rows) == target
+
+    # And the rendered table now agrees with the declaration, which is the point.
+    findings = verify_deck(deck_path, vision=False, out_dir=tmp_path / "qa")
+    assert [
+        f for f in findings if f.blocking and f.shape == frame.name
+    ] == [], "\n".join(str(f) for f in findings if f.shape == frame.name)
 
 
 def test_pitch_wireframe_expands_market_entry_slides():

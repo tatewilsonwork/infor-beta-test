@@ -209,11 +209,6 @@ _ME_TABLE_HEIGHT = Inches(5.71)
 
 # Usable cell width = column width minus the library's 0.1" side insets.
 _ME_CELL_SIDE_INSETS_IN = 0.2
-_ME_CELL_TB_INSETS_IN = 0.1
-_ME_LINE_HEIGHT_EM = 1.2
-# Word-wrapping wastes some of each line (breaks fall on word boundaries), so
-# widen the estimated text width before dividing by the cell width.
-_ME_WRAP_WASTE = 1.08
 # A label that would wrap in the label column steps down until it fits on one
 # line (a wrapped label is what re-grew the 0.28" rows to 5.91" total in the
 # live run — 'Geographic Footprint' is wider than the 1.457" usable column at
@@ -229,45 +224,26 @@ def _me_label_size_pt(label: str, usable_width_in: float) -> int:
     return _ME_LABEL_SIZE_STEPS[-1]
 
 
-def _me_cell_min_height_in(
-    text: str, usable_width_in: float, font_pt: float, wrap_waste: float = _ME_WRAP_WASTE
-) -> float:
-    """Estimated rendered height of one filled cell (its row's content minimum).
-
-    `wrap_waste` pads prose for word-boundary wrapping; labels pass 1.0 — the
-    per-label font step-down already guarantees they fit on one line, and the
-    character table's kerning-less sums are the conservative side of that check.
-    """
-    lines = 0
-    for segment in (text.splitlines() or [""]):
-        width = palatino_text_width_in(segment, font_pt) * wrap_waste
-        lines += max(1, math.ceil(width / usable_width_in))
-    return lines * font_pt * _ME_LINE_HEIGHT_EM / 72 + _ME_CELL_TB_INSETS_IN
-
 # Slide 10 Considerations/Mitigants table sizing. The library ships the header
 # row at 12 pt and the body cells at 10 pt; the old code hardcoded 9 pt / 8 pt,
 # which rendered noticeably smaller than the template.
 _RISK_HEADER_SIZE = 12
 _RISK_BODY_SIZE = 10
-# The table must render at the library's shipped height (5.17", PowerPoint's
-# Size pane shows 5.18") — a stored row height is only a render-time MINIMUM,
-# so long mitigant copy re-grows its row and the whole table with it (a live
-# run rendered 5.36"). When the estimated content heights don't fit at 10 pt,
-# the body steps down until they do (the header row stays 12 pt), then the
-# declared rows are clamped back to the library height with the estimates as
-# per-row floors (mirrors the market-entry treatment).
-_RISK_BODY_SIZE_STEPS = (_RISK_BODY_SIZE, 9, 8)
 
 
 def _fill_risk_table(slide, content: PitchDeckContent) -> None:
     """Fill the Considerations/Mitigants table and clamp it to the library height.
 
-    Estimates each row's rendered height from its widest cell (risk vs. joined
-    mitigants), steps the body font down ``_RISK_BODY_SIZE_STEPS`` until the
-    estimates fit the library's shipped table height, writes the cells at that
-    size, then scales the declared row heights back to exactly the library
-    height with the estimates as per-row content floors — so the rendered
-    table always lands on the library's 5.18".
+    Writes the cells at the library's own sizes — 12 pt header, 10 pt body — and
+    clamps the declared rows back to the height the library ships the table at.
+
+    It does **not** pre-shrink the body font. Until v0.5.39 it estimated every
+    row's rendered height from its widest cell and stepped the body down 10 -> 9 ->
+    8 pt until the estimates fit, which is how PRL18 still shipped a 5.36" table
+    against a 5.1715" library height: the estimate said it fit. The converge loop
+    now measures the rendered table and steps the font down only when the render
+    actually overruns — and only as far as it has to, so a deck whose copy fits at
+    10 pt keeps the template's size instead of being shrunk by a cautious model.
     """
     table_frame = find_table_shape(slide)
     table = table_frame.table
@@ -279,28 +255,12 @@ def _fill_risk_table(slide, content: PitchDeckContent) -> None:
         (row.risk, "\n".join(row.mitigants)) for row in content.risk_mitigants[:max_rows]
     ]
     body += [("", "")] * (len(table.rows) - 1 - len(body))
-    usable = [Emu(col.width).inches - _ME_CELL_SIDE_INSETS_IN for col in table.columns]
-
-    def row_minimums(body_pt: int) -> list[int]:
-        sized_rows = [(header, _RISK_HEADER_SIZE)] + [(cells, body_pt) for cells in body]
-        return [
-            Inches(max(_me_cell_min_height_in(text, usable[c], pt) for c, text in enumerate(cells)))
-            for cells, pt in sized_rows
-        ]
-
-    body_size = _RISK_BODY_SIZE_STEPS[0]
-    minimums = row_minimums(body_size)
-    for pt in _RISK_BODY_SIZE_STEPS[1:]:
-        if sum(minimums) <= library_height:
-            break
-        body_size = pt
-        minimums = row_minimums(pt)
 
     set_cell_text(table.cell(0, 0), header[0], size_pt=_RISK_HEADER_SIZE)
     set_cell_text(table.cell(0, 1), header[1], size_pt=_RISK_HEADER_SIZE)
     for idx, (risk, mitigants) in enumerate(body):
-        set_cell_text(table.cell(idx + 1, 0), risk, size_pt=body_size)
-        set_cell_text(table.cell(idx + 1, 1), mitigants, size_pt=body_size)
+        set_cell_text(table.cell(idx + 1, 0), risk, size_pt=_RISK_BODY_SIZE)
+        set_cell_text(table.cell(idx + 1, 1), mitigants, size_pt=_RISK_BODY_SIZE)
     set_table_height(table_frame, library_height)
 
 
