@@ -76,8 +76,85 @@ fixed here — it belongs to the Phase B converge loop):**
   It is a good first target for `deck_contract.py`'s forbidden-string scan, and
   a checker that does **not** flag it is under-specified.
 
-**Clean:** neither deck contains `#N/A`, `#REF!`, or `{{` — the v0.5.16 /
-v0.5.33 cross-tab relink and deletion gate did their job on the pitch run.
+  `verify_deck` flags all three, plus **nine more `[x]` cells nobody had
+  recorded**: the contact slide's three spare banker blocks (`Table 13`,
+  `Table 14`, `Table 10`, three cells each — name / phone / email) render a
+  literal `[x]` in a navy header and two body rows apiece. Present in the blank
+  library and in **both** frozen fixtures, so every deck this plugin has ever
+  shipped carries them. Reported as `unfilled-token`. If that is judged
+  intentional it belongs in `deck_contract.EXPECTED_PLACEHOLDERS`, not in a
+  lowered severity.
+
+**Expected, NOT a defect — the overview cap-table picture's `#VALUE!` cells:**
+
+An earlier draft of this file recorded the overview cap-table picture rendering
+`#VALUE!` as a Phase A defect finding. **It is the normal state of a shipped cap
+table**, and the reclassification matters because that finding was being used to
+justify the Phase B vision tier.
+
+The mechanism, confirmed on `pitch-workbook.xlsx`: `E47:F48` are CapIQ UDF calls
+for the CY2026/CY2027 forward estimates (`SP_REV_EST` / `SP_EBITDA_EST`), rows
+34/35 wrap them in `IFERROR(..., "n/a ")`, and the EV/metric rows then divide
+`$F$31` by that text (`E40` is `=+$F$31/E$35`). An un-refreshed CapIQ estimate
+therefore propagates `#VALUE!` into `E39:F40` **by design**, and CapIQ cannot be
+refreshed in this environment. The same applies to the comps and precedents tabs
+(array formulas ship un-evaluated for the analyst to refresh) and to the
+financial-summary LTM link (`#N/A` until the combined workbook exists).
+
+So `deck_contract`'s error scan covers **text shapes and table cells only** and
+deliberately does not reach into rasterised range pictures. A scan that blanket-
+flagged error values would fail every correct deck.
+
+A workbook-side scan is not the missing piece either: of the **121 formula cells**
+on the fixture's `captable` tab, **zero** carry a cached value under
+`data_only=True` — including `=TODAY()-1` at `F6`. openpyxl only returns the
+cache, and nothing populated it, so such a scan sees `None` everywhere and looks
+green while proving nothing. Real values exist only on the COM path (live Excel)
+or after a LibreOffice recalc-on-load; anything built there must fail loudly on an
+empty cache rather than pass quietly.
+
+The general point the finding was reaching for still holds — **a string scan
+cannot see inside a rasterised picture**, and the cap-table picture is a flat
+`image/png` with no text layer and no alt text — but `#VALUE!` is a poor example
+of it, and is not why the vision tier exists. The vision tier exists for overlap,
+collision, unreadable contrast and chart-label pileup, which need a model looking
+at pixels.
+
+**Clean:** neither deck's *text* contains `#N/A`, `#REF!`, or `{{` — the v0.5.16 /
+v0.5.33 cross-tab relink and deletion gate did their job on the pitch run. (Text
+and table cells; rasterised range pictures are out of scope by design, above.)
+
+**One geometric defect, earnings-update fixture only** — `TextBox 6` on slide 3
+(Business Updates) renders 0.14" below a box that declares 0.28" of height, and
+the bullets are autofit-crushed to roughly 4 pt: legible in outline, not on the
+page. Reported as `rendered-overflow`. That deck is v0.5.5-era, 29 releases
+before `fit_overview_textbox` existed.
+
+Also on that slide, **not** reported: the summary box (`Rectangle 1111`, top
+6.221") is drawn over the broker table's last row (`EPS, Adj.`), whose frame
+declares a bottom of 6.184". Only 0.037" of that overflow lands outside every
+declared box, under the reporting tolerance — see the "Known blind spot" section
+of `deck_contract.py`'s module docstring. A reviewer still reaches the slide via
+the `TextBox 6` finding above.
+
+### What `verify_deck` reports on each fixture
+
+Pinned by `test_deck_contract.py::test_frozen_fixture_findings_are_pinned`, so a
+change here is a conscious edit rather than silent drift.
+
+| | pitch | earnings-update |
+|---|---|---|
+| `unfilled-token` (blocking) | 10 | 9 |
+| `unsubstituted-currency-token` (blocking) | 2 | — |
+| `rendered-overflow` (blocking) | — | 1 |
+| `expected-placeholder` (advisory) | 2 | 1 |
+| `vision-review` (advisory) | 10 | 3 |
+| **total** | 12 blocking / 12 advisory | 10 blocking / 4 advisory |
+
+No `shape-outside-slide` and no `table-taller-than-library` on either: the
+geometric tier measures each deck against the **blank library** rather than
+against zero, so the library's own off-canvas tombstone shapes and its footnote
+placeholders' overhang cancel out.
 
 ## Render parity
 
