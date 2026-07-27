@@ -64,6 +64,7 @@ from pathlib import Path
 
 from pptx import Presentation
 
+from excel_to_powerpoint import excel_com_app  # the ONLY Excel-COM instance owner
 from pptx_helpers import INFOR_ACCENTS
 from template_layout import OVERVIEW_SLIDE_INDEX
 
@@ -655,104 +656,95 @@ def _build_charts_com(
     workbook: Path, sheet_name: str, first_col: int, last_col: int, data_rows: list[int]
 ) -> dict[int, bytes]:
     """Build one native chart per metric row on the tab via Excel COM, export PNGs."""
-    try:
-        import pythoncom
-        import win32com.client
-    except ImportError as exc:
-        raise RuntimeError(
-            "pywin32 is required for COM-based chart building (Windows + Excel only)"
-        ) from exc
-
-    pythoncom.CoInitialize()
-    excel = None
     tmp_paths: list[str] = []
     pngs: dict[int, bytes] = {}
     try:
-        excel = win32com.client.DispatchEx("Excel.Application")
         # Chart.Export is reliable when the instance can render; run visible but
-        # parked far off-screen so the window never pops in front of the analyst
-        # (mirrors excel_to_powerpoint._excel_com_range_to_png).
-        excel.Visible = True
-        excel.DisplayAlerts = False
-        try:
-            excel.WindowState = _XL_NORMAL
-            excel.Top, excel.Left = 4000, 6000
-        except Exception:
-            pass
-        wb = excel.Workbooks.Open(str(workbook), ReadOnly=False, UpdateLinks=0)
-        try:
-            # Resolve the INDEX/MATCH LTM links (and any other formulas) before
-            # snapshotting; a flaky recalc must never abort the build.
+        # parked far off-screen so the window never pops in front of the analyst.
+        with excel_com_app(
+            purpose="COM-based chart building", visible=True, park_offscreen=True
+        ) as excel:
+            wb = ws = chart_obj = chart = series = None
             try:
-                excel.CalculateFull()
-            except Exception:
-                pass
+                wb = excel.Workbooks.Open(str(workbook), ReadOnly=False, UpdateLinks=0)
+                # Resolve the INDEX/MATCH LTM links (and any other formulas) before
+                # snapshotting; a flaky recalc must never abort the build.
+                try:
+                    excel.CalculateFull()
+                except Exception:
+                    pass
 
-            ws = wb.Worksheets(sheet_name)
-            try:
-                excel.ActiveWindow.ScrollRow = 1
-                excel.ActiveWindow.ScrollColumn = 1
-            except Exception:
-                pass
-            # Replace, never accumulate: a re-run must not park a second set of
-            # four charts next to the stale one (mirrors the openpyxl path).
-            try:
-                ws.ChartObjects().Delete()
-            except Exception:
-                pass
-            # Every chart is built + exported at the same on-screen "scratch" spot
-            # (row 1) and only then moved to its 2x2 grid slot below the data. A
-            # chart parked below the rendered viewport exports as a blank/0-byte
-            # PNG, so exporting in-place would silently lose the lower-row charts.
-            scratch_left = ws.Cells(1, 2).Left
-            scratch_top = ws.Cells(1, 1).Top
-            # Park the persisted charts one blank row below the last metric row
-            # (row 11 for the default four metrics, row 15 for eight).
-            grid_top = ws.Cells(data_rows[-1] + 2, 1).Top
-            for idx, data_row in enumerate(data_rows):
-                chart_obj = ws.ChartObjects().Add(
-                    Left=scratch_left, Top=scratch_top, Width=_CHART_W_PT, Height=_CHART_H_PT
-                )
-                chart = chart_obj.Chart
-                chart.ChartType = _XL_COLUMN_CLUSTERED
-                while chart.SeriesCollection().Count > 0:
-                    chart.SeriesCollection(1).Delete()
-                series = chart.SeriesCollection().NewSeries()
-                series.Values = ws.Range(
-                    ws.Cells(data_row, first_col), ws.Cells(data_row, last_col)
-                )
-                series.XValues = ws.Range(
-                    ws.Cells(_HEADER_ROW, first_col), ws.Cells(_HEADER_ROW, last_col)
-                )
-                _format_com_chart(chart, series)
+                ws = wb.Worksheets(sheet_name)
+                try:
+                    excel.ActiveWindow.ScrollRow = 1
+                    excel.ActiveWindow.ScrollColumn = 1
+                except Exception:
+                    pass
+                # Replace, never accumulate: a re-run must not park a second set of
+                # four charts next to the stale one (mirrors the openpyxl path).
+                try:
+                    ws.ChartObjects().Delete()
+                except Exception:
+                    pass
+                # Every chart is built + exported at the same on-screen "scratch" spot
+                # (row 1) and only then moved to its 2x2 grid slot below the data. A
+                # chart parked below the rendered viewport exports as a blank/0-byte
+                # PNG, so exporting in-place would silently lose the lower-row charts.
+                scratch_left = ws.Cells(1, 2).Left
+                scratch_top = ws.Cells(1, 1).Top
+                # Park the persisted charts one blank row below the last metric row
+                # (row 11 for the default four metrics, row 15 for eight).
+                grid_top = ws.Cells(data_rows[-1] + 2, 1).Top
+                for idx, data_row in enumerate(data_rows):
+                    chart_obj = ws.ChartObjects().Add(
+                        Left=scratch_left, Top=scratch_top, Width=_CHART_W_PT, Height=_CHART_H_PT
+                    )
+                    chart = chart_obj.Chart
+                    chart.ChartType = _XL_COLUMN_CLUSTERED
+                    while chart.SeriesCollection().Count > 0:
+                        chart.SeriesCollection(1).Delete()
+                    series = chart.SeriesCollection().NewSeries()
+                    series.Values = ws.Range(
+                        ws.Cells(data_row, first_col), ws.Cells(data_row, last_col)
+                    )
+                    series.XValues = ws.Range(
+                        ws.Cells(_HEADER_ROW, first_col), ws.Cells(_HEADER_ROW, last_col)
+                    )
+                    _format_com_chart(chart, series)
 
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                    tmp = f.name
-                tmp_paths.append(tmp)
-                chart.Export(Filename=tmp, FilterName="PNG")
-                with open(tmp, "rb") as fh:
-                    pngs[data_row] = fh.read()
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                        tmp = f.name
+                    tmp_paths.append(tmp)
+                    chart.Export(Filename=tmp, FilterName="PNG")
+                    with open(tmp, "rb") as fh:
+                        pngs[data_row] = fh.read()
 
-                # Park the (now-exported) chart in its grid slot for persistence.
-                col = idx % 2
-                row = idx // 2
-                chart_obj.Left = scratch_left + col * (_CHART_W_PT + 18)
-                chart_obj.Top = grid_top + row * (_CHART_H_PT + 18)
+                    # Park the (now-exported) chart in its grid slot for persistence.
+                    col = idx % 2
+                    row = idx // 2
+                    chart_obj.Left = scratch_left + col * (_CHART_W_PT + 18)
+                    chart_obj.Top = grid_top + row * (_CHART_H_PT + 18)
 
-            wb.Save()
-        finally:
-            wb.Close(SaveChanges=False)
+                wb.Save()
+            finally:
+                # Release the COM children in reverse creation order before
+                # `excel_com_app` quits the instance.
+                series = chart = chart_obj = ws = None
+                if wb is not None:
+                    try:
+                        wb.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+                    wb = None
         return pngs
+    except RuntimeError:
+        raise  # already normalized (excel_com_app's startup / pywin32 guards)
     except Exception as exc:
-        # COM failures surface as pywintypes.com_error (no Excel install, a dead
-        # instance, a failed Open), not RuntimeError — normalize so the caller's
-        # `except RuntimeError` fallback to openpyxl+LibreOffice actually engages
-        # (mirrors slide_render's COM wrapping).
+        # COM failures surface as pywintypes.com_error (a dead instance, a failed
+        # Open), not RuntimeError — normalize so the caller's `except RuntimeError`
+        # fallback to openpyxl+LibreOffice actually engages.
         raise RuntimeError(f"Excel COM chart build failed: {exc}") from exc
     finally:
-        if excel is not None:
-            excel.Quit()
-        pythoncom.CoUninitialize()
         for tmp in tmp_paths:
             if os.path.exists(tmp):
                 os.unlink(tmp)
@@ -841,108 +833,101 @@ def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: in
     scratch spot (a chart parked below the rendered viewport exports blank), then
     parked below the data and saved so it persists on the tab.
     """
-    try:
-        import pythoncom
-        import win32com.client
-    except ImportError as exc:
-        raise RuntimeError(
-            "pywin32 is required for COM-based chart building (Windows + Excel only)"
-        ) from exc
-
-    pythoncom.CoInitialize()
-    excel = None
     tmp_paths: list[str] = []
     try:
-        excel = win32com.client.DispatchEx("Excel.Application")
-        excel.Visible = True
-        excel.DisplayAlerts = False
-        try:
-            excel.WindowState = _XL_NORMAL
-            excel.Top, excel.Left = 4000, 6000
-        except Exception:
-            pass
-        wb = excel.Workbooks.Open(str(workbook), ReadOnly=False, UpdateLinks=0)
-        try:
+        with excel_com_app(
+            purpose="COM-based chart building", visible=True, park_offscreen=True
+        ) as excel:
+            wb = ws = chart_obj = chart = series = None
             try:
-                excel.CalculateFull()
-            except Exception:
-                pass
-            ws = wb.Worksheets(sheet_name)
-            try:
-                excel.ActiveWindow.ScrollRow = 1
-                excel.ActiveWindow.ScrollColumn = 1
-            except Exception:
-                pass
-            # Replace, never accumulate: a re-run must not park a second pie
-            # next to the stale one (mirrors the openpyxl path).
-            try:
-                ws.ChartObjects().Delete()
-            except Exception:
-                pass
-            # Write/refresh the Top-4 + "Other" source block the chart references,
-            # then let Excel resolve its formulas before the chart is exported.
-            src_first, src_last, grouped = _write_pie_source_block_com(
-                ws, first_row, last_row
-            )
-            try:
-                excel.Calculate()
-            except Exception:
-                pass
-            scratch_left = ws.Cells(1, 2).Left
-            scratch_top = ws.Cells(1, 1).Top
-            chart_obj = ws.ChartObjects().Add(
-                Left=scratch_left, Top=scratch_top, Width=_PIE_W_PT, Height=_PIE_H_PT
-            )
-            chart = chart_obj.Chart
-            chart.ChartType = _XL_PIE
-            while chart.SeriesCollection().Count > 0:
-                chart.SeriesCollection(1).Delete()
-            series = chart.SeriesCollection().NewSeries()
-            # Chart the source block's fraction column (grouped Top-4 + "Other"),
-            # not the raw segment rows — the value labels then read each share.
-            series.Values = ws.Range(
-                ws.Cells(src_first, _PIE_SRC_FRAC_COL), ws.Cells(src_last, _PIE_SRC_FRAC_COL)
-            )
-            series.XValues = ws.Range(
-                ws.Cells(src_first, _PIE_SRC_NAME_COL), ws.Cells(src_last, _PIE_SRC_NAME_COL)
-            )
-            # Which slices are above the 3% label threshold: the grouped shares
-            # recomputed in Python from the column-B $ amounts (same rule as the
-            # openpyxl builder, deterministic regardless of recalc state).
-            _format_com_pie(
-                chart,
-                series,
-                src_last - src_first + 1,
-                _fractions_from_amounts(grouped),
-            )
+                wb = excel.Workbooks.Open(str(workbook), ReadOnly=False, UpdateLinks=0)
+                try:
+                    excel.CalculateFull()
+                except Exception:
+                    pass
+                ws = wb.Worksheets(sheet_name)
+                try:
+                    excel.ActiveWindow.ScrollRow = 1
+                    excel.ActiveWindow.ScrollColumn = 1
+                except Exception:
+                    pass
+                # Replace, never accumulate: a re-run must not park a second pie
+                # next to the stale one (mirrors the openpyxl path).
+                try:
+                    ws.ChartObjects().Delete()
+                except Exception:
+                    pass
+                # Write/refresh the Top-4 + "Other" source block the chart references,
+                # then let Excel resolve its formulas before the chart is exported.
+                src_first, src_last, grouped = _write_pie_source_block_com(
+                    ws, first_row, last_row
+                )
+                try:
+                    excel.Calculate()
+                except Exception:
+                    pass
+                scratch_left = ws.Cells(1, 2).Left
+                scratch_top = ws.Cells(1, 1).Top
+                chart_obj = ws.ChartObjects().Add(
+                    Left=scratch_left, Top=scratch_top, Width=_PIE_W_PT, Height=_PIE_H_PT
+                )
+                chart = chart_obj.Chart
+                chart.ChartType = _XL_PIE
+                while chart.SeriesCollection().Count > 0:
+                    chart.SeriesCollection(1).Delete()
+                series = chart.SeriesCollection().NewSeries()
+                # Chart the source block's fraction column (grouped Top-4 + "Other"),
+                # not the raw segment rows — the value labels then read each share.
+                series.Values = ws.Range(
+                    ws.Cells(src_first, _PIE_SRC_FRAC_COL), ws.Cells(src_last, _PIE_SRC_FRAC_COL)
+                )
+                series.XValues = ws.Range(
+                    ws.Cells(src_first, _PIE_SRC_NAME_COL), ws.Cells(src_last, _PIE_SRC_NAME_COL)
+                )
+                # Which slices are above the 3% label threshold: the grouped shares
+                # recomputed in Python from the column-B $ amounts (same rule as the
+                # openpyxl builder, deterministic regardless of recalc state).
+                _format_com_pie(
+                    chart,
+                    series,
+                    src_last - src_first + 1,
+                    _fractions_from_amounts(grouped),
+                )
 
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                tmp = f.name
-            tmp_paths.append(tmp)
-            chart.Export(Filename=tmp, FilterName="PNG")
-            with open(tmp, "rb") as fh:
-                png = fh.read()
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                    tmp = f.name
+                tmp_paths.append(tmp)
+                chart.Export(Filename=tmp, FilterName="PNG")
+                with open(tmp, "rb") as fh:
+                    png = fh.read()
 
-            # Park the (now-exported) chart below the data for persistence.
-            try:
-                chart_obj.Left = scratch_left
-                chart_obj.Top = ws.Cells(last_row + 3, 1).Top
-            except Exception:
-                pass
+                # Park the (now-exported) chart below the data for persistence.
+                try:
+                    chart_obj.Left = scratch_left
+                    chart_obj.Top = ws.Cells(last_row + 3, 1).Top
+                except Exception:
+                    pass
 
-            wb.Save()
-        finally:
-            wb.Close(SaveChanges=False)
+                wb.Save()
+            finally:
+                # Release the COM children in reverse creation order before
+                # `excel_com_app` quits the instance.
+                series = chart = chart_obj = ws = None
+                if wb is not None:
+                    try:
+                        wb.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+                    wb = None
         return png
+    except RuntimeError:
+        raise  # already normalized (excel_com_app's startup / pywin32 guards)
     except Exception as exc:
         # Normalize COM failures (pywintypes.com_error) to RuntimeError so the
         # caller's fallback to openpyxl+LibreOffice engages — same as
         # _build_charts_com.
         raise RuntimeError(f"Excel COM pie build failed: {exc}") from exc
     finally:
-        if excel is not None:
-            excel.Quit()
-        pythoncom.CoUninitialize()
         for tmp in tmp_paths:
             if os.path.exists(tmp):
                 os.unlink(tmp)

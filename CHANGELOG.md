@@ -2,6 +2,58 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
+## [0.5.38] — 2026-07-27
+
+**Migration Phase I items 2–3 — Windows COM dev-path hygiene.** Dev-environment friction only; nothing here touches production (Cowork has no Excel and never enters these paths) and Phase D deletes the COM path outright. Item 1 (degrade an exhausted clipboard retry) is included since it is what made the new opt-in gate untrustworthy. **Phase I item order in `docs/migration-plan.md` is unchanged; Phase B step 3 and Phases C–H are untouched.**
+
+**The orphan diagnosis in the plan was wrong, and the measurements are recorded here because the wrong fix is cheap to re-derive.** Every count is an `EXCEL.EXE` delta around a real render on the dev box, 2026-07-27:
+
+- `.Quit()` was **already called at all four sites** — "add cleanup" was never the fix, as the plan itself noted.
+- **Holding `wb` / `ws` / `rng` bound across `Quit()` does not orphan the process.** `CoUninitialize()` tears the apartment down and releases the proxies belonging to it, so the server exits regardless: measured **delta 0 both with and without** an explicit release, including with the raising frame's traceback deliberately retained the way a pytest report retains it for the whole session. The explicit release this release adds is therefore **ordering hygiene, not the leak fix**.
+- Skipping `CoUninitialize()` entirely — the exact consequence of the unguarded `Quit()` — also measured **delta 0** on its own.
+- **The actual orphan source is aborted COM *startup*.** When `CoCreateInstanceEx` fails with `-2146959355 "Server execution failed"`, the launch has already succeeded: Excel is up with ~60 threads and a full add-in set, but the interface handoff timed out, so no pointer comes back and there is nothing to `Quit()`. Reproduced twice consecutively during diagnosis, and confirmed **one orphan per failure** by instrumenting it — a full opted-in suite run printed exactly two startup failures and ended **delta 2**. All orphans on the box share one signature (0.22–0.28 GB, ~60–65 threads, 19 windows, all invisible, **no dialog**), and it matches Phase A/B's 13 (3.18 GB ÷ 13 ≈ 0.245 GB each).
+
+**This is not fixable from inside the process** and the release is explicit about that rather than implying a cure: a graceful `Quit()` needs a pointer that was never handed back, and both alternatives are barred — force-killing trips Office crash-resiliency (the 2026-07-13 CapIQ incident) and a ROT attach would grab the analyst's own Excel and close their workbooks. So the failure is made **loud** instead of silent. It previously normalized to `RuntimeError`, the caller quietly degraded to LibreOffice, the test still passed, and the orphan was invisible — which is exactly how 13 accumulate unnoticed. **The prevention that works is item 2's gating:** a default `pytest` run now launches zero Excels.
+
+### Added
+- **`excel_to_powerpoint.excel_com_app()` — the one Excel-COM instance owner**, the same consolidation `find_soffice()` did for LibreOffice and for the same reason: four independently-maintained copies is how they diverged. It owns the apartment (`CoInitialize` / `CoUninitialize`), the `DispatchEx`, the app-level settings (`visible`, `park_offscreen`, `hide_comment_indicators`), and a **guarded** `Quit()`. All four Excel COM sites now go through it: `excel_to_powerpoint._excel_com_range_to_png`, `financial_charts._build_charts_com` / `_build_pie_com`, `workbook_aggregator._combine_via_com`.
+- **A loud stderr warning on a failed Excel startup**, naming the orphan signature and stating that the instance must not be force-killed. This is what turned an invisible leak into a countable one mid-release.
+- **`excel_com` pytest marker + the `INFOR_EXCEL_COM_TESTS` gate** (naming follows the existing `INFOR_SLIDE_RENDER_BACKEND` convention), registered in `pyproject.toml`'s `markers` and enforced by one `pytest_collection_modifyitems` hook in `infor-beta/scripts/tests/conftest.py` — not four copy-pasted skipifs.
+
+### Fixed
+- **The `Quit()` guard divergence.** All four Excel sites called `excel.Quit()` bare inside a `finally`, so a Quit that raises — a modal add-in dialog does exactly this — escaped and `CoUninitialize()` never ran, leaving the thread COM-initialized for the rest of the process. `slide_render.py` had guarded its Quit since it was written; these now match it. **`slide_render` keeps its `Presentations.Count == 0` check and Excel deliberately gets none:** PowerPoint's COM server is a singleton that `DispatchEx` attaches to, while Excel's `DispatchEx` creates a genuinely separate process, so `Quit` is always safe there — and a count guard would *skip* the Quit whenever a workbook failed to close, causing the very leak being fixed.
+- **COM children are released in reverse creation order, inside the apartment that created them,** before the instance is quit — workbook / worksheet / range / chart at the range renderer, workbook / worksheet / chart / series at both chart builders, and the combined + source workbooks at the aggregator. Ordering hygiene rather than the leak fix (see above), and the aggregator's error path now closes an abandoned `combined` / `src` instead of leaving them to apartment teardown.
+- **An exhausted clipboard retry degrades to LibreOffice instead of aborting** (Phase I item 1). `_ClipboardPasteError` stays deliberately **not** a `RuntimeError` — a transient clipboard race must not be mislabeled "Excel unavailable" — but `_render_range_to_png` now catches it explicitly alongside `RuntimeError`, with a distinct stderr note that retries were spent. Without this the opt-in gate could not be trusted to tell you whether the COM path works, since `test_pitch_deck_inserts_cap_table_into_slide7` could go red on a race rather than a defect.
+- `financial_charts._build_charts_com` / `_build_pie_com` gained an `except RuntimeError: raise` pass-through so an "Excel unavailable" message is no longer double-wrapped as "chart build failed: Excel COM unavailable: …" (matching the aggregator's existing shape).
+
+### Changed
+- The four Excel-spawning tests are **skipped by default**: `test_slide_library_poc.py::test_pitch_deck_inserts_cap_table_into_slide7` / `::test_pitch_deck_inserts_ownership_into_slide` / `::test_pitch_deck_inserts_institutions_with_bloomberg` and `test_earnings_update_assembler.py::test_assemble_earnings_update_deck_inserts_cap_table_from_workbook`. Each spawns a real Excel that **must** run `Visible = True` (`CopyPicture(xlScreen)` captures what the instance renders, so an invisible one exports blank), the Cap IQ Office Tools add-in loads into it, finds its Cap IQ Pro sibling absent, and raises its own `MessageBox` — which `excel.DisplayAlerts = False` cannot suppress, because that gates Excel's alerts and not a third-party add-in's. *Accepted consequence:* the Windows COM path loses routine coverage. Phase D deletes it and nothing else depends on these tests.
+- **Three neighbouring surfaces deliberately left ungated:** `test_assemble_earnings_update_deck_inserts_cap_table_via_libreoffice` (the LibreOffice variant — exactly what should keep running by default, and a test pins that it stays unmarked), `test_render_parity.py` (PowerPoint COM, already behind its own skipif), and `test_deck_contract.py` (spawns no Excel at all).
+
+### Tests
+- `test_excel_to_powerpoint.py` gains a fake COM stack so the ordering guarantees are locked **on every platform without spawning Excel** — spawning it is what leaks. Covers: `Quit` → `CoUninitialize` ordering; the apartment torn down even when `Quit` raises, when the body raises, and when no app was ever obtained; a failed startup normalized to `RuntimeError` **and** warned about; off-screen parking + `xlNoIndicator`; missing pywin32 → `RuntimeError`; and `chart_obj.Delete` → `wb.Close` → `Quit` → `CoUninitialize` order through the real `_excel_com_range_to_png`.
+- **A drift lock mirroring the `find_soffice` one:** `test_no_bare_excel_dispatch_outside_the_instance_owner` scans `scripts/**/*.py` for a reappearing bare `DispatchEx("Excel.Application")`. `slide_render` is exempt by design — it dispatches *PowerPoint*, which needs the opposite handling.
+- Both `_render_range_to_png` fall-throughs are pinned (exhausted clipboard retry **and** the pre-existing `RuntimeError`), plus the gate itself: env-var parsing, `pytest_collection_modifyitems` skipping marked items only, all four tests carrying the marker, and the LibreOffice variant not carrying it.
+
+### Verification
+Eight measured runs, `EXCEL.EXE` counted before and after each. **The delta equals the number of logged startup aborts, every time; zero aborts is always delta 0.** No run leaked on the render or Quit path.
+
+| Run | Mode | Result | Startup aborts | Delta |
+| --- | --- | --- | --- | --- |
+| Four COM tests, **pre-fix** | opted-in | 4 passed | 0 | **0** |
+| Four COM tests, post-fix (same invocation) | opted-in | 4 passed | 0 | **0** |
+| Each gated test alone (4 runs) | opted-in | 1 passed ×4 | 0 | **0, 0, 0, 0** |
+| `-m excel_com`, run 1 | opted-in | 4 passed | 0 | **0** |
+| `-m excel_com`, run 2 | opted-in | 4 passed | 3 logged | **1** |
+| Full suite ×2 | **default** | 597 passed, 6 skipped | 0 | **0, 0** |
+| Full suite | opted-in | 601 passed, 2 skipped | 2 logged | **2** |
+
+- `pytest` (default) spawns **no Excel at all** — the exit criterion is met.
+- The four gated tests are delta 0 **and were delta 0 pre-fix on the identical invocation**, so that is a no-regression result, not evidence the gate cured anything.
+- **The startup-abort rate is load-dependent and the orphans are self-amplifying:** the first pre-fix run, with one resident orphan, aborted zero times; by the end of the session, with 11 resident, aborts were frequent — each resident instance slows the next boot and widens the handoff timeout window. Diagnosis and verification themselves produced ~11 orphans for this reason. They release on reboot; **do not force-kill them.**
+- Run 2 also surfaced `Windows fatal exception: code 0x800706b5` (`RPC_S_UNKNOWN_IF`) from faulthandler — a call into an instance whose interface had gone, the same contention symptom. It did not fail the run.
+- **The exit criterion of delta 0 on a *full* opted-in run is therefore not met, and is not reachable by any change available under the stated constraints** (no force-kill, no ROT attach). Closing it needs the startup-abort window itself narrowed — see the open follow-up in `docs/migration-plan.md`.
+
 ## [0.5.37] — 2026-07-27
 
 **Migration Phase B steps 1–2 — the visual oracle.** Adds `scripts/deck_contract.py` and `verify_deck(path) -> list[Finding]`, the machine that looks at a built deck. **Step 3 (promoting it into both assemblers as write → verify → repair → re-verify, then deleting the estimation code) is deliberately NOT in this release** — it needs analyst sign-off, so no assembler was touched and `palatino_text_width_in` / `fit_overview_textbox`'s em constants / `_set_table_height`'s row minimums / `_fill_risk_table`'s font ladder are all still in place.

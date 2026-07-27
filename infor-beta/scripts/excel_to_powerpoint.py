@@ -25,6 +25,8 @@ stretched to fit either way.
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import io
 import os
 import shutil
@@ -32,7 +34,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from pptx import Presentation
 
@@ -49,6 +53,149 @@ class _ClipboardPasteError(Exception):
     from the COM path as "Excel unavailable" and falls through to LibreOffice,
     which would mislabel this transient clipboard race.
     """
+
+
+# ---------------------------------------------------------------------------
+# The one Excel-COM instance owner (v0.5.38)
+# ---------------------------------------------------------------------------
+# Every `DispatchEx("Excel.Application")` in this plugin goes through
+# `excel_com_app` — the same consolidation `find_soffice` did for LibreOffice,
+# and for the same reason: four hand-rolled copies is how they diverged. The
+# divergence found at v0.5.37 was the Quit guard — `slide_render.py` wrapped its
+# `Quit()` in try/except so a raising Quit could not skip `CoUninitialize()`,
+# while all four Excel sites called `excel.Quit()` bare in a `finally`, where a
+# raising Quit escapes and the apartment is never torn down.
+#
+# What the 2026-07-27 measurements actually showed, so the next reader does not
+# re-derive it (all counts are EXCEL.EXE deltas around a real render):
+#
+#   * `.Quit()` was already called at all four sites. "Add cleanup" was never
+#     the fix.
+#   * Holding `wb` / `ws` / `rng` bound across `Quit()` did NOT orphan the
+#     process: `CoUninitialize()` tears the apartment down and releases the
+#     proxies that belong to it, so the server exits anyway — measured delta 0
+#     both with and without an explicit release, including with the raising
+#     frame's traceback deliberately retained the way a pytest report retains
+#     it. The explicit release below is therefore **defence in depth, not the
+#     leak fix**: it keeps the release ordered and inside the apartment that
+#     created the proxies, rather than relying on apartment teardown to mop up.
+#   * The orphans on this box came from somewhere else entirely — see
+#     `_dispatch_excel` below.
+_ORPHAN_SIGNATURE_NOTE = (
+    "A fully-started EXCEL.EXE with no window and no client may remain "
+    "(~0.27 GB, ~60 invisible windows, no dialog — the observed orphan "
+    "signature); it cannot be closed gracefully because no interface pointer "
+    "was ever handed back. Do not force-kill it: that trips Office "
+    "crash-resiliency and disables the analyst's CapIQ add-ins."
+)
+
+
+def _dispatch_excel(win32com_client: Any, purpose: str) -> Any:
+    """Create a private Excel instance, or raise RuntimeError.
+
+    **The measured orphan source.** When `CoCreateInstanceEx` fails with
+    `-2146959355 "Server execution failed"` the launch itself already succeeded:
+    Excel is up with ~60 threads and a full add-in set, but the interface handoff
+    timed out, so no pointer comes back and there is nothing to `Quit()`. Two
+    such orphans were produced in a row on 2026-07-27, and they are
+    byte-for-byte the signature of the pre-existing orphan and of Phase B's 13
+    (3.18 GB / 13 ≈ 0.245 GB each).
+
+    This is not fixable from here — a graceful `Quit()` needs a pointer we never
+    got, and the alternatives are both barred: force-killing corrupts Office
+    add-in state, and attaching through the ROT would grab the analyst's own
+    Excel and close their workbooks. So the failure is made **loud** instead of
+    silent. Previously it was normalized to RuntimeError and the caller quietly
+    degraded to LibreOffice, the test still passed, and the orphan was invisible
+    — which is exactly how 13 accumulate unnoticed.
+    """
+    try:
+        return win32com_client.DispatchEx("Excel.Application")
+    except Exception as exc:
+        print(
+            f"[excel-com] Excel COM startup failed for {purpose}: {exc}. "
+            f"{_ORPHAN_SIGNATURE_NOTE}",
+            file=sys.stderr,
+        )
+        # Normalize so each caller's documented `except RuntimeError` fall-through
+        # to its non-COM backend engages. (Failures PAST startup stay raw by
+        # design — a mid-operation Excel error must not read as "no Excel".)
+        raise RuntimeError(f"Excel COM unavailable: {exc}") from exc
+
+
+@contextlib.contextmanager
+def excel_com_app(
+    *,
+    purpose: str,
+    visible: bool,
+    park_offscreen: bool = False,
+    hide_comment_indicators: bool = False,
+) -> Iterator[Any]:
+    """Own one private Excel instance for the duration of the block.
+
+    Handles the apartment (`CoInitialize` / `CoUninitialize`), the `DispatchEx`,
+    the standard app-level settings, and — the part that kept drifting — a
+    **guarded** `Quit()` that cannot skip the apartment teardown.
+
+    `visible`: renders need it (`CopyPicture(xlScreen)` and `Chart.Export`
+    capture what the instance renders, and a recalc invalidates an invisible
+    instance's render buffer, yielding a blank picture); the workbook merge does
+    not. `park_offscreen` moves that visible window far off-screen so it never
+    pops in front of the analyst. `hide_comment_indicators` suppresses the red
+    cell-comment corner triangles that `CopyPicture` would otherwise bake into
+    the picture.
+
+    Callers MUST release their own COM children (workbook, worksheet, range,
+    chart, …) in reverse creation order before leaving the block — this context
+    manager can only see the app. See the notes above for why that is ordering
+    hygiene rather than the leak fix.
+    """
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:
+        raise RuntimeError(
+            f"pywin32 is required for {purpose} (Windows + Microsoft Excel only)"
+        ) from exc
+
+    pythoncom.CoInitialize()
+    app = None
+    try:
+        app = _dispatch_excel(win32com.client, purpose)
+        app.Visible = visible
+        app.DisplayAlerts = False
+        if visible and park_offscreen:
+            try:
+                app.WindowState = _XL_NORMAL  # minimized windows don't render
+                app.Top, app.Left = 4000, 6000
+            except Exception:
+                pass
+        if hide_comment_indicators:
+            try:
+                app.DisplayCommentIndicator = 0  # xlNoIndicator
+            except Exception:
+                pass
+        yield app
+    finally:
+        if app is not None:
+            # Guarded, unlike the four bare `excel.Quit()` calls this replaces: a
+            # Quit that raises (a modal add-in dialog will do it) must not escape
+            # the finally and skip CoUninitialize, which would leave the thread
+            # COM-initialized for the rest of the process.
+            try:
+                app.Quit()
+            except Exception as exc:
+                print(
+                    f"[excel-com] Excel Quit() failed after {purpose}: {exc}. "
+                    "Releasing the instance and tearing down the COM apartment "
+                    "anyway.",
+                    file=sys.stderr,
+                )
+            app = None
+            gc.collect()
+        # Last, and unconditionally: this is what actually releases the
+        # apartment's proxies and lets the server exit.
+        pythoncom.CoUninitialize()
 
 
 def insert_excel_into_placeholder(
@@ -108,120 +255,115 @@ def _render_range_to_png(workbook: Path, sheet_name: str, source_range: str) -> 
             # Excel COM unavailable on this Windows machine (no Excel install
             # or pywin32 missing). Fall through to LibreOffice.
             pass
+        except _ClipboardPasteError as exc:
+            # The clipboard retry loop EXHAUSTED. `_ClipboardPasteError` is
+            # deliberately not a RuntimeError (a transient clipboard race must
+            # not be mislabeled "Excel unavailable"), but once the retries are
+            # spent this render is not going to happen on the COM path — and
+            # LibreOffice renders the same range fine. Degrading here is the
+            # difference between a deck with a cap-table picture and an aborted
+            # stage; letting it escape is why
+            # `test_pitch_deck_inserts_cap_table_into_slide7` could go red on a
+            # transient race.
+            print(
+                f"[excel-com] Excel clipboard retries exhausted ({exc}); "
+                "falling back to the LibreOffice range renderer.",
+                file=sys.stderr,
+            )
     return _libreoffice_range_to_png(workbook, sheet_name, source_range)
 
 
 def _excel_com_range_to_png(workbook: Path, sheet_name: str, source_range: str) -> io.BytesIO:
     """Open Excel via COM, copy the range, export as PNG via a temporary chart."""
-    try:
-        import pythoncom
-        import win32com.client
-    except ImportError as exc:
-        raise RuntimeError(
-            "pywin32 is required for COM-based cap-table insertion "
-            "(Windows + Microsoft Excel only)"
-        ) from exc
-
-    pythoncom.CoInitialize()
-    excel = None
     tmp_png_path: str | None = None
     try:
-        try:
-            excel = win32com.client.DispatchEx("Excel.Application")
-        except Exception as exc:
-            # No Excel install — the COM class isn't registered, which surfaces
-            # as pywintypes.com_error, not RuntimeError. Normalize it so the
-            # caller's documented fall-through to LibreOffice engages. (Failures
-            # PAST this point stay raw by design — see the retry loop below —
-            # so a mid-operation Excel error is not mistaken for "no Excel".)
-            raise RuntimeError(f"Excel COM unavailable: {exc}") from exc
-        # CopyPicture(xlScreen) captures what the instance renders, and the
-        # recalc below invalidates the render buffer of an invisible instance
-        # (producing a blank picture). So run visible — but parked far
-        # off-screen so the window doesn't pop in front of the analyst.
-        excel.Visible = True
-        excel.DisplayAlerts = False
-        try:
-            excel.WindowState = _XL_NORMAL  # minimized windows don't render
-            excel.Top, excel.Left = 4000, 6000
-        except Exception:
-            pass
-        try:
-            # CopyPicture(xlScreen) renders cell-comment indicators (the red
-            # corner triangles — e.g. the ownership F35 / cap-table F7/F16
-            # source comments) into the picture. Hide them app-side for this
-            # throwaway instance; the workbook keeps its comments.
-            excel.DisplayCommentIndicator = 0  # xlNoIndicator
-        except Exception:
-            pass
-        wb = excel.Workbooks.Open(str(workbook), ReadOnly=True, UpdateLinks=0)
-        try:
-            # openpyxl drops the cached value of every formula cell when the
-            # cap-table skill saves the workbook, and the template is manual-calc,
-            # so the EV cascade (market cap, net debt, Enterprise Value, multiples
-            # — all in-workbook math, no CapIQ functions in the picture range)
-            # loads blank. Force a recalc before snapshotting or the image shows
-            # empty cells down through Enterprise Value.
+        with excel_com_app(
+            purpose="COM-based cap-table insertion",
+            visible=True,
+            park_offscreen=True,
+            hide_comment_indicators=True,
+        ) as excel:
+            wb = ws = rng = chart_obj = chart = None
             try:
-                excel.CalculateFull()
-            except Exception:
-                # A flaky recalc is no worse than the prior no-recalc behaviour;
-                # never let it abort the deck assembly.
-                pass
-
-            ws = wb.Worksheets(sheet_name)
-            rng = ws.Range(source_range)
-            # CopyPicture uses the shared Office clipboard; retry a couple of
-            # times in case another Excel instance momentarily holds it.
-            last_exc: Exception | None = None
-            for attempt in range(5):
+                wb = excel.Workbooks.Open(str(workbook), ReadOnly=True, UpdateLinks=0)
+                # openpyxl drops the cached value of every formula cell when the
+                # cap-table skill saves the workbook, and the template is
+                # manual-calc, so the EV cascade (market cap, net debt, Enterprise
+                # Value, multiples — all in-workbook math, no CapIQ functions in
+                # the picture range) loads blank. Force a recalc before
+                # snapshotting or the image shows empty cells down through
+                # Enterprise Value.
                 try:
-                    rng.CopyPicture(Appearance=_XL_SCREEN, Format=_XL_PICTURE)
-                    chart_obj = ws.ChartObjects().Add(
-                        Left=0, Top=0, Width=rng.Width, Height=rng.Height
-                    )
-                    try:
-                        chart = chart_obj.Chart
-                        chart.ChartArea.Border.LineStyle = 0
-                        chart.Paste()
-                        # Chart.Paste silently no-ops when the shared Office
-                        # clipboard hasn't been populated by CopyPicture yet
-                        # (a race — empirically ~1-in-3 on a fast machine), and
-                        # the export is then a blank white picture. A successful
-                        # paste always lands the metafile as a chart Shape, so
-                        # an empty Shapes collection means the paste failed:
-                        # raise to engage this retry loop (fresh CopyPicture).
-                        if chart.Shapes.Count == 0:
-                            raise _ClipboardPasteError(
-                                f"Chart.Paste pasted nothing for {source_range} "
-                                "(Office clipboard not ready)"
-                            )
-                        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                            tmp_png_path = f.name
-                        chart.Export(Filename=tmp_png_path, FilterName="PNG")
-                    finally:
-                        chart_obj.Delete()
-                    break
-                except Exception as exc:
-                    last_exc = exc
-                    time.sleep(0.5 * (attempt + 1))
-            else:
-                # Exhausted retries. Re-raise the underlying Excel/clipboard
-                # error itself (a com_error, not a RuntimeError) so the caller
-                # does not mistake it for "pywin32 unavailable" and fall through
-                # to the LibreOffice renderer.
-                raise last_exc  # type: ignore[misc]
+                    excel.CalculateFull()
+                except Exception:
+                    # A flaky recalc is no worse than the prior no-recalc
+                    # behaviour; never let it abort the deck assembly.
+                    pass
 
-            with open(tmp_png_path, "rb") as f:
-                buf = io.BytesIO(f.read())
-            buf.seek(0)
-            return buf
-        finally:
-            wb.Close(SaveChanges=False)
+                ws = wb.Worksheets(sheet_name)
+                rng = ws.Range(source_range)
+                # CopyPicture uses the shared Office clipboard; retry a couple of
+                # times in case another Excel instance momentarily holds it.
+                last_exc: Exception | None = None
+                for attempt in range(5):
+                    try:
+                        rng.CopyPicture(Appearance=_XL_SCREEN, Format=_XL_PICTURE)
+                        chart_obj = ws.ChartObjects().Add(
+                            Left=0, Top=0, Width=rng.Width, Height=rng.Height
+                        )
+                        try:
+                            chart = chart_obj.Chart
+                            chart.ChartArea.Border.LineStyle = 0
+                            chart.Paste()
+                            # Chart.Paste silently no-ops when the shared Office
+                            # clipboard hasn't been populated by CopyPicture yet
+                            # (a race — empirically ~1-in-3 on a fast machine), and
+                            # the export is then a blank white picture. A successful
+                            # paste always lands the metafile as a chart Shape, so
+                            # an empty Shapes collection means the paste failed:
+                            # raise to engage this retry loop (fresh CopyPicture).
+                            if chart.Shapes.Count == 0:
+                                raise _ClipboardPasteError(
+                                    f"Chart.Paste pasted nothing for {source_range} "
+                                    "(Office clipboard not ready)"
+                                )
+                            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                                tmp_png_path = f.name
+                            chart.Export(Filename=tmp_png_path, FilterName="PNG")
+                        finally:
+                            chart = None
+                            try:
+                                chart_obj.Delete()
+                            finally:
+                                chart_obj = None
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        time.sleep(0.5 * (attempt + 1))
+                else:
+                    # Exhausted retries. Re-raise the underlying Excel/clipboard
+                    # error itself (a com_error or _ClipboardPasteError, not a
+                    # RuntimeError) so the caller does not mistake it for
+                    # "pywin32 unavailable". `_render_range_to_png` catches both
+                    # and degrades to LibreOffice.
+                    raise last_exc  # type: ignore[misc]
+
+                with open(tmp_png_path, "rb") as f:
+                    buf = io.BytesIO(f.read())
+                buf.seek(0)
+                return buf
+            finally:
+                # Release the COM children in reverse creation order, inside the
+                # apartment that created them, before `excel_com_app` quits the
+                # instance and tears the apartment down.
+                chart = chart_obj = rng = ws = None
+                if wb is not None:
+                    try:
+                        wb.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+                    wb = None
     finally:
-        if excel is not None:
-            excel.Quit()
-        pythoncom.CoUninitialize()
         if tmp_png_path is not None and os.path.exists(tmp_png_path):
             os.unlink(tmp_png_path)
 

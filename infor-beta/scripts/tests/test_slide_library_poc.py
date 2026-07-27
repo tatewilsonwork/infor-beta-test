@@ -721,6 +721,7 @@ def test_pitch_wireframe_expands_market_entry_slides():
 
 # ─── Fix 2: cap table pasted onto slide 7 + footnote currency ────────────────
 
+@pytest.mark.excel_com
 def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
     pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
     workbook = _write_sample_cap_table(tmp_path / "cap-table.xlsx", currency="USD")
@@ -741,6 +742,7 @@ def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
 
 # ─── Ownership: insider table pasted onto the ownership slide ─────────────────
 
+@pytest.mark.excel_com
 def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
     pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
     import pywintypes
@@ -775,6 +777,7 @@ def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
     assert "[Placeholder for Institutional Ownership]" in text
 
 
+@pytest.mark.excel_com
 def test_pitch_deck_inserts_institutions_with_bloomberg(tmp_path: Path):
     """With a Bloomberg export ingested, the ownership slide's right
     "Institutions" placeholder (Rectangle 3) is replaced by the

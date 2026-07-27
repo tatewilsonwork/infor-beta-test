@@ -2,8 +2,11 @@
 
 These exercise the platform-independent pieces — filename normalization,
 Excel-safe sheet naming, theme resolution, and the openpyxl merge backend — so
-they run on any platform without Microsoft Excel. The COM backend is covered
-only on Windows-with-Excel runtimes and is not unit-tested here.
+they run on any platform without Microsoft Excel.
+
+The COM merge's *cleanup ordering* is covered here too, via the fake COM stack in
+``tests/fake_com.py`` — no Excel is spawned (spawning it is what leaks). Its merge
+*semantics* still only run on Windows-with-Excel.
 """
 
 import re
@@ -850,3 +853,170 @@ def test_recalc_strips_lo_union_operators(tmp_path: Path, monkeypatch):
         load_workbook(wb_path)["S"]["B1"].value
         == "=_xlfn.PERCENTILE.INC((A1:A2,A4:A5),0.25)"
     )
+
+
+# ─── COM merge cleanup ordering (v0.5.38) ─────────────────────────────────────
+#
+# `_combine_via_com` had NO pytest coverage before v0.5.38 — the fallback tests
+# above stub it out entirely — so its restructuring onto `excel_com_app` would
+# otherwise have shipped unverified.
+
+
+class _FakeSheets:
+    def __init__(self, names):
+        self._names = list(names)
+
+    @property
+    def Count(self):
+        return len(self._names)
+
+    def __call__(self, which):
+        return _FakeSheet(self, which)
+
+
+class _FakeSheet:
+    def __init__(self, sheets, which):
+        self._sheets = sheets
+        self.Name = which if isinstance(which, str) else sheets._names[which - 1]
+
+    def Delete(self):
+        self._sheets._names.remove(self.Name)
+
+
+class _FakeSourceWorkbook:
+    def __init__(self, log, tab):
+        self._log = log
+        self._tab = tab
+        self.Worksheets = _FakeWorksheets(tab)
+
+    def Close(self, SaveChanges):  # noqa: N803
+        self._log.append("src.Close")
+
+
+class _FakeWorksheets:
+    def __init__(self, tab):
+        self._tab = tab
+        self.Count = 1
+
+    def __call__(self, which):
+        return self
+
+    @property
+    def Name(self):
+        return self._tab
+
+    def Copy(self, _before, _after):
+        self._copied = True
+
+
+def _fake_combined(log, sheets):
+    class _Combined:
+        Sheets = sheets
+
+        def Activate(self):
+            pass
+
+        def ApplyTheme(self, _p):
+            pass
+
+        def SaveAs(self, path, FileFormat):  # noqa: N803
+            log.append("combined.SaveAs")
+            Path(path).write_bytes(b"xlsx")
+
+        def Close(self, SaveChanges):  # noqa: N803
+            log.append("combined.Close")
+
+    return _Combined()
+
+
+def _install_com_merge_fakes(monkeypatch, log, *, sheets_after_copy):
+    from tests.fake_com import FakeExcelApp, install_fake_com
+
+    sheets = _FakeSheets(["Sheet1"])
+    combined = _fake_combined(log, sheets)
+
+    class _Workbooks:
+        def Add(self):
+            return combined
+
+    class _App(FakeExcelApp):
+        Workbooks = _Workbooks()
+
+    install_fake_com(monkeypatch, log, _App(log))
+
+    def _open(_excel, path, read_only):
+        if read_only:
+            return _FakeSourceWorkbook(log, Path(path).stem)
+        return combined
+
+    monkeypatch.setattr(workbook_aggregator, "_open_workbook", _open)
+    monkeypatch.setattr(
+        workbook_aggregator,
+        "_relink_cross_tab_com",
+        lambda *_a, **_k: (sheets._names.extend(sheets_after_copy), True)[1],
+    )
+    return sheets
+
+
+def test_com_merge_closes_workbooks_before_quit(tmp_path: Path, monkeypatch):
+    """Sources and the combined workbook are released inside the apartment that
+    created them, before Excel is quit and the apartment torn down."""
+    from tests.fake_com import assert_released_before_quit
+
+    log: list[str] = []
+    _install_com_merge_fakes(monkeypatch, log, sheets_after_copy=[])
+    src = tmp_path / "ltm-metrics.xlsx"
+    Workbook().save(src)
+
+    # A source Copy that appends nothing trips the partial-append bail; use the
+    # theme-less happy path instead by pretending one sheet landed.
+    monkeypatch.setattr(workbook_aggregator, "_tab_name", lambda *a, **k: "ltm-metrics")
+
+    out = tmp_path / "pitch-Project X.xlsx"
+    with pytest.raises(RuntimeError):
+        # The fake Sheets.Count never grows, so the partial-append guard fires —
+        # which is the ERROR path, and the point: cleanup must still be ordered.
+        workbook_aggregator._combine_via_com([("ltm-metrics", src)], out, None)
+
+    assert_released_before_quit(log, "src.Close", "combined.Close")
+
+
+def test_com_merge_error_path_normalizes_to_runtime_error(tmp_path: Path, monkeypatch):
+    """A raw com_error must become RuntimeError so `combine_workbooks` falls back
+    to the openpyxl merge instead of aborting the stage."""
+    log: list[str] = []
+    from tests.fake_com import FakeExcelApp, install_fake_com
+
+    class _App(FakeExcelApp):
+        @property
+        def Workbooks(self):
+            raise OSError("(-2147352567, 'Exception occurred.', None, None)")
+
+    install_fake_com(monkeypatch, log, _App(log))
+    src = tmp_path / "ltm-metrics.xlsx"
+    Workbook().save(src)
+
+    with pytest.raises(RuntimeError, match="Excel COM workbook aggregation failed"):
+        workbook_aggregator._combine_via_com(
+            [("ltm-metrics", src)], tmp_path / "out.xlsx", None
+        )
+
+    # Even on the rawest failure, the instance is quit and the apartment released.
+    assert log[-2:] == ["Quit", "CoUninitialize"]
+
+
+def test_com_merge_startup_failure_is_runtime_error(tmp_path: Path, monkeypatch):
+    """The measured orphan source, reaching the aggregator: a failed startup must
+    read as RuntimeError so the openpyxl merge takes over."""
+    log: list[str] = []
+    from tests.fake_com import install_fake_com
+
+    install_fake_com(monkeypatch, log, None)  # DispatchEx raises
+    src = tmp_path / "ltm-metrics.xlsx"
+    Workbook().save(src)
+
+    with pytest.raises(RuntimeError, match="Excel COM unavailable"):
+        workbook_aggregator._combine_via_com(
+            [("ltm-metrics", src)], tmp_path / "out.xlsx", None
+        )
+    assert log[-1] == "CoUninitialize"

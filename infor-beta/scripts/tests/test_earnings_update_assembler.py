@@ -299,6 +299,7 @@ def test_assemble_earnings_update_deck_does_not_bold_overview_headers(tmp_path: 
     assert all(run.font.bold is not True for run in header_runs)
 
 
+@pytest.mark.excel_com
 def test_assemble_earnings_update_deck_inserts_cap_table_from_workbook(tmp_path: Path):
     pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
 

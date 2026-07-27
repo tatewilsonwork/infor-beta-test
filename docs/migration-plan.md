@@ -196,18 +196,20 @@ It earns a slot anyway because all three items actively obstruct migration work:
 a red test, a modal dialog that stalls every run, and a memory leak that makes
 everything else flakier.
 
-1. **Degrade an exhausted clipboard retry.** `_ClipboardPasteError`
+1. ✅ **shipped v0.5.38** (with items 2–3 — it is what made the new opt-in gate
+   trustworthy). **Degrade an exhausted clipboard retry.** `_ClipboardPasteError`
    (`excel_to_powerpoint.py:45`) is deliberately *not* a `RuntimeError` so a
-   transient clipboard race is not mislabeled "Excel unavailable" — keep that
-   reasoning. But the fallback site (`:107`) catches only `RuntimeError`, so when
-   the retries **exhaust**, the error escapes and aborts instead of degrading to
-   LibreOffice, which is installed and renders it fine. Catch it explicitly
-   alongside `RuntimeError`, with a distinct stderr note that retries were
-   exhausted. This is why
-   `test_pitch_deck_inserts_cap_table_into_slide7` is red at v0.5.36.
+   transient clipboard race is not mislabeled "Excel unavailable" — that
+   reasoning is kept. But the fallback site (`:107`) caught only `RuntimeError`,
+   so when the retries **exhausted**, the error escaped and aborted instead of
+   degrading to LibreOffice, which is installed and renders it fine. Now caught
+   explicitly alongside `RuntimeError`, with a distinct stderr note that retries
+   were spent. This is why `test_pitch_deck_inserts_cap_table_into_slide7` was
+   red at v0.5.36 — and why the opt-in gate could not otherwise tell you whether
+   the COM path actually works.
 
-2. **Gate the four Excel-COM tests behind an opt-in env var (default off).**
-   `test_slide_library_poc.py:724`, `:744`, `:778` and
+2. ✅ **shipped v0.5.38.** **Gate the four Excel-COM tests behind an opt-in env
+   var (default off).** `test_slide_library_poc.py:724`, `:744`, `:778` and
    `test_earnings_update_assembler.py:302` each spawn a real Excel via
    `DispatchEx` (`excel_to_powerpoint.py:130`), and each **must** set
    `Visible = True` (`:142`) because `CopyPicture(xlScreen)` renders nothing in an
@@ -220,11 +222,45 @@ everything else flakier.
    `INFOR_SLIDE_RENDER_BACKEND`).
    *Accepted consequence:* the Windows COM path loses routine coverage. That is
    fine — Phase D deletes it, and nothing else depends on those tests.
+   Delivered as an `excel_com` marker (registered in `pyproject.toml`, enforced by
+   one `pytest_collection_modifyitems` hook in `tests/conftest.py`) gated on
+   `INFOR_EXCEL_COM_TESTS`. The LibreOffice cap-table variant,
+   `test_render_parity.py` and `test_deck_contract.py` are deliberately ungated.
 
-3. **Fix the orphan leak.** Each COM render leaves its Excel instance unreleased:
-   measured 2026-07-27, **13 orphaned `EXCEL.EXE`, 3.18 GB working set, zero with
-   a window**. Release the instance per render. This is independent of the dialog
-   and is the bigger contributor to general flakiness.
+3. ✅ **shipped v0.5.38 — but the diagnosis above was wrong, and the leak is only
+   partly preventable.** All measurements are `EXCEL.EXE` deltas around a real
+   render, 2026-07-27:
+   - `.Quit()` was **already called at all four sites**.
+   - **Refs outstanding at `CoUninitialize()` do not orphan the process.**
+     `CoUninitialize()` tears the apartment down and releases its proxies, so the
+     server exits regardless — **delta 0 with and without** an explicit release,
+     including with the raising frame's traceback retained the way a pytest report
+     retains it. Skipping `CoUninitialize()` outright also measured **delta 0**.
+     So "release the instance per render" was not the fix; it shipped as ordering
+     hygiene.
+   - **The real source is aborted COM *startup*.** `CoCreateInstanceEx` failing
+     with `-2146959355 "Server execution failed"` happens *after* Excel has
+     launched: it is up with ~60 threads and a full add-in set, but the interface
+     handoff timed out, so no pointer comes back and there is nothing to `Quit()`.
+     Confirmed **one orphan per failure** — a full opted-in run logged exactly two
+     startup failures and ended delta 2. All orphans share one signature
+     (0.22–0.28 GB, ~60–65 threads, 19 windows, all invisible, **no dialog**),
+     matching the 13 above (3.18 GB ÷ 13 ≈ 0.245 GB each).
+   - **Not fixable in-process:** a graceful `Quit()` needs a pointer that was
+     never handed back, force-killing is barred, and a ROT attach would grab the
+     analyst's own Excel. So it is made **loud** on stderr instead of silent —
+     previously it normalized to `RuntimeError`, the caller degraded to
+     LibreOffice, the test passed, and the orphan was invisible, which is how 13
+     accumulate unnoticed. **Item 2's gating is the prevention that works:** a
+     default `pytest` run launches zero Excels.
+   - Also fixed here: the **`Quit()` guard divergence** (all four Excel sites
+     called `excel.Quit()` bare in a `finally`, so a raising Quit skipped
+     `CoUninitialize()`; `slide_render` had always guarded its own), consolidated
+     into one `excel_to_powerpoint.excel_com_app()` instance owner — the same
+     consolidation `find_soffice()` did, with a matching drift lock. Excel gets
+     **no** `Workbooks.Count` guard: its `DispatchEx` makes a separate process so
+     `Quit` is always safe, and a count guard would skip the Quit exactly when a
+     workbook failed to close.
 
 > **Do NOT disable Office Tools with an HKCU `SPGMI.ExcelShell` key.** A
 > same-named HKCU key overrides HKLM wholesale, and a manifest-less stub is
@@ -234,8 +270,26 @@ everything else flakier.
 > and needs no repair. Likewise never force-kill `EXCEL.EXE` / `POWERPNT.EXE`;
 > close orphans with a graceful `Quit()`.
 
-**Exit:** `pytest` green with no Excel spawned by default; orphan count zero after
-an opted-in COM run.
+**Exit:** `pytest` green with no Excel spawned by default — ✅ met (597 passed, 6
+skipped, delta 0, twice). Orphan count zero after an opted-in COM run — ✅ met for
+the four gated tests (delta 0, and delta 0 pre-fix on the identical invocation, so
+a no-regression rather than a cure), ❌ **not met for a full opted-in suite run**
+(delta 2). Across eight measured runs the **delta equals the number of logged
+startup aborts every time, and zero aborts is always delta 0** — no run leaked on
+the render or Quit path. The abort rate is load-dependent and the orphans are
+**self-amplifying**: the first run, with one resident orphan, aborted zero times;
+by the end of the session, with 11 resident, aborts were frequent, since each
+resident instance slows the next boot into the handoff-timeout window. That
+criterion is unreachable under the stated constraints; it needs the startup-abort
+window itself narrowed.
+
+**Open follow-up (not scheduled — Phase D deletes this path):** the exposure is
+per-`DispatchEx`, and a single pitch deck assembly launches a fresh Excel for
+*each* range render (cap table, ownership insiders, ownership institutions).
+Reusing one instance across the renders in one assembly would cut the
+startup-abort exposure roughly threefold. Deliberately not done here: it changes
+`insert_excel_into_placeholder`'s contract and both assemblers, which is
+gold-plating a path with a scheduled deletion date.
 
 ## Phase C — Name-based template addressing
 

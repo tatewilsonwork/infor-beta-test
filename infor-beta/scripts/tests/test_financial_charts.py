@@ -1,9 +1,14 @@
 """Unit tests for the Financial Summary chart builder + placeholder insertion.
 
 These cover the cross-platform pieces — period-axis detection, the openpyxl
-chart formatting, and PNG-into-placeholder insertion. The Excel COM and
-LibreOffice render backends are environmental (per repo convention) and are
-exercised by the skill's mandatory QA render, not here.
+chart formatting, and PNG-into-placeholder insertion. The LibreOffice render
+backend is environmental (per repo convention) and is exercised by the skill's
+mandatory QA render, not here.
+
+The Excel COM builders' *cleanup ordering* and error normalization ARE covered,
+via the fake COM stack in ``tests/fake_com.py`` — no Excel is spawned, which is
+the point: spawning it is what leaks. Their render *fidelity* remains
+environmental.
 """
 
 import zipfile
@@ -865,3 +870,172 @@ def test_orchestrator_raises_on_row_slide_mismatch(tmp_path: Path, monkeypatch):
     )
     with pytest.raises(ValueError):
         render_financial_summary_charts_into_deck(deck_path=deck, combined_workbook_path=path)
+
+
+# ─── COM chart builders: cleanup ordering (v0.5.38) ───────────────────────────
+#
+# `_build_charts_com` / `_build_pie_com` had NO pytest coverage before v0.5.38 —
+# the fallback tests above stub them out entirely — so their restructuring onto
+# `excel_com_app` would otherwise have shipped unverified. The fake COM stack
+# spawns no Excel, which is the point: spawning it is what leaks.
+
+
+class _FakeChartCells:
+    Left = 10.0
+    Top = 20.0
+
+
+class _FakeSeriesCollection:
+    def __init__(self):
+        self.Count = 0
+
+    def __call__(self, _i=None):
+        return self
+
+    def NewSeries(self):
+        return _FakeSeries()
+
+    def Delete(self):
+        pass
+
+
+class _FakeSeries:
+    Values = None
+    XValues = None
+
+
+class _FakeComChart:
+    ChartType = None
+
+    def __init__(self, log):
+        self._log = log
+        self._sc = _FakeSeriesCollection()
+
+    def SeriesCollection(self, _i=None):
+        return self._sc
+
+    def Export(self, Filename, FilterName):  # noqa: N803
+        self._log.append("Export")
+        Path(Filename).write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
+
+
+class _FakeChartObject:
+    Left = 0.0
+    Top = 0.0
+
+    def __init__(self, log):
+        self.Chart = _FakeComChart(log)
+
+
+class _FakeChartObjects:
+    def __init__(self, log):
+        self._log = log
+
+    def Delete(self):
+        self._log.append("ChartObjects.Delete")
+
+    def Add(self, **_kwargs):
+        return _FakeChartObject(self._log)
+
+
+class _FakeChartWorksheet:
+    def __init__(self, log):
+        self._log = log
+
+    def ChartObjects(self):
+        return _FakeChartObjects(self._log)
+
+    def Cells(self, _r, _c=None):
+        return _FakeChartCells()
+
+    def Range(self, _a, _b=None):
+        return object()
+
+
+class _FakeChartWorkbook:
+    def __init__(self, log):
+        self._log = log
+
+    def Worksheets(self, _name):
+        return _FakeChartWorksheet(self._log)
+
+    def Save(self):
+        self._log.append("wb.Save")
+
+    def Close(self, SaveChanges):  # noqa: N803
+        self._log.append("wb.Close")
+
+
+def _install_chart_com_fakes(monkeypatch, log):
+    from tests.fake_com import FakeExcelApp, install_fake_com
+
+    class _Workbooks:
+        def Open(self, _path, **_kwargs):
+            return _FakeChartWorkbook(log)
+
+    class _App(FakeExcelApp):
+        Workbooks = _Workbooks()
+
+        def CalculateFull(self):
+            pass
+
+        def Calculate(self):
+            pass
+
+    install_fake_com(monkeypatch, log, _App(log))
+
+
+def test_com_chart_build_closes_workbook_before_quit(tmp_path: Path, monkeypatch):
+    from tests.fake_com import assert_released_before_quit
+
+    log: list[str] = []
+    _install_chart_com_fakes(monkeypatch, log)
+    monkeypatch.setattr(financial_charts, "_format_com_chart", lambda *_a: None)
+
+    pngs = financial_charts._build_charts_com(
+        tmp_path / "combined.xlsx", "financial-summary", 2, 7, [6, 7, 8, 9]
+    )
+
+    assert sorted(pngs) == [6, 7, 8, 9]
+    assert all(v.startswith(b"\x89PNG") for v in pngs.values())
+    assert log.count("Export") == 4, "one chart exported per metric row"
+    assert_released_before_quit(log, "wb.Save", "wb.Close")
+
+
+def test_com_pie_build_closes_workbook_before_quit(tmp_path: Path, monkeypatch):
+    from tests.fake_com import assert_released_before_quit
+
+    log: list[str] = []
+    _install_chart_com_fakes(monkeypatch, log)
+    monkeypatch.setattr(financial_charts, "_format_com_pie", lambda *_a: None)
+    monkeypatch.setattr(
+        financial_charts, "_write_pie_source_block_com", lambda _ws, _f, _l: (30, 34, [1.0, 2.0])
+    )
+
+    png = financial_charts._build_pie_com(tmp_path / "combined.xlsx", "ltm-metrics", 10, 14)
+
+    assert png.startswith(b"\x89PNG")
+    assert_released_before_quit(log, "wb.Save", "wb.Close")
+
+
+@pytest.mark.parametrize(
+    "builder, args",
+    [
+        ("_build_charts_com", ("financial-summary", 2, 7, [6])),
+        ("_build_pie_com", ("ltm-metrics", 10, 14)),
+    ],
+)
+def test_com_chart_startup_failure_is_runtime_error(tmp_path: Path, monkeypatch, builder, args):
+    """A failed startup must read as RuntimeError so the documented fallback to
+    openpyxl + LibreOffice engages — and must not be double-wrapped."""
+    from tests.fake_com import install_fake_com
+
+    log: list[str] = []
+    install_fake_com(monkeypatch, log, None)  # DispatchEx raises
+
+    with pytest.raises(RuntimeError, match="Excel COM unavailable") as exc_info:
+        getattr(financial_charts, builder)(tmp_path / "combined.xlsx", *args)
+
+    assert "chart build failed" not in str(exc_info.value), "no double wrapping"
+    assert "pie build failed" not in str(exc_info.value)
+    assert log[-1] == "CoUninitialize"
