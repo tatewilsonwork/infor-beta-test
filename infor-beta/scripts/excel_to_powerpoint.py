@@ -279,6 +279,15 @@ def find_soffice() -> str | None:
 
     Prefers PATH (how Cowork / Linux prod resolves it), then falls back to the
     standard per-platform install locations.
+
+    **The single LibreOffice locator — never call ``shutil.which("soffice")``
+    directly.** A bare PATH lookup is what shipped in v0.5.35: the renderer was
+    flipped to LibreOffice-by-default on every platform while five other call
+    sites (this module's range renderer, three in ``financial_charts``, one in
+    ``workbook_aggregator``) still resolved through PATH only, so on a Windows
+    dev box (MSI install, no PATH entry) they failed or silently degraded —
+    inverting the dev/prod parity the flip existed to create. The drift lock in
+    ``test_excel_to_powerpoint.py`` fails if a bare lookup reappears.
     """
     found = shutil.which("soffice") or shutil.which("libreoffice")
     if found:
@@ -348,18 +357,19 @@ def _libreoffice_range_to_png(workbook: Path, sheet_name: str, source_range: str
     and resolve to `#NAME?`, which the template's IFERROR wrappers degrade to
     `n/a`; the in-workbook arithmetic and the hardcoded LTM column still compute.
 
-    Requires `soffice` (or `libreoffice`) on PATH and the `pypdfium2`
+    Requires LibreOffice (resolved by `find_soffice`) and the `pypdfium2`
     package. Raises RuntimeError with a clear message if either is
     missing — the conductor surfaces this to the analyst.
     """
     from openpyxl import load_workbook
 
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = find_soffice()
     if soffice is None:
         raise RuntimeError(
-            "LibreOffice (soffice/libreoffice) not found on PATH; required "
-            "for the non-Windows cap-table renderer. Install LibreOffice or "
-            "run the conductor on a Windows machine with Excel."
+            "LibreOffice (soffice/libreoffice) not found on PATH or in the "
+            "standard install locations; required for the non-Windows "
+            "cap-table renderer. Install LibreOffice or run the conductor on "
+            "a Windows machine with Excel."
         )
     try:
         import pypdfium2 as pdfium
