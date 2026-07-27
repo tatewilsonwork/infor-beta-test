@@ -44,6 +44,7 @@ the PRL-class bug becomes a caught test failure instead of a v0.5.35.
 |---|---|---|---|
 | A | Clear the decks — versioning, render parity, golden fixtures | — | ~0 |
 | B | Visual oracle → converge loop | A | +400 / −300 |
+| I | Windows COM dev-path hygiene (runs between B1 and B2) | B1 | ~+60 |
 | C | Name-based template addressing | B | −350 |
 | D | One workbook, one backend | C | **−2,000** |
 | E | Conductor as code | D | −150 |
@@ -56,9 +57,11 @@ different files, no overlap. B → C → D → E → F is a hard chain; H2 wants
 first.
 
 Phases A–G are structural: they attack the failure mode the release history
-exposes. **H is the one phase driven by analyst experience rather than defect
-data** — it is in the plan because the intake is unpleasant to use, not because
-it breaks.
+exposes. Two phases are not. **H is driven by analyst experience rather than
+defect data** — the intake is unpleasant to use, not broken. **I is dev-machine
+hygiene** on a path production never touches and Phase D deletes; it is scheduled
+only because a red test, a modal dialog, and a memory leak obstruct the migration
+work itself.
 
 ---
 
@@ -136,6 +139,58 @@ Three steps. Do not put the checker inside the assembler until it is trusted.
 Each becomes measure-then-adjust against the real render.
 
 **Exit:** all three historical bugs caught by CI; the estimation code is gone.
+
+## Phase I — Windows COM dev-path hygiene
+
+**Scheduled: between B1 and B2.** Dev-environment friction only — nothing here
+touches production (Cowork has no Excel and never enters these paths) and Phase D
+deletes the COM path outright. Keep it minimal; do not gold-plate a path with a
+scheduled execution date.
+
+It earns a slot anyway because all three items actively obstruct migration work:
+a red test, a modal dialog that stalls every run, and a memory leak that makes
+everything else flakier.
+
+1. **Degrade an exhausted clipboard retry.** `_ClipboardPasteError`
+   (`excel_to_powerpoint.py:45`) is deliberately *not* a `RuntimeError` so a
+   transient clipboard race is not mislabeled "Excel unavailable" — keep that
+   reasoning. But the fallback site (`:107`) catches only `RuntimeError`, so when
+   the retries **exhaust**, the error escapes and aborts instead of degrading to
+   LibreOffice, which is installed and renders it fine. Catch it explicitly
+   alongside `RuntimeError`, with a distinct stderr note that retries were
+   exhausted. This is why
+   `test_pitch_deck_inserts_cap_table_into_slide7` is red at v0.5.36.
+
+2. **Gate the four Excel-COM tests behind an opt-in env var (default off).**
+   `test_slide_library_poc.py:724`, `:744`, `:778` and
+   `test_earnings_update_assembler.py:302` each spawn a real Excel via
+   `DispatchEx` (`excel_to_powerpoint.py:130`), and each **must** set
+   `Visible = True` (`:142`) because `CopyPicture(xlScreen)` renders nothing in an
+   invisible instance. The S&P Cap IQ Office Tools add-in loads into that
+   throwaway instance, finds its Cap IQ Pro sibling absent, and raises its own
+   `MessageBox` — which `excel.DisplayAlerts = False` cannot suppress, because it
+   gates Excel's alerts, not a third-party add-in's. Up to four modal dialogs per
+   run, each stalling the suite until dismissed. Gating matches where Phase A
+   already went (LibreOffice default everywhere; PowerPoint COM opt-in via
+   `INFOR_SLIDE_RENDER_BACKEND`).
+   *Accepted consequence:* the Windows COM path loses routine coverage. That is
+   fine — Phase D deletes it, and nothing else depends on those tests.
+
+3. **Fix the orphan leak.** Each COM render leaves its Excel instance unreleased:
+   measured 2026-07-27, **13 orphaned `EXCEL.EXE`, 3.18 GB working set, zero with
+   a window**. Release the instance per render. This is independent of the dialog
+   and is the bigger contributor to general flakiness.
+
+> **Do NOT disable Office Tools with an HKCU `SPGMI.ExcelShell` key.** A
+> same-named HKCU key overrides HKLM wholesale, and a manifest-less stub is
+> exactly what disabled the analyst's CapIQ add-ins on 2026-07-13. The registry is
+> currently healthy (HKLM `LoadBehavior=3`, intact `.vsto` manifest, no HKCU stub,
+> no `Resiliency\DisabledItems`) — this is **not** a recurrence of that incident
+> and needs no repair. Likewise never force-kill `EXCEL.EXE` / `POWERPNT.EXE`;
+> close orphans with a graceful `Quit()`.
+
+**Exit:** `pytest` green with no Excel spawned by default; orphan count zero after
+an opted-in COM run.
 
 ## Phase C — Name-based template addressing
 
