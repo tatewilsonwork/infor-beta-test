@@ -15,14 +15,17 @@ Two tiers, deliberately separated so non-determinism stays out of the gate.
   2. ``shape-outside-slide`` — declared shape extents vs. the slide box.
   3. ``table-taller-than-library`` — a filled table's declared height vs. the
      height the shipped library ships that same table at.
-  4. ``rendered-overflow`` — **rendered** ink below a shape's declared bottom.
+  4. ``rendered-overflow`` — **rendered** ink below a shape's declared bottom,
+     counted where no other shape has claimed the territory.
+  5. ``masked-overflow`` — the same overflow **attributed to one shape** by
+     rendering it alone, for the shapes check 4 is structurally blind to.
 
-Check 4 is the one that matters most, and it is why this module renders. Checks
-1–3 read the XML, and the XML is exactly what the historical bugs were invisible
-to: PRL17's market-entry table declared 5.710" — *under* the library's 5.720" —
-and rendered 5.91", because **a stored row height is only a render-time minimum**
-and the layout engine re-grows any row whose text needs more. Nothing in the file
-is wrong. You have to look at the pixels.
+Checks 4 and 5 are why this module renders. Checks 1–3 read the XML, and the XML
+is exactly what the historical bugs were invisible to: PRL17's market-entry table
+declared 5.710" — *under* the library's 5.720" — and rendered 5.91", because **a
+stored row height is only a render-time minimum** and the layout engine re-grows
+any row whose text needs more. Nothing in the file is wrong. You have to look at
+the pixels.
 
 **Vision — advisory, agent-inspected, surfaced at the `deck` checkpoint.**
 Overlap, collision, unreadable contrast, chart-label pileup. These need a model
@@ -104,25 +107,32 @@ Read a `rendered-overflow` depth accordingly: it is a LibreOffice measurement,
 and may run slightly larger than what PowerPoint shows. It says content does not
 fit its declared box; it is not a PowerPoint pixel prediction.
 
-Known blind spot in `rendered-overflow`
----------------------------------------
-It counts ink that lands in **nobody's** declared box, which is what keeps it free
-of false positives — but it means an overflow that runs *straight into the shape
-below* is masked by that shape's own claim and measures as almost nothing.
+`masked-overflow` — the same measurement, per shape
+--------------------------------------------------
+`rendered-overflow` counts ink that lands in **nobody's** declared box. That is
+what keeps it free of false positives, and it is also structurally blind to an
+overflow running *straight into the shape below*, which the lower shape's own
+claim masks. No threshold fixes it: inside that box the pixels belong to two
+shapes at once.
 
-The earnings-update fixture is the known instance: its broker table declares a
-bottom of 6.184" with the summary box starting at 6.221", and the table's
-re-grown last row (`EPS, Adj.`) renders underneath the summary box's text. Only
-0.037" of that overflow is unclaimed, under the reporting tolerance, so the table
-itself is not flagged. Pixels cannot separate the two shapes' ink inside that box,
-so this is not fixable by tightening a threshold.
+The earnings-update fixture is the instance. Its broker table declares a bottom of
+6.184" with the summary box starting at 6.221", and the table's re-grown last row
+(`EPS, Adj.`) renders underneath the summary box's text. Only **0.037"** of that
+overflow is unclaimed — under tolerance, so `rendered-overflow` says nothing.
 
-Two things mitigate it: the vision tier's clearance hint reports a gap the *fill*
-tightened relative to the library (it stays quiet when the tight gap is the
-library's own design, as it is here), and in practice such a slide usually carries
-another blocking finding — this one does, on its Business Updates block — which
-puts a reviewer on the slide anyway. Closing it properly needs per-shape render
-attribution, which is Phase B step 3 territory.
+`masked-overflow` measures it by **rendering the shape alone**. For every
+growth-prone shape with a masking neighbour, a probe deck carries the shape on its
+own layout plus an empty slide of that same layout; subtracting the second from
+the first leaves nothing but that shape's ink, and the deepest inked row below its
+declared bottom is the answer. On the broker table that is **0.153"** against a
+0.000" library baseline. Absolute positioning is what makes it sound — removing a
+neighbour cannot move or re-wrap the shape under test — and every probe rides in
+one deck, so the pass costs one extra conversion (2.5-7.7 s measured).
+
+This is a prerequisite for the converge loop, not a refinement: a repair step
+that cannot attribute overflowing ink to a shape does not know which shape to
+shrink. A shape `rendered-overflow` already reported is skipped, so the two checks
+never double-count the same defect.
 
 Relationship to the estimation code
 -----------------------------------
@@ -149,11 +159,13 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.oxml.ns import qn
 from pptx.util import Emu
 
 from template_layout import LIBRARY_SLIDE_MARKERS
@@ -334,6 +346,23 @@ def _box_of(shape) -> _Box | None:
     )
 
 
+def _has_content(shape) -> bool:
+    """True when the shape puts ink of its own on the slide (text or a table)."""
+    return (
+        getattr(shape, "has_text_frame", False) and shape.text_frame.text.strip()
+    ) or getattr(shape, "has_table", False)
+
+
+def _content_boxes(slide) -> list[_Box]:
+    """Declared boxes of every content-bearing shape on the slide itself."""
+    boxes = []
+    for shape in slide.shapes:
+        box = _box_of(shape)
+        if box is not None and _has_content(shape):
+            boxes.append(box)
+    return boxes
+
+
 def _growth_prone(slide):
     """Shapes whose rendered height depends on content: tables and filled text."""
     for shape in slide.shapes:
@@ -418,17 +447,7 @@ def _clearance_pairs(slide) -> list[tuple[str, str, float]]:
     vertically — i.e. close enough that a re-grown row or a wrapped line would
     land on the lower shape.
     """
-    below: list[_Box] = []
-    for shape in slide.shapes:
-        box = _box_of(shape)
-        if box is None:
-            continue
-        has_content = (
-            getattr(shape, "has_text_frame", False) and shape.text_frame.text.strip()
-        ) or getattr(shape, "has_table", False)
-        if has_content:
-            below.append(box)
-
+    below = _content_boxes(slide)
     pairs: list[tuple[str, str, float]] = []
     for shape in _growth_prone(slide):
         box = _box_of(shape)
@@ -580,12 +599,7 @@ def _overrun_slide_shapes(slide, box: _Box, reach: float) -> list[str]:
     hit: list[str] = []
     for shape in _iter_shapes(slide.shapes):
         other = _box_of(shape)
-        if other is None or other.name == box.name:
-            continue
-        has_content = (
-            getattr(shape, "has_text_frame", False) and shape.text_frame.text.strip()
-        ) or getattr(shape, "has_table", False)
-        if not has_content:
+        if other is None or other.name == box.name or not _has_content(shape):
             continue
         if (
             other.top < reach
@@ -595,6 +609,174 @@ def _overrun_slide_shapes(slide, box: _Box, reach: float) -> list[str]:
         ):
             hit.append(other.name)
     return sorted(set(hit))
+
+
+# ─── Per-shape render attribution ────────────────────────────────────────────
+# `_measure_overflow` counts ink that lands in NOBODY's declared box, which is
+# what keeps it free of false positives — and is also its blind spot: an overflow
+# running straight into the shape below is masked by that shape's own claim.
+# Pixels in that region belong to two shapes at once and no threshold can
+# separate them.
+#
+# Attribution separates them by rendering the shape alone. For each masked
+# candidate the probe deck carries two extra slides: one holding only that shape
+# on its own layout, and one holding nothing at all. Subtracting the second from
+# the first leaves exactly the shape's own ink — every neighbour, and all
+# layout/master decoration, gone. Absolute positioning is what makes this sound:
+# removing a neighbour cannot move or re-wrap the shape under test.
+#
+# Every probe goes into ONE deck, so the whole pass costs one extra LibreOffice
+# conversion (measured 2.5-7.7 s per artefact).
+
+
+def _masking_neighbours(slide) -> dict[str, list[str]]:
+    """Growth-prone shape name -> content shapes that mask the territory below it.
+
+    A neighbour masks when it overlaps horizontally, extends below the shape's
+    declared bottom, and starts no more than `_OVERFLOW_GAP_IN` below it (a
+    negative gap — an overlapping box — masks from the first row down). Those are
+    exactly the shapes whose overflow `_measure_overflow` cannot see.
+    """
+    below = _content_boxes(slide)
+    masked: dict[str, list[str]] = {}
+    for shape in _growth_prone(slide):
+        box = _box_of(shape)
+        if box is None:
+            continue
+        for other in below:
+            if other.name == box.name or other.right <= box.left or other.left >= box.right:
+                continue
+            if other.bottom > box.bottom and other.top <= box.bottom + _OVERFLOW_GAP_IN:
+                masked.setdefault(shape.name, []).append(other.name)
+    return masked
+
+
+# Relationship-bearing XML dropped from a probed shape. A probe slide is built by
+# deep-copying shape XML onto a fresh slide (the technique `clone_slide_after`
+# already ships), which does NOT carry slide-level relationships — so a surviving
+# r:id would dangle and could fail the render. None of this affects the
+# measurement: a shape's own fill and hyperlink styling stay inside its box, and
+# the probe only ever measures ink BELOW the box.
+_PROBE_STRIP_TAGS = ("a:hlinkClick", "a:hlinkHover", "a:blipFill")
+_PROBE_STRIP_ATTRS = ("r:embed", "r:link", "r:id")
+
+
+def _strip_relationships(element):
+    for tag in _PROBE_STRIP_TAGS:
+        for node in element.findall(f".//{qn(tag)}"):
+            node.getparent().remove(node)
+    for node in element.iter():
+        for attr in _PROBE_STRIP_ATTRS:
+            node.attrib.pop(qn(attr), None)
+    return element
+
+
+@dataclass
+class _ProbePlan:
+    """Where each probe landed in the probe deck."""
+
+    path: Path
+    shape: dict[tuple[int, str], int] = field(default_factory=dict)
+    layout: dict[int, int] = field(default_factory=dict)
+
+    @property
+    def indices(self) -> list[int]:
+        return sorted({*self.shape.values(), *self.layout.values()})
+
+
+def _append_probe_slide(prs, source_slide, keep_name: str | None) -> int:
+    """Append a slide carrying only `keep_name` from `source_slide` (or nothing)."""
+    new = prs.slides.add_slide(source_slide.slide_layout)
+    for shape in list(new.shapes):  # drop the placeholders add_slide seeds
+        shape._element.getparent().remove(shape._element)
+    if keep_name is not None:
+        for shape in source_slide.shapes:
+            if shape.name == keep_name:
+                new.shapes._spTree.append(_strip_relationships(deepcopy(shape._element)))
+                break
+    return len(prs.slides._sldIdLst) - 1
+
+
+def _build_probe_deck(deck: Path, out_path: Path) -> _ProbePlan | None:
+    """Write a probe deck for every masked candidate; None when there are none."""
+    prs = Presentation(deck)
+    originals = list(prs.slides)
+    plan = _ProbePlan(path=out_path)
+    layout_probe: dict[int, int] = {}
+    for index, slide in enumerate(originals):
+        names = _masking_neighbours(slide)
+        if not names:
+            continue
+        key = id(slide.slide_layout)
+        if key not in layout_probe:
+            layout_probe[key] = _append_probe_slide(prs, slide, None)
+        plan.layout[index] = layout_probe[key]
+        for name in names:
+            plan.shape[(index, name)] = _append_probe_slide(prs, slide, name)
+    if not plan.shape:
+        return None
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    prs.save(out_path)
+    return plan
+
+
+def _own_ink_depth_in(own, box: _Box, page_w: int, page_h: int, dpi: float) -> float:
+    """Depth (inches) the shape's own ink extends below its declared bottom.
+
+    No claim masking and no gap bridging: `own` holds nothing but this shape's
+    ink, so the deepest inked row IS the answer — a blank band cannot mean "the
+    next shape starts here".
+    """
+    x0 = max(0, min(page_w, int(round(box.left * dpi))))
+    x1 = max(0, min(page_w, int(round(box.right * dpi))))
+    y_start = max(0, min(page_h, int(round(box.bottom * dpi))))
+    if x1 - x0 < 2 or page_h - y_start < 2:
+        return 0.0
+    per_row = own[y_start:page_h, x0:x1].sum(axis=1)
+    threshold = max(_ROW_INK_MIN_PX, int(round((x1 - x0) * _ROW_INK_FRACTION)))
+    inked = [row for row, count in enumerate(per_row) if count >= threshold]
+    return (inked[-1] + 1) / dpi if inked else 0.0
+
+
+def measure_attributed_overflow(deck: Path | str, work_dir: Path | str) -> dict[int, dict[str, float]]:
+    """Per slide, per masked shape: how far the shape's OWN ink runs below its box.
+
+    Raises RuntimeError when the probe deck cannot be rendered, so the caller
+    reports the tier as unavailable rather than reporting a deck clean.
+    """
+    import numpy as np
+    from PIL import Image
+
+    deck = Path(deck)
+    work = Path(work_dir)
+    plan = _build_probe_deck(deck, work / "probe.pptx")
+    if plan is None:
+        return {}
+
+    renders = _render_slides(plan.path, work / "png", plan.indices)
+    ink = {
+        index: np.array(Image.open(png).convert("L")) < _INK_MAX_LUMA
+        for index, png in renders.items()
+    }
+
+    prs = Presentation(deck)
+    slide_h = Emu(prs.slide_height).inches
+    out: dict[int, dict[str, float]] = {}
+    for (index, name), probe in sorted(plan.shape.items()):
+        layout = plan.layout.get(index)
+        if probe not in ink or (layout is not None and layout not in ink):
+            continue
+        own = ink[probe] & ~ink[layout] if layout is not None else ink[probe]
+        page_h, page_w = own.shape
+        dpi = page_h / slide_h if slide_h else RENDER_DPI
+        shape = next((s for s in prs.slides[index].shapes if s.name == name), None)
+        box = _box_of(shape) if shape is not None else None
+        if box is None or box.bottom >= slide_h:
+            continue
+        depth = _own_ink_depth_in(own, box, page_w, page_h, dpi)
+        if depth > 0:
+            out.setdefault(index, {})[name] = depth
+    return out
 
 
 # ─── Library baseline ────────────────────────────────────────────────────────
@@ -607,9 +789,11 @@ class LibraryBaseline:
     signatures: list[set[str]] = field(default_factory=list)
     table_height: dict[int, float] = field(default_factory=dict)
     overflow: dict[int, dict[str, float]] = field(default_factory=dict)
+    attributed: dict[int, dict[str, float]] = field(default_factory=dict)
     outside: dict[int, dict[str, float]] = field(default_factory=dict)
     clearance: dict[int, dict[tuple[str, str], float]] = field(default_factory=dict)
     rendered: bool = False
+    attributed_ok: bool = False
 
     def clearances_for(self, slide) -> dict[tuple[str, str], float]:
         """The matching library slide's clearance map for a built slide."""
@@ -617,13 +801,15 @@ class LibraryBaseline:
         return self.clearance.get(matched, {}) if matched is not None else {}
 
 
-_BASELINE_CACHE: dict[tuple[str, int, bool], LibraryBaseline] = {}
+_BASELINE_CACHE: dict[tuple[str, int, bool, bool], LibraryBaseline] = {}
 
 
-def library_baseline(library_path: Path, *, render: bool = True) -> LibraryBaseline:
-    """Measure the blank library. Cached per (path, mtime, render)."""
+def library_baseline(
+    library_path: Path, *, render: bool = True, attribute: bool = True
+) -> LibraryBaseline:
+    """Measure the blank library. Cached per (path, mtime, render, attribute)."""
     library_path = Path(library_path)
-    key = (str(library_path.resolve()), int(library_path.stat().st_mtime), render)
+    key = (str(library_path.resolve()), int(library_path.stat().st_mtime), render, attribute)
     cached = _BASELINE_CACHE.get(key)
     if cached is not None:
         return cached
@@ -638,11 +824,19 @@ def library_baseline(library_path: Path, *, render: bool = True) -> LibraryBasel
     if render:
         tmp = Path(tempfile.mkdtemp(prefix="deck-contract-library-"))
         try:
-            renders = _render_slides(library_path, tmp, list(range(len(prs.slides))))
+            renders = _render_slides(library_path, tmp / "slides", list(range(len(prs.slides))))
             baseline.overflow = _measure_overflow(prs, renders)
             baseline.rendered = True
         except RuntimeError:
             baseline.rendered = False  # caller reports render-unavailable
+        if attribute and baseline.rendered:
+            try:
+                baseline.attributed = measure_attributed_overflow(
+                    library_path, tmp / "attribution"
+                )
+                baseline.attributed_ok = True
+            except RuntimeError:
+                baseline.attributed_ok = False
     _BASELINE_CACHE[key] = baseline
     return baseline
 
@@ -845,6 +1039,75 @@ def _check_rendered_overflow(
     return findings
 
 
+def _check_masked_overflow(
+    prs, attributed: dict[int, dict[str, float]], baseline: LibraryBaseline, already: set
+) -> list[Finding]:
+    """Attributed overflow for shapes `rendered-overflow` structurally cannot see.
+
+    This is the check that closes the documented blind spot. Its measurement is
+    the shape's OWN ink (see `measure_attributed_overflow`), so the neighbour that
+    was masking the overflow no longer hides it — and the finding names that
+    neighbour, which is the actionable part: a repair step has to know which of
+    the two shapes to shrink.
+
+    Shapes `rendered-overflow` already reported are skipped: both checks measure
+    the same defect from different sides, and one finding per shape keeps the
+    repair loop from double-counting. That is why PRL17's market-entry table —
+    masked below AND overflowing into unclaimed space — reports once.
+    """
+    findings: list[Finding] = []
+    for index, slide in enumerate(prs.slides):
+        measured = attributed.get(index)
+        if not measured:
+            continue
+        matched = match_library_slide(slide, baseline.signatures)
+        reference = baseline.attributed.get(matched, {}) if matched is not None else {}
+        neighbours = _masking_neighbours(slide)
+        for name, depth in sorted(measured.items()):
+            if (index, name) in already:
+                continue
+            allowed = reference.get(name, 0.0)
+            excess = depth - allowed
+            if excess <= _OVERFLOW_TOL_IN:
+                continue
+            box = _box_of(next((s for s in slide.shapes if s.name == name), None))
+            if box is None:  # unreachable: attribution needs a box to measure from
+                continue
+            reached = [
+                other
+                for other in neighbours.get(name, [])
+                if (b := _box_of(next((s for s in slide.shapes if s.name == other), None)))
+                is not None
+                and b.top < box.bottom + depth
+            ]
+            into = (
+                f", landing inside the declared box of {', '.join(sorted(set(reached)))}"
+                if reached
+                else ""
+            )
+            baseline_note = (
+                f" (the library's {_concept_name(matched)} slide renders {allowed:.2f}\" past"
+                f" the same box, so {excess:.2f}\" of this is the fill's)"
+                if allowed
+                else ""
+            )
+            findings.append(
+                Finding(
+                    "masked-overflow",
+                    SEVERITY_BLOCKING,
+                    index,
+                    f"renders {depth:.2f}\" of its own content below its declared bottom "
+                    f"edge ({box.bottom:.2f}\"){into}{baseline_note} — measured by rendering "
+                    f"this shape alone, because the shape(s) below claim that territory and "
+                    f"pixel counting cannot separate the two shapes' ink",
+                    shape=name,
+                    measured_in=depth,
+                    limit_in=allowed + _OVERFLOW_TOL_IN,
+                )
+            )
+    return findings
+
+
 # ─── Rendering ───────────────────────────────────────────────────────────────
 
 
@@ -924,20 +1187,9 @@ def _content_box_overlaps(slide) -> list[tuple[str, str]]:
 
     A deterministic *hint* for the vision tier, not a finding: overlapping boxes
     are routine and legitimate in PowerPoint (a label over a filled band), so
-    this only tells the reviewing agent which slides are worth a close look. It
-    is how the earnings-update fixture's summary box sitting on top of the broker
-    table's last row gets onto the agenda.
+    this only tells the reviewing agent which slides are worth a close look.
     """
-    boxes: list[_Box] = []
-    for shape in slide.shapes:
-        box = _box_of(shape)
-        if box is None:
-            continue
-        has_content = (
-            getattr(shape, "has_text_frame", False) and shape.text_frame.text.strip()
-        ) or getattr(shape, "has_table", False)
-        if has_content:
-            boxes.append(box)
+    boxes = _content_boxes(slide)
     pairs: list[tuple[str, str]] = []
     for i, a in enumerate(boxes):
         for b in boxes[i + 1 :]:
@@ -960,12 +1212,11 @@ def _tight_clearance(slide, reference: dict[tuple[str, str], float]) -> list[tup
     sub-0.12" gap somewhere and flagging them all says nothing. Only a gap the
     fill narrowed is interesting.
 
-    This exists because `rendered-overflow` has one blind spot, documented in the
-    module docstring: it counts ink that lands in *nobody's* declared box, so an
-    overflow running straight into the neighbour below is masked by that
-    neighbour's own claim. It stays a *hint* — pixels cannot separate the two
-    shapes' ink inside that box — so it names the pair and never asserts a
-    collision.
+    Kept as a *hint* now that `masked-overflow` measures the same region properly:
+    attribution answers "does this shape's own ink run past its box", while this
+    answers "did the fill move two shapes closer together than the library
+    designed" — which is worth a look even when neither shape overflows at all.
+    It names the pair and never asserts a collision.
     """
     tight: list[tuple[str, str, float]] = []
     for shape, other, clearance in _clearance_pairs(slide):
@@ -1098,12 +1349,42 @@ def vision_pass(
 # ─── Entry point ─────────────────────────────────────────────────────────────
 
 
+def _attribution_findings(
+    deck: Path, prs, baseline: LibraryBaseline, work: Path, *, already: set
+) -> list[Finding]:
+    """Run the attribution pass, or report loudly that it could not run."""
+    if not baseline.attributed_ok:
+        return [
+            Finding(
+                "render-unavailable",
+                SEVERITY_BLOCKING,
+                0,
+                "could not render the reference library's attribution probes, so "
+                "per-shape masked overflow had no baseline and was NOT checked",
+            )
+        ]
+    try:
+        attributed = measure_attributed_overflow(deck, work)
+    except RuntimeError as exc:
+        return [
+            Finding(
+                "render-unavailable",
+                SEVERITY_BLOCKING,
+                0,
+                f"could not render the deck's attribution probes, so per-shape masked "
+                f"overflow did NOT run: {exc}",
+            )
+        ]
+    return _check_masked_overflow(prs, attributed, baseline, already)
+
+
 def verify_deck(
     path: Path | str,
     *,
     library: Path | str | None = None,
     render: bool = True,
     vision: bool = True,
+    attribute: bool = True,
     out_dir: Path | str | None = None,
 ) -> list[Finding]:
     """Verify a built deck against the contract; return every finding.
@@ -1115,9 +1396,11 @@ def verify_deck(
     which are the agenda for a human or agent rather than a verdict.
 
     ``render=False`` skips the render-measured tier (and the vision tier with it)
-    for a fast XML-only pass. ``library`` overrides the reference slide library.
-    ``out_dir`` is where renders and picture crops are written; pass a durable
-    path when the checkpoint needs to show them.
+    for a fast XML-only pass. ``attribute=False`` keeps the ordinary render tier
+    but skips the per-shape attribution pass and its one extra conversion.
+    ``library`` overrides the reference slide library. ``out_dir`` is where
+    renders and picture crops are written; pass a durable path when the
+    checkpoint needs to show them.
     """
     deck = Path(path)
     if not deck.is_file():
@@ -1140,7 +1423,7 @@ def verify_deck(
         )
         return findings
 
-    baseline = library_baseline(library_path, render=render)
+    baseline = library_baseline(library_path, render=render, attribute=attribute)
     findings.extend(_check_shapes_within_slide(prs, baseline))
     findings.extend(_check_table_heights(prs, baseline))
 
@@ -1170,7 +1453,18 @@ def verify_deck(
                 )
             )
         elif renders:
-            findings.extend(_check_rendered_overflow(prs, renders, baseline))
+            overflow = _check_rendered_overflow(prs, renders, baseline)
+            findings.extend(overflow)
+            if attribute:
+                findings.extend(
+                    _attribution_findings(
+                        deck,
+                        prs,
+                        baseline,
+                        root / "attribution",
+                        already={(f.slide, f.shape) for f in overflow},
+                    )
+                )
         if vision:
             findings.extend(
                 vision_pass(deck, out_dir=root, renders=renders, baseline=baseline).findings

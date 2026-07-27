@@ -130,12 +130,17 @@ the bullets are autofit-crushed to roughly 4 pt: legible in outline, not on the
 page. Reported as `rendered-overflow`. That deck is v0.5.5-era, 29 releases
 before `fit_overview_textbox` existed.
 
-Also on that slide, **not** reported: the summary box (`Rectangle 1111`, top
-6.221") is drawn over the broker table's last row (`EPS, Adj.`), whose frame
-declares a bottom of 6.184". Only 0.037" of that overflow lands outside every
-declared box, under the reporting tolerance — see the "Known blind spot" section
-of `deck_contract.py`'s module docstring. A reviewer still reaches the slide via
-the `TextBox 6` finding above.
+**A second geometric defect on the same slide** — the summary box
+(`Rectangle 1111`, top 6.221") is drawn over the broker table's last row
+(`EPS, Adj.`), whose frame declares a bottom of 6.184". Only 0.037" of that
+overflow lands outside every declared box, so counting unclaimed ink cannot see
+it; rendering the table alone measures its own ink at **0.153"**. Reported as
+`masked-overflow` on `Table 4`, naming `Rectangle 1111`.
+
+Until v0.5.39 this was documented as a blind spot and a reviewer reached the slide
+only indirectly, via the unrelated `TextBox 6` finding above. It is now the
+regression anchor for the per-shape attribution tier
+(`test_catches_the_broker_table_masked_by_the_summary_box`).
 
 ### What `verify_deck` reports on each fixture
 
@@ -147,9 +152,10 @@ change here is a conscious edit rather than silent drift.
 | `unfilled-token` (blocking) | 10 | 9 |
 | `unsubstituted-currency-token` (blocking) | 2 | — |
 | `rendered-overflow` (blocking) | — | 1 |
+| `masked-overflow` (blocking) | — | 1 |
 | `expected-placeholder` (advisory) | 2 | 1 |
 | `vision-review` (advisory) | 10 | 3 |
-| **total** | 12 blocking / 12 advisory | 10 blocking / 4 advisory |
+| **total** | 12 blocking / 12 advisory | 11 blocking / 4 advisory |
 
 No `shape-outside-slide` and no `table-taller-than-library` on either: the
 geometric tier measures each deck against the **blank library** rather than
