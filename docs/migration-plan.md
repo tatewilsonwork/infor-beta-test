@@ -108,6 +108,27 @@ font file, making LibreOffice the *conservative* oracle for Phase B, and that
 LibreOffice has no `palatinolinotype` substitution entry (prod font resolution
 still needs one `fc-match` on a Cowork shell).
 
+> **Finding #2 reclassified (2026-07-27, during Phase B step 1).** Phase A
+> recorded "the overview cap-table *picture* renders `#VALUE!` and is invisible to
+> every string scan" as a defect, and used it to argue that Phase B's vision
+> checks are load-bearing rather than optional. **The `#VALUE!` is expected, not a
+> defect.** The cap table's forward-estimate columns are CapIQ UDF calls
+> (`SP_REV_EST` / `SP_EBITDA_EST` at `E47:F48`) wrapped by rows 34/35 in
+> `IFERROR(..., "n/a ")`; the EV/metric rows divide `$F$31` by that text, so an
+> un-refreshed CapIQ estimate propagates `#VALUE!` into `E39:F40` by design — and
+> CapIQ cannot be refreshed in this environment. Same for comps/precedents (array
+> formulas ship un-evaluated) and the financial-summary LTM link (`#N/A` until the
+> combined workbook exists).
+>
+> Consequences, all carried into `deck_contract.py`: the error scan is scoped to
+> text shapes and table cells and never reaches into rasterised range pictures; a
+> workbook-side scan would also not help, because **zero of the 121 formula cells**
+> on the fixture's `captable` tab carry a cached value under `data_only=True`
+> (`=TODAY()-1` included), so it would see `None` everywhere and look green.
+> The general claim — a string scan cannot see inside a raster — still holds and
+> is still why the vision tier is agent-inspected; `#VALUE!` is simply the wrong
+> example of it. Detail in `scripts/tests/fixtures/README.md`.
+
 ## Phase B — Visual oracle, then converge loop
 
 Three steps. Do not put the checker inside the assembler until it is trusted.
@@ -126,6 +147,30 @@ Three steps. Do not put the checker inside the assembler until it is trusted.
    the PRL17 5.91" market-entry table, the PRL18 5.36" risk table, and the v0.5.23
    overview-bullet overflow into the LTM section. **If it does not catch all
    three, the contract is wrong — fix it before step 3.**
+
+✅ **Steps 1–2 shipped 2026-07-27 (v0.5.37).** All three bugs caught, each from a
+real artefact (see `scripts/tests/fixtures/regressions/README.md` — the pre-fix
+PRL17 overview deck was overwritten by a post-fix re-run, so the overview
+overflow replays from PRL14, a genuine pre-fix artefact of the identical defect
+one release earlier). Two design decisions worth carrying into step 3:
+
+- **The blank library is the geometric baseline, not zero.** The library's own
+  footnote placeholders render ~0.07" past their boxes and its tombstone slides
+  park shapes fully off-canvas. Measured on the pitch fixture: against zero, 64
+  blocking findings, 52 of them template-inherent geometry (36
+  `shape-outside-slide`, 16 `rendered-overflow`); the baseline removes all 52 and
+  leaves the 12 genuine string findings. Every geometric check now measures the
+  deck, measures the matching library slide, and reports the excess — which also
+  makes the reference self-maintaining in the Phase C sense. Built slides are
+  matched to library slides by **shape-name signature**, since titles are filled
+  and the pitch flow deletes and clones.
+- **The two table checks are not redundant.** PRL18 declares 5.360" against a
+  5.1715" library height and is caught in the XML; PRL17 declares 5.710" — *under*
+  the library's 5.7197" — and renders 5.91", so it is only visible on the raster.
+  A contract with either check alone catches one of the three bugs, not two.
+
+Step 3 has **not** started (it needs analyst sign-off), so no assembler was
+touched and no estimation code was deleted.
 3. **Promote into both assemblers** as write → verify → repair → re-verify,
    bounded to ~3 iterations, stage fails if it cannot converge.
 
