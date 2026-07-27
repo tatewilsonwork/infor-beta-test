@@ -262,6 +262,30 @@ def _write_lo_recalc_profile(base_dir: Path) -> str:
     return profile.as_uri()
 
 
+# Standard install locations for platforms whose LibreOffice installer does not
+# put `soffice` on PATH. The Windows MSI never does — so a Windows dev box with
+# LibreOffice correctly installed still fails `shutil.which("soffice")`, which
+# would leave the LibreOffice-by-default slide renderer unusable on the very
+# machine it exists to keep honest.
+_SOFFICE_FALLBACK_PATHS = (
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+)
+
+
+def find_soffice() -> str | None:
+    """Return a usable ``soffice`` command, or None when LibreOffice is absent.
+
+    Prefers PATH (how Cowork / Linux prod resolves it), then falls back to the
+    standard per-platform install locations.
+    """
+    found = shutil.which("soffice") or shutil.which("libreoffice")
+    if found:
+        return found
+    return next((p for p in _SOFFICE_FALLBACK_PATHS if Path(p).is_file()), None)
+
+
 def _soffice_convert(soffice: str, src: Path, out_fmt: str, out_dir: Path) -> None:
     """Convert ``src`` to ``out_fmt`` with headless LibreOffice, recalculating
     in-workbook formulas on load via a throwaway recalc profile.

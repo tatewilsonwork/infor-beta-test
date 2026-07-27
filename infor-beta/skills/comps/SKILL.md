@@ -6,7 +6,6 @@ description: >
   three verticals (peer groups) relevant to the target, selects six public companies per
   vertical with their Capital IQ tickers, writes a short description for each, and fills the
   INFOR Comps Template — the companion workbook behind the deck's comps slide.
-version: 0.5.34
 allowed-tools: [Read, Bash, Write, Glob, WebSearch, WebFetch]
 ---
 
