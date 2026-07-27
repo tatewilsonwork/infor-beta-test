@@ -14,6 +14,7 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.util import Pt
 
+from deck_repair import assert_converged, converge_deck
 from excel_to_powerpoint import insert_excel_into_placeholder
 from naming import safe_filename
 from pptx_helpers import (
@@ -57,6 +58,10 @@ _KEEP_LIBRARY_INDICES = (0, 6, 7, 15, 16)
 # assembler — same 'Cap with Links'!B15:F40 picture).
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
 _CAP_TABLE_RANGE = CAP_TABLE_PICTURE_RANGE
+
+# Section header that closes the Business Updates band on the earnings-summary
+# slide — the bullets above it are sized to stop short of it.
+_BROKER_TABLE_BAND = "Broker Estimates"
 
 
 def _bullet_tuple(bullet) -> tuple[str, int]:
@@ -222,12 +227,15 @@ def _set_earnings_summary(slide, content: EarningsUpdateContent) -> None:
     set_text(find_shape(slide, "Rectangle 16"), [content.comparison_quarter])
     set_text(find_shape(slide, "Rectangle 21"), [content.reporting_quarter])
 
-    # Business updates (left column) and performance summary.
-    _write_flexible_bullets(
-        find_shape(slide, "TextBox 6"),
-        None,
-        items=[(b, 0) for b in content.business_updates],
-    )
+    # Business updates (left column) and performance summary. The library ships
+    # TextBox 6 one line tall (0.28") with 2.4" of empty band beneath it and
+    # relies on autofit — which PowerPoint ignores when it carries no explicit
+    # scale, so the bullets rendered full-size straight through the Broker
+    # Estimates header. Same defect `fit_overview_textbox` was written for in
+    # v0.5.23, on a shape nobody had rendered; found by the Phase B contract.
+    updates = find_shape(slide, "TextBox 6")
+    _write_flexible_bullets(updates, None, items=[(b, 0) for b in content.business_updates])
+    fit_overview_textbox(slide, updates, band_prefix=_BROKER_TABLE_BAND)
     set_text(find_shape(slide, "Rectangle 1111"), [content.performance_summary])
 
     # Four metric rows — metric name + value only; the period lives in the bar.
@@ -271,6 +279,7 @@ def assemble_earnings_update_deck(
     template_path: Path | str,
     output_dir: Path | str,
     captable_workbook_path: Path | str | None = None,
+    converge: bool = True,
 ) -> Path:
     """Build the earnings-update deck by cloning library entries and filling them.
 
@@ -311,6 +320,17 @@ def assemble_earnings_update_deck(
     # Slides 4-5 (disclaimer, contact) are static library entries — untouched.
 
     prs.save(output_path)
+
+    # Write -> verify -> repair -> re-verify against the deck contract, BEFORE the
+    # cap-table picture goes in: the repair loop re-saves the deck through
+    # python-pptx, and doing that after the COM insertion would round-trip the
+    # pasted picture for no reason. A picture cannot overflow its box anyway —
+    # only text and tables re-grow — so nothing the insertion adds needs fitting.
+    if converge:
+        assert_converged(
+            output_path,
+            converge_deck(output_path, library=template, out_dir=out_dir / ".qa"),
+        )
 
     if captable_workbook_path is not None:
         # The picture range is read blind — verify its sentinel anchors first so

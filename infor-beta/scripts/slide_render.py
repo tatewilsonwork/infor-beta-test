@@ -29,7 +29,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path
 
 BACKEND_LIBREOFFICE = "libreoffice"
@@ -118,6 +120,49 @@ def _powerpoint_com_render(deck: Path, out_dir: Path, slide_indices: list[int] |
     return paths
 
 
+# A conversion that starts is normally deterministic, but soffice occasionally
+# exits non-zero (or writes no PDF) on a transient — a stale lock, a font-cache
+# rebuild racing the run. Observed once across a 610-test suite, as a
+# `render-unavailable` finding on a deck that renders fine in isolation. One
+# retry, because the Phase B converge loop renders several times per assembly
+# and a per-render coin flip would surface as an unconverged deck. A genuinely
+# absent or wedged LibreOffice still fails after the retry, unchanged.
+_CONVERT_ATTEMPTS = 2
+_CONVERT_RETRY_PAUSE_S = 2.0
+
+
+def _convert_to_pdf(soffice: str, deck: Path, tmp_dir: Path) -> Path:
+    """Convert `deck` to a PDF in `tmp_dir` and return its path.
+
+    Raises RuntimeError on failure — callers' degradation nets catch RuntimeError
+    only, so a wedged soffice must degrade like a missing one rather than abort
+    the stage.
+    """
+    problem = ""
+    for attempt in range(1, _CONVERT_ATTEMPTS + 1):
+        try:
+            subprocess.run(
+                [soffice, "--headless", "--nologo", "--nodefault", "--nofirststartwizard",
+                 "--convert-to", "pdf", "--outdir", str(tmp_dir), str(deck)],
+                check=True, capture_output=True, timeout=300,
+            )
+            pdf_path = next(tmp_dir.glob("*.pdf"), None)
+            if pdf_path is not None:
+                return pdf_path
+            problem = "LibreOffice produced no PDF output for the deck"
+        except subprocess.CalledProcessError as exc:
+            problem = f"LibreOffice PDF conversion failed: {exc.stderr.decode(errors='replace')}"
+        except subprocess.TimeoutExpired as exc:
+            problem = f"LibreOffice PDF conversion timed out after {exc.timeout:.0f}s"
+        if attempt < _CONVERT_ATTEMPTS:
+            print(
+                f"slide_render: {problem} — retrying ({attempt}/{_CONVERT_ATTEMPTS})",
+                file=sys.stderr,
+            )
+            time.sleep(_CONVERT_RETRY_PAUSE_S)
+    raise RuntimeError(f"{problem} (after {_CONVERT_ATTEMPTS} attempts)")
+
+
 def _libreoffice_render(
     deck: Path, out_dir: Path, slide_indices: list[int] | None, dpi: int
 ) -> list[Path]:
@@ -138,26 +183,7 @@ def _libreoffice_render(
         raise RuntimeError("pypdfium2 is required for the LibreOffice slide renderer") from exc
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        try:
-            subprocess.run(
-                [soffice, "--headless", "--nologo", "--nodefault", "--nofirststartwizard",
-                 "--convert-to", "pdf", "--outdir", str(tmp_dir), str(deck)],
-                check=True, capture_output=True, timeout=300,
-            )
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(
-                f"LibreOffice PDF conversion failed: {exc.stderr.decode(errors='replace')}"
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            # Callers' degradation nets catch RuntimeError only — a wedged
-            # soffice must degrade like a missing one, not abort the stage.
-            raise RuntimeError(
-                f"LibreOffice PDF conversion timed out after {exc.timeout:.0f}s"
-            ) from exc
-
-        pdf_path = next(Path(tmp_dir).glob("*.pdf"), None)
-        if pdf_path is None:
-            raise RuntimeError("LibreOffice produced no PDF output for the deck")
+        pdf_path = _convert_to_pdf(soffice, deck, Path(tmp_dir))
 
         pdf = pdfium.PdfDocument(str(pdf_path))
         paths: list[Path] = []

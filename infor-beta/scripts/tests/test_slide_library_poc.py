@@ -11,6 +11,9 @@ from pydantic import ValidationError
 import pytest
 
 from schemas import Company, PitchDeckContent, Plan
+from deck_contract import verify_deck
+from excel_to_powerpoint import find_soffice
+from deck_repair import DeckNotConvergedError
 from pptx_helpers import find_shape
 from pitch_deck_wireframe import build_pitch_deck_slide_plan, write_slide_plan
 from pitch_deck_assembler import _output_currency_letter, assemble_pitch_deck
@@ -377,6 +380,10 @@ def _assemble(
     include_investment_highlights=None,
     **kwargs,
 ) -> Path:
+    # The deck-contract converge loop renders the deck (seconds per call), so it is
+    # OFF for the tests that are about fill logic and ON for the geometry tests that
+    # exist to exercise it — see test_converges_* below and test_deck_contract.py.
+    kwargs.setdefault("converge", False)
     plan = build_pitch_deck_slide_plan(
         company=Company(legal_name="SampleCo Ltd.", ticker="TSX:SMP"),
         section_labels=["Overview", "Financial Summary", "Valuation", "Process"],
@@ -567,35 +574,60 @@ def test_market_entry_table_formatting_no_blank_rows(tmp_path: Path):
     assert table.cell(2, 0).text_frame.paragraphs[0].runs[0].font.size == Pt(11)  # 'Headquarters'
 
 
-def test_market_entry_long_label_steps_down_instead_of_wrapping(tmp_path: Path):
-    """'Geographic Footprint' is wider than the 1.457" label column at 11 pt; a
-    wrapped label re-grows its 0.28" row at render time and pushed the whole
-    table to 5.91" in the live run. The assembler steps such a label down one
-    size so every declared row height stays achievable and the rendered table
-    lands on the 5.71" clamp."""
-    from pptx_helpers import palatino_text_width_in
+def test_market_entry_labels_are_written_at_one_uniform_size(tmp_path: Path):
+    """The fill writes every row label at 11 pt and clamps; it measures nothing.
 
+    Until v0.5.39 it sized each label against a per-character Palatino
+    advance-width table and stepped the over-wide ones (e.g. 'Geographic
+    Footprint', 1.50" at 11 pt in a 1.457" column) down individually, because a
+    wrapped label re-grows its row — one of the two mechanisms behind PRL17's
+    5.91" table. The converge loop now measures the rendered table and caps the
+    label column only when it actually overruns, which also keeps the column
+    uniform instead of mixing 11 pt and 10 pt labels.
+    """
     deck_path = _assemble(tmp_path, _sample_content())
     table_shape = next(
         s for s in Presentation(deck_path).slides[13].shapes if getattr(s, "has_table", False)
     )
     table = table_shape.table
-    labels = _sample_content().market_entry_row_labels
-    usable_in = Emu(table.columns[0].width).inches - 0.2  # minus 2 x 0.1" side insets
-    for i, label in enumerate(labels):
-        run = table.cell(i + 1, 0).text_frame.paragraphs[0].runs[0]
-        size_pt = run.font.size.pt
-        assert palatino_text_width_in(label, size_pt) <= usable_in, (
-            f"label {label!r} must fit its column on one line at the written size"
-        )
-        if palatino_text_width_in(label, 11) <= usable_in:
-            assert size_pt == 11, f"label {label!r} fits at 11 pt and must stay 11 pt"
-        else:
-            assert size_pt < 11, f"over-wide label {label!r} must step down"
-    # Every declared row height covers a single 11 pt line + insets — the floor
-    # PowerPoint renders even an empty row at (so declared == rendered).
-    for r in table.rows:
-        assert Emu(r.height).inches >= 0.283 - 1e-3
+
+    sizes = {
+        table.cell(i + 1, 0).text_frame.paragraphs[0].runs[0].font.size
+        for i in range(len(_sample_content().market_entry_row_labels))
+    }
+    assert sizes == {Pt(11)}, f"labels must go in at one uniform 11 pt, got {sizes}"
+    # The declared rows sum to exactly the clamp. There is deliberately no per-row
+    # content-height floor any more: whether the RENDERED table stays inside the
+    # clamp is measured by the converge loop (test_market_entry_long_content_converges).
+    assert sum(Emu(r.height).inches for r in table.rows) == pytest.approx(5.71, abs=0.001)
+    assert Emu(table_shape.height).inches == pytest.approx(5.71, abs=0.001)
+
+
+@pytest.mark.skipif(
+    find_soffice() is None, reason="the converge loop measures on a LibreOffice render"
+)
+def test_market_entry_repair_caps_the_label_column_before_the_value_columns(tmp_path: Path):
+    """A shrink lands where there is most to give: labels 11 -> 10, values stay 9.
+
+    This is the behaviour that made deleting the Palatino width table safe. The
+    repair caps every body run at (largest size - k) rather than subtracting k from
+    each, so a defect the 11 pt labels caused does not drag the 9 pt value copy —
+    deliberately set below the library's 10 pt for headroom — down with it.
+    """
+    deck_path = _assemble(tmp_path, _sample_content(), converge=True)
+    table = next(
+        s for s in Presentation(deck_path).slides[13].shapes if getattr(s, "has_table", False)
+    ).table
+
+    labels = {table.cell(i + 1, 0).text_frame.paragraphs[0].runs[0].font.size for i in range(12)}
+    values = {table.cell(i + 1, 1).text_frame.paragraphs[0].runs[0].font.size for i in range(12)}
+    assert len(labels) == 1 and len(values) == 1, "each column stays uniform"
+    label_pt, value_pt = labels.pop().pt, values.pop().pt
+    assert label_pt <= 11 and value_pt <= 9
+    assert value_pt == 9, (
+        f"the value columns must keep their 9 pt while the labels absorb the shrink, "
+        f"got labels {label_pt} / values {value_pt}"
+    )
 
 
 def test_market_entry_odd_count_blanks_unused_column_and_logo(tmp_path: Path):
@@ -676,10 +708,8 @@ def test_slide10_risk_table_clamped_to_library_height(tmp_path: Path):
     assert sum(r.height for r in frame.table.rows) == target, "row heights must sum to the target"
 
 
-def test_slide10_risk_table_steps_font_down_when_content_over_tall(tmp_path: Path):
-    # Five rows of three near-cap (160-char) mitigants cannot render inside the
-    # 5.18" clamp at the template's 10 pt — the body steps down (header stays
-    # 12 pt) instead of letting PowerPoint re-grow the table past the clamp.
+def _over_tall_risk_content() -> PitchDeckContent:
+    """Five rows of three near-cap (160-char) mitigants — PRL18's shape of defect."""
     long_mitigant = (
         "Demonstrate the durability of the platform through multi-year cohort retention, "
         "audited unit economics and a fully documented regulatory compliance record"
@@ -689,18 +719,59 @@ def test_slide10_risk_table_steps_font_down_when_content_over_tall(tmp_path: Pat
         {"risk": f"Detailed acquiror consideration number {i} on diligence depth", "mitigants": [long_mitigant] * 3}
         for i in range(1, 6)
     ]
-    deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(base))
+    return PitchDeckContent.model_validate(base)
+
+
+def test_slide10_risk_table_is_written_at_the_library_sizes(tmp_path: Path):
+    """The fill no longer pre-shrinks: over-tall copy still goes in at 12/10 pt.
+
+    Until v0.5.39 the assembler estimated each row's height and stepped the body
+    down before writing — and PRL18 still shipped a 5.36" table, because the
+    estimate said it fit. Deciding the size is now the converge loop's job, so the
+    fill's contract is simply "the library's sizes, clamped to the library's
+    height".
+    """
+    deck_path = _assemble(tmp_path, _over_tall_risk_content())
+    frame = next(
+        s for s in Presentation(deck_path).slides[9].shapes if getattr(s, "has_table", False)
+    )
+    assert frame.table.cell(0, 0).text_frame.paragraphs[0].runs[0].font.size == Pt(12)
+    assert frame.table.cell(1, 1).text_frame.paragraphs[0].runs[0].font.size == Pt(10)
+    assert frame.height == _library_risk_table_height()
+
+
+@pytest.mark.skipif(
+    find_soffice() is None, reason="the converge loop measures on a LibreOffice render"
+)
+def test_slide10_risk_table_steps_font_down_when_content_over_tall(tmp_path: Path):
+    """Same outcome as before, decided by measurement instead of estimation.
+
+    Over-tall copy must end up below the template's 10 pt with the header left at
+    12 pt, and the table must still land on the library height — but now because
+    the rendered table was measured overrunning, not because a character-width
+    model predicted it would.
+    """
+    deck_path = _assemble(tmp_path, _over_tall_risk_content(), converge=True)
     frame = next(
         s for s in Presentation(deck_path).slides[9].shapes if getattr(s, "has_table", False)
     )
     table = frame.table
+
     header_run = table.cell(0, 0).text_frame.paragraphs[0].runs[0]
     assert header_run.font.size == Pt(12), "header must stay 12 pt"
-    body_run = table.cell(1, 1).text_frame.paragraphs[0].runs[0]
-    assert body_run.font.size in (Pt(9), Pt(8)), "over-tall body copy must step below 10 pt"
+    body_size = table.cell(1, 1).text_frame.paragraphs[0].runs[0].font.size
+    assert Pt(6) <= body_size < Pt(10), (
+        f"over-tall body copy must step below 10 pt, got {body_size.pt}"
+    )
     target = _library_risk_table_height()
     assert frame.height == target, "the stepped-down table still lands on the library height"
     assert sum(r.height for r in table.rows) == target
+
+    # And the rendered table now agrees with the declaration, which is the point.
+    findings = verify_deck(deck_path, vision=False, out_dir=tmp_path / "qa")
+    assert [
+        f for f in findings if f.blocking and f.shape == frame.name
+    ] == [], "\n".join(str(f) for f in findings if f.shape == frame.name)
 
 
 def test_pitch_wireframe_expands_market_entry_slides():
@@ -845,25 +916,29 @@ def _overview_font_scale(shape):
     return int(autofit.get("fontScale")) / 1000.0
 
 
+def _overview_content(n_bullets: int, chars: int) -> PitchDeckContent:
+    base = _sample_content().model_dump()
+    filler = "funding programs, growth rates and guidance in enough detail to overflow "
+    base["company_overview_bullets"] = [
+        {"text": (f"Bullet {i + 1}: " + filler * 10)[:chars], "level": 0}
+        for i in range(n_bullets)
+    ]
+    return PitchDeckContent.model_validate(base)
+
+
 def test_slide7_overview_bullets_fitted_above_ltm_band(tmp_path: Path):
     """An over-long overview block must be boxed to the band above the 'LTM
     Revenue Breakdown' header and carry an explicit autofit fontScale —
     PowerPoint ignores a scale-less <a:normAutofit/> on open, which is how live
-    runs rendered overview copy straight through the pie section."""
-    base = _sample_content().model_dump()
-    base["company_overview_bullets"] = [
-        {
-            "text": (
-                f"Bullet {i + 1}: long-form company overview copy describing brands, "
-                "funding programs, growth rates and guidance in enough detail to "
-                "overflow the library's overview band when rendered at full size"
-            ),
-            "level": 0,
-        }
-        for i in range(8)
-    ]
-    content = PitchDeckContent.model_validate(base)
-    deck_path = _assemble(tmp_path, content)
+    runs rendered overview copy straight through the pie section.
+
+    Runs the converge loop: the box sizing is the assembler's, but the *scale* is
+    now measured off the render rather than estimated from em constants, so this
+    only means anything with the loop on.
+    """
+    # ~1,050 characters: over the band at full size, inside it once shrunk.
+    content = _overview_content(7, 150)
+    deck_path = _assemble(tmp_path, content, converge=True)
 
     slide7 = Presentation(deck_path).slides[6]
     box = find_shape(slide7, "TextBox 9")
@@ -877,6 +952,56 @@ def test_slide7_overview_bullets_fitted_above_ltm_band(tmp_path: Path):
     assert scale is not None and scale < 100.0, (
         "over-long overview copy must ship an explicit normAutofit fontScale"
     )
+
+
+def test_overview_copy_past_every_shrink_fails_the_stage(tmp_path: Path):
+    """Content the loop cannot fit must fail loudly, not ship shrunk-and-spilling.
+
+    The retired estimator floored at 70% and shipped whatever that produced, so a
+    deck whose copy did not fit at 70% went out overflowing. 1,850 characters is
+    roughly double pitch-content's documented ~950-char overview budget, and no
+    scale on the ladder fits it into the band — so the assembler raises.
+
+    This is the behaviour change that makes the whole phase worth having: the
+    remedy for over-budget copy is fewer words, and now something says so.
+    """
+    content = _overview_content(10, 185)
+    with pytest.raises(DeckNotConvergedError) as excinfo:
+        _assemble(tmp_path, content, converge=True)
+
+    message = str(excinfo.value)
+    assert "TextBox 9" in message, f"the failure must name the offending shape: {message}"
+    assert "70%" in message, (
+        f"the failure must show that the shrink ladder was exhausted: {message}"
+    )
+
+
+def test_market_entry_long_content_converges(tmp_path: Path):
+    """A filled market-entry table must render inside its clamp, measured.
+
+    PRL17's 5.91"-rendered table is the historical version of this. The table is
+    clamped to 5.71" and the loop steps the body font down until the *rendered*
+    height agrees — no character-width table, no per-row height estimate.
+    """
+    base = _sample_content().model_dump()
+    cells = base["market_entry_targets"][0]["cells"]
+    long_cells = [
+        (c + " with materially more descriptive copy than the sample carries")[:120]
+        for c in cells
+    ]
+    base["market_entry_targets"] = [{"cells": long_cells} for _ in range(3)]
+    content = PitchDeckContent.model_validate(base)
+
+    deck_path = _assemble(tmp_path, content, market_entry_target_count=3, converge=True)
+
+    findings = verify_deck(deck_path, vision=False, out_dir=tmp_path / "qa")
+    geometric = [
+        f
+        for f in findings
+        if f.blocking
+        and f.kind in {"rendered-overflow", "masked-overflow", "table-taller-than-library"}
+    ]
+    assert geometric == [], "\n".join(str(f) for f in geometric)
 
 
 def test_slide7_short_overview_keeps_full_size(tmp_path: Path):

@@ -25,7 +25,6 @@ Tests live in tests/test_pptx_helpers.py and build fresh in-memory
 decks so they don't depend on the INFOR template files.
 """
 
-import math
 from copy import deepcopy
 
 from lxml import etree
@@ -45,45 +44,6 @@ COLOR_DOWN = "C00000"  # red   — negative delta / miss
 # fills for pie / segment charts, used in theme order and cycled past six. accent2
 # (46566E) is also the clustered-column bar colour used by the Financial Summary charts.
 INFOR_ACCENTS = ["0E213F", "46566E", "ADB9CA", "A4844B", "767171", "E5E3E3"]
-
-
-# ─── Palatino text measurement ───────────────────────────────────────────────
-# Per-character advance widths for Palatino Linotype (regular), in inches per
-# point of font size, measured from the font file (PIL `getlength`, kerning
-# excluded — so string sums err ~2-5% wide, the safe direction for "does this
-# fit on one line" checks). Used to size table labels / estimate cell wrap
-# without needing the font installed at runtime (the Cowork/Linux runtime has
-# no Palatino).
-_PALATINO_CHAR_WIDTH_PER_PT = {
-    " ": 0.00347, "!": 0.00386, '"': 0.00515, "#": 0.00665, "$": 0.00694,
-    "%": 0.01167, "&": 0.01081, "'": 0.00289, "(": 0.00463, ")": 0.00463,
-    "*": 0.0054, "+": 0.00694, ",": 0.00347, "-": 0.00463, ".": 0.00347,
-    "/": 0.00444, "0": 0.00694, "1": 0.00694, "2": 0.00694, "3": 0.00694,
-    "4": 0.00694, "5": 0.00694, "6": 0.00694, "7": 0.00694, "8": 0.00694,
-    "9": 0.00694, ":": 0.00347, ";": 0.00347, "<": 0.00694, "=": 0.00694,
-    ">": 0.00694, "?": 0.00617, "@": 0.00949, "A": 0.01081, "B": 0.00849,
-    "C": 0.00985, "D": 0.01075, "E": 0.00849, "F": 0.00772, "G": 0.0106,
-    "H": 0.01156, "I": 0.00468, "J": 0.00463, "K": 0.01008, "L": 0.00849,
-    "M": 0.01314, "N": 0.01154, "O": 0.01092, "P": 0.00839, "Q": 0.01092,
-    "R": 0.00928, "S": 0.00729, "T": 0.00851, "U": 0.01081, "V": 0.01003,
-    "W": 0.01389, "X": 0.00926, "Y": 0.00926, "Z": 0.00926, "[": 0.00463,
-    "\\": 0.00842, "]": 0.00463, "^": 0.00694, "_": 0.00694, "`": 0.00463,
-    "a": 0.00694, "b": 0.00768, "c": 0.00617, "d": 0.00849, "e": 0.00665,
-    "f": 0.00463, "g": 0.00772, "h": 0.00808, "i": 0.00404, "j": 0.00325,
-    "k": 0.00772, "l": 0.00404, "m": 0.01226, "n": 0.00808, "o": 0.00758,
-    "p": 0.00835, "q": 0.00778, "r": 0.00549, "s": 0.00589, "t": 0.00453,
-    "u": 0.00838, "v": 0.00785, "w": 0.01158, "x": 0.00717, "y": 0.00772,
-    "z": 0.00694, "{": 0.00463, "|": 0.00694, "}": 0.00463, "~": 0.00694,
-}
-_PALATINO_DEFAULT_CHAR_WIDTH_PER_PT = 0.00712  # lowercase average — non-ASCII fallback
-
-
-def palatino_text_width_in(text, font_pt):
-    """Estimated single-line width (inches) of Palatino text at `font_pt`."""
-    return font_pt * sum(
-        _PALATINO_CHAR_WIDTH_PER_PT.get(ch, _PALATINO_DEFAULT_CHAR_WIDTH_PER_PT)
-        for ch in text
-    )
 
 
 # ─── Shape lookup ────────────────────────────────────────────────────────────
@@ -193,12 +153,45 @@ def set_text(shape, lines, size_pt=None, color_hex=None):
 
 # ─── set_cell_text ───────────────────────────────────────────────────────────
 
+def _declare_paragraph_size(paragraph, size_pt):
+    """Put an explicit size on a run-less paragraph, so it reserves only that line.
+
+    A cell blanked with a zero-length run (`<a:t/>`) and no declared size takes its
+    line height from the table style's default — which on the INFOR library is far
+    larger than the body copy. Every row then renders taller than the assembler
+    declared, and no amount of font stepping helps because the empty cell's size is
+    not what was stepped.
+
+    Measured on the market-entry table's unused third column (odd target count):
+    12 rows grew a little each and the table rendered **0.587" past the slide
+    edge**; declaring the size here takes it to 0.007", i.e. clean. The size itself
+    does not matter (1 pt, 4 pt and 9 pt all measure identically) — what matters is
+    that the paragraph declares one at all.
+    """
+    pPr = paragraph._p.find(qn("a:pPr"))
+    if pPr is None:
+        pPr = etree.Element(qn("a:pPr"))
+        paragraph._p.insert(0, pPr)  # pPr must be the first child of <a:p>
+    defRPr = pPr.find(qn("a:defRPr"))
+    if defRPr is None:
+        defRPr = etree.SubElement(pPr, qn("a:defRPr"))
+    endParaRPr = paragraph._p.find(qn("a:endParaRPr"))
+    if endParaRPr is None:
+        endParaRPr = etree.SubElement(paragraph._p, qn("a:endParaRPr"))  # must be last
+    for node in (defRPr, endParaRPr):
+        node.set("sz", str(int(round(size_pt * 100))))
+
+
 def set_cell_text(cell, text, size_pt=9, color_hex=None):
     """Overwrite a table cell as a single Palatino run at size_pt.
 
     Unlike `set_text`, this DOES set font.name + font.size explicitly because
     PowerPoint's table-cell default fallback is Calibri — inheriting from the
     template has been observed to slip back to Calibri across rewrites.
+
+    Blanking a cell (``text=""``) leaves a genuinely empty paragraph that declares
+    `size_pt`, rather than a zero-length run — see `_declare_paragraph_size` for
+    the row-growth defect that fixes.
     """
     tf = cell.text_frame
     while len(tf.paragraphs) > 1:
@@ -207,6 +200,9 @@ def set_cell_text(cell, text, size_pt=9, color_hex=None):
     p = tf.paragraphs[0]
     for r in list(p.runs):
         r._r.getparent().remove(r._r)
+    if not text:
+        _declare_paragraph_size(p, size_pt)
+        return
     run = p.add_run()
     run.text = text
     run.font.name = PALATINO
@@ -394,82 +390,99 @@ def enable_normal_autofit(shape, font_scale=None, line_space_reduction=None):
         norm.set("lnSpcReduction", str(int(round(line_space_reduction * 1000))))
 
 
-# ─── Overview-bullets fit (shared by the earnings-update + pitch assemblers) ─
-# Empirical Palatino Linotype layout constants for the shared overview slide's
-# ~4.5"-wide TextBox 9 (zero side insets), calibrated against PowerPoint's own
-# rendered line counts / text extents (TextRange.Lines / BoundHeight on a live
-# 1,235-char 8-bullet block, cross-checked against the 1,055-char / 7-bullet
-# block the earnings-update assembler was originally tuned on):
-#   - average prose character width ≈ 0.485 × the font size;
-#   - a wrapped line is ≈ 1.2 × the font size tall;
-#   - each bullet paragraph adds ≈ 6 pt of paragraph spacing.
-# The pre-v0.5.23 earnings-update constants (64 chars/line, 0.182"/line, no
-# paragraph-spacing term) under-estimated the rendered height by ~15%, which is
-# why a "fitted" overview block could still spill into the LTM revenue section.
-_FIT_CHAR_WIDTH_EM = 0.485
-_FIT_LINE_HEIGHT_EM = 1.2
-_FIT_PARA_SPACING_IN = 0.083
-_FIT_DEFAULT_FONT_PT = 10.5
-_FIT_MIN_SCALE = 70.0
-_FIT_SCALE_STEP = 2.5
+def normal_autofit_scale(shape):
+    """Stored `normAutofit` fontScale in percent, or None when there is no normAutofit.
+
+    A `<a:normAutofit/>` with no `fontScale` attribute returns 100.0: PowerPoint
+    ignores a scale-less autofit on open and renders at full size (the v0.5.23
+    finding), so full size is what it means in practice.
+    """
+    bodyPr = shape.text_frame._txBody.find(qn("a:bodyPr"))
+    if bodyPr is None:
+        return None
+    norm = bodyPr.find(qn("a:normAutofit"))
+    if norm is None:
+        return None
+    raw = norm.get("fontScale")
+    return 100.0 if raw is None else int(raw) / 1000.0
+
+
+def strip_autofit(shape):
+    """Replace whatever autofit the shape carries with an explicit `<a:noAutofit/>`.
+
+    Used to build a render probe that shows the shape at its *stored* text size.
+    LibreOffice treats ANY `<a:normAutofit>` — explicit `fontScale` included — as
+    "shrink to fit" and recomputes its own scale, so a rendered measurement of an
+    autofit shape can never show overflow. Stripping the autofit (after baking the
+    stored scale into the run sizes with `apply_text_scale`) is what makes the
+    render measure what PowerPoint will actually draw.
+    """
+    txBody = shape.text_frame._txBody
+    bodyPr = txBody.find(qn("a:bodyPr"))
+    if bodyPr is None:
+        bodyPr = etree.SubElement(txBody, qn("a:bodyPr"))
+        txBody.insert(0, bodyPr)
+    for child in list(bodyPr):
+        if child.tag in (qn("a:noAutofit"), qn("a:normAutofit"), qn("a:spAutoFit")):
+            bodyPr.remove(child)
+    etree.SubElement(bodyPr, qn("a:noAutofit"))
+
+
+# Text-size attributes carried by a run, an empty-paragraph mark, and a
+# paragraph-level default. All three drive rendered line height.
+_SIZED_TAGS = ("a:rPr", "a:endParaRPr", "a:defRPr")
+
+
+def apply_text_scale(shape, scale_pct):
+    """Multiply every EXPLICIT text size in the shape by `scale_pct` percent.
+
+    The counterpart to `strip_autofit`: together they turn "this shape carries a
+    75% autofit" into "this shape's runs are 75% of their nominal size and nothing
+    will shrink them further", which is renderable and therefore measurable.
+
+    Sizes that are *inherited* (a run with no `sz`, taking the placeholder list
+    style's) are left alone, because the effective size is not in this shape's
+    XML. That errs toward rendering the text LARGER than it will ship, which is
+    the safe direction for an overflow check. Every INFOR assembler writes
+    explicit sizes (`set_cell_text`, `write_bulleted_shape`), so in practice
+    nothing is missed.
+    """
+    factor = scale_pct / 100.0
+    for tag in _SIZED_TAGS:
+        for node in shape.text_frame._txBody.iter(qn(tag)):
+            raw = node.get("sz")
+            if raw is not None:
+                node.set("sz", str(max(100, int(round(int(raw) * factor)))))
+
+
+# ─── Variable-length text-block fit (both deck assemblers) ───────────────────
+# Gap left between a text block and the section header that closes its band, so
+# the two do not touch. Measured off the library, not derived.
 _FIT_BAND_GAP_IN = 0.12
 _OVERVIEW_BAND_PREFIX = "LTM Revenue"
 
 
-def _shape_text_width_in(shape):
-    """Usable text width of a shape in inches (box width minus side insets)."""
-    tf = shape.text_frame
-    left = tf.margin_left if tf.margin_left is not None else Inches(0.1)
-    right = tf.margin_right if tf.margin_right is not None else Inches(0.1)
-    return max(0.5, Emu(shape.width - left - right).inches)
-
-
-def estimate_text_height_in(paragraph_texts, width_in, font_pt):
-    """Estimated rendered height (inches) of Palatino paragraphs in a box.
-
-    Per paragraph: wrapped line count at the average-character-width estimate,
-    times the line height, plus the paragraph-spacing allowance. Deliberately
-    ignores ``lnSpcReduction`` so the estimate errs tall (extra safety margin).
-    """
-    chars_per_line = width_in / (_FIT_CHAR_WIDTH_EM * font_pt / 72.0)
-    height = 0.0
-    for text in paragraph_texts:
-        lines = max(1, math.ceil(len(text) / chars_per_line))
-        height += lines * (font_pt / 72.0) * _FIT_LINE_HEIGHT_EM + _FIT_PARA_SPACING_IN
-    return height
-
-
-def fit_text_scale(paragraph_texts, width_in, avail_in, font_pt=_FIT_DEFAULT_FONT_PT):
-    """Largest normAutofit fontScale (percent) at which the text fits ``avail_in``.
-
-    Walks down from 100% in small steps, re-estimating the wrap at each scale
-    (a smaller font also fits more characters per line, so the height falls
-    faster than linearly). Returns 100.0 when the text already fits, else the
-    first fitting scale, floored at ``_FIT_MIN_SCALE``.
-    """
-    scale = 100.0
-    while scale > _FIT_MIN_SCALE:
-        if estimate_text_height_in(paragraph_texts, width_in, font_pt * scale / 100.0) <= avail_in:
-            break
-        scale -= _FIT_SCALE_STEP
-    return max(scale, _FIT_MIN_SCALE)
-
-
 def fit_overview_textbox(slide, shape, *, band_prefix=_OVERVIEW_BAND_PREFIX):
-    """Keep the overview bullets above the 'LTM Revenue Breakdown' header.
+    """Size a variable-length text block to the free band above its next header.
 
-    The shared library ships the overview TextBox 9 one line tall and relies on
-    autofit, but PowerPoint ignores a scale-less ``<a:normAutofit/>`` on open,
-    so an over-long run renders at full size and spills into the LTM revenue
-    section below. Size the box to the available band, and when the copy would
-    still overflow at the template font, write an **explicit** ``fontScale``
-    (plus a modest line-space reduction) so the shrink actually happens on
-    open. Returns the applied scale (100.0 when no shrink was needed).
+    The shared library ships these blocks **one line tall** and relies on autofit,
+    but PowerPoint ignores a scale-less ``<a:normAutofit/>`` on open, so an
+    over-long run renders full size and spills into whatever is below — the
+    recurring "overview text overlaps the LTM revenue breakdown" analyst report,
+    and (found by the Phase B contract) the same thing on the earnings-update
+    Business Updates block. Sizing the box to the band is the fix that belongs
+    here: it is pure geometry, read off the neighbouring shape's position.
 
-    Used by both deck assemblers — the pitch and earnings-update overview
-    slides are the same library entry, and both previously relied on autofit
-    alone (the recurring "overview text overlaps the LTM revenue breakdown"
-    analyst report).
+    **Deciding how far to shrink the text is deliberately NOT done here.** Until
+    v0.5.39 this function solved for a ``fontScale`` using hand-calibrated
+    Palatino em constants — an average character width, a line height, a paragraph
+    spacing allowance — i.e. a reimplementation of the layout engine in Python.
+    Those constants were recalibrated ~15% in v0.5.23 after a "fitted" block spilled
+    anyway, which is the argument against having them at all. `deck_repair` now
+    measures the real render and steps the scale down until the ink fits.
+
+    So this writes a plain shrink-on-overflow autofit and leaves the scale alone.
+    Returns the available band height in inches.
     """
     top_in = Emu(shape.top).inches
     band_bottom = None
@@ -482,20 +495,8 @@ def fit_overview_textbox(slide, shape, *, band_prefix=_OVERVIEW_BAND_PREFIX):
         shape.height = Inches(avail_in)
     else:
         avail_in = Emu(shape.height).inches
-
-    paras = [p.text for p in shape.text_frame.paragraphs if p.text.strip()]
-    font_pt = _FIT_DEFAULT_FONT_PT
-    for p in shape.text_frame.paragraphs:
-        run_size = next((r.font.size for r in p.runs if r.font.size is not None), None)
-        if run_size is not None:
-            font_pt = run_size.pt
-            break
-    scale = fit_text_scale(paras, _shape_text_width_in(shape), avail_in, font_pt)
-    if scale < 100.0:
-        enable_normal_autofit(shape, font_scale=scale, line_space_reduction=8)
-    else:
-        enable_normal_autofit(shape)
-    return scale
+    enable_normal_autofit(shape)
+    return avail_in
 
 
 # ─── delete_slide ────────────────────────────────────────────────────────────
@@ -568,6 +569,40 @@ def find_table_shape(slide):
         if getattr(shape, "has_table", False):
             return shape
     raise KeyError("no table shape found on slide")
+
+
+def set_table_height(table_frame, total_height):
+    """Resize a table to an exact total height by scaling its row heights.
+
+    Mirrors setting a table's height in PowerPoint (drag the bottom handle / set
+    Height in the Size pane): the graphic-frame extent and every row height are
+    scaled to `total_height` proportionally, so the rows still sum to exactly the
+    target (rounding remainder folded into the last row). Call AFTER the cells are
+    filled — row heights are only meaningful once content is in place.
+
+    A declared row height is only a render-time MINIMUM, so this clamp does not by
+    itself stop the layout engine re-growing a row whose text needs more.
+
+    Until v0.5.39 it tried to: callers passed per-row `min_heights` estimated from
+    a Palatino character-width table and a 1.2-em line height, and a waterfall
+    pinned any row below its estimate. That is a layout engine reimplemented in
+    Python to guess an answer the renderer already knows, and it guessed wrong often
+    enough to need recalibrating. What actually stops row re-growth is smaller text,
+    and what decides how much smaller is the measured render — see `deck_repair`,
+    which steps the body font down until the rendered table fits and re-clamps
+    through this function.
+    """
+    table = table_frame.table
+    rows = list(table.rows)
+    base = sum(r.height for r in rows)
+    if not rows or base <= 0:
+        return
+    target = int(total_height)
+    heights = [max(0, int(round(r.height * target / base))) for r in rows]
+    heights[-1] = max(0, heights[-1] + target - sum(heights))  # rows sum exactly
+    for row, h in zip(rows, heights):
+        row.height = h
+    table_frame.height = sum(heights)
 
 
 # ─── Footnote currency token ─────────────────────────────────────────────────

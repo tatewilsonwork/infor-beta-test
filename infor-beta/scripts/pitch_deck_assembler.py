@@ -28,6 +28,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu, Inches
 
+from deck_repair import assert_converged, converge_deck
 from excel_to_powerpoint import insert_excel_into_placeholder
 from naming import safe_filename
 from pptx_helpers import (
@@ -38,8 +39,8 @@ from pptx_helpers import (
     find_table_shape,
     fit_overview_textbox,
     iter_all_shapes,
-    palatino_text_width_in,
     set_cell_text,
+    set_table_height,
     set_text,
     write_bullets_or_plain,
 )
@@ -148,65 +149,6 @@ def _rounded_rectangles(slide):
     return [shape for shape in slide.shapes if shape.name == "Rounded Rectangle 19"]
 
 
-def _set_table_height(table_frame, total_height: int, min_heights: list[int] | None = None) -> None:
-    """Resize a table to an exact total height by scaling its row heights.
-
-    Mirrors setting a table's height in PowerPoint (drag the bottom handle / set
-    Height in the Size pane): the graphic-frame extent and every row height are
-    scaled to `total_height` proportionally, so the rows still sum to exactly the
-    target (rounding remainder folded into the last row). Call AFTER the cells are
-    filled — row heights are only meaningful once content is in place.
-
-    `min_heights` (EMU, one per row) are per-row *content* minimums: a stored row
-    height is only a MINIMUM, so PowerPoint re-grows any row whose text needs more
-    than we declared and the rendered table ends up taller than the clamp (the
-    live-run "5.91-inch table" report — one wrapped label re-grew its 0.28" row).
-    Rows whose proportional share would fall below their minimum are pinned at the
-    minimum and the shortfall is taken from the rows with headroom, so the
-    *rendered* total still lands on `total_height`. If even the minimums exceed
-    the target the minimums win (the table then overflows by the true content
-    excess — content must shrink, not the declared heights).
-    """
-    table = table_frame.table
-    rows = list(table.rows)
-    if not rows or sum(r.height for r in rows) <= 0:
-        return
-    target = int(total_height)
-    mins = [int(m) for m in min_heights] if min_heights is not None else [0] * len(rows)
-
-    # Waterfall: pin rows whose proportional share of the remaining budget would
-    # dip below their content minimum; re-share the rest until stable.
-    free = set(range(len(rows)))
-    budget = target
-    alloc: dict[int, float] = {}
-    while free:
-        base = sum(rows[i].height for i in free)
-        if base <= 0 or budget <= 0:
-            for i in free:
-                alloc[i] = mins[i]
-            break
-        alloc = {i: rows[i].height * budget / base for i in free} | {
-            i: float(mins[i]) for i in range(len(rows)) if i not in free
-        }
-        pinned = [i for i in free if alloc[i] < mins[i]]
-        if not pinned:
-            break
-        for i in pinned:
-            free.discard(i)
-            budget -= mins[i]
-
-    heights = [max(int(round(alloc[i])), mins[i]) for i in range(len(rows))]
-    # Fold the rounding remainder into the last unpinned row so rows sum exactly.
-    spill = target - sum(heights)
-    for i in reversed(range(len(rows))):
-        if heights[i] + spill >= mins[i]:
-            heights[i] += spill
-            break
-    for row, h in zip(rows, heights):
-        row.height = max(0, h)
-    table_frame.height = sum(max(0, h) for h in heights)
-
-
 def _write_flexible_bullets(shape, bullets) -> None:
     """Write bullets, falling back to plain paragraphs if a library shape has no bullet glyph template."""
     write_bullets_or_plain(shape, [_bullet_tuple(bullet) for bullet in bullets])
@@ -245,15 +187,14 @@ def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
                 set_text(shape, [content.investment_highlights_tagline])
 
 
-# Market-entry cell sizing: the label column is white at 11 pt (stepping down
-# per-label when a long label would wrap — see _me_label_size_pt); the target
-# value columns are 9 pt. The value cells carry the long Overview / Strategic
-# Rationale copy, and PowerPoint grows a table row to fit its text (a stored row
-# height is only a MINIMUM). At 10 pt the real per-target copy wrapped tall
-# enough that PowerPoint re-expanded the whole table to ~6.3" on open — past the
-# 5.71" clamp `_set_table_height` writes. 9 pt keeps that copy inside the
-# clamped rows so the rendered table stays at 5.71"; pair it with concise
-# Overview / Strategic Rationale cells (see pitch-content) for headroom.
+# Market-entry cell sizing: the label column is white at `_ME_LABEL_SIZE`, the
+# target value columns 9 pt. The value cells carry the long Overview / Strategic
+# Rationale copy, and the layout engine grows a table row to fit its text (a stored
+# row height is only a MINIMUM). At the library's 10 pt the real per-target copy
+# wrapped tall enough to re-expand the whole table to ~6.3" on open — past the
+# 5.71" clamp `set_table_height` writes. 9 pt keeps that copy inside the clamped
+# rows; pair it with concise Overview / Strategic Rationale cells (see
+# pitch-content) for headroom.
 _ME_VALUE_SIZE = 9
 _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
 
@@ -264,72 +205,37 @@ _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
 # table's bottom above the slide edge (table top is 1.2" on a 7.5" slide).
 _ME_TABLE_HEIGHT = Inches(5.71)
 
-# Table-cell layout constants for the market-entry row-minimum estimates: the
-# library cells carry 0.1" side / 0.05" top+bottom insets, and a Palatino line
-# is ~1.2× the font size tall (PowerPoint renders a single 11 pt label row at
-# 0.283" = 11/72 × 1.2 + 0.1 — the floor below which no row can be declared,
-# since a stored row height is only a minimum).
-_ME_CELL_SIDE_INSETS_IN = 0.2
-_ME_CELL_TB_INSETS_IN = 0.1
-_ME_LINE_HEIGHT_EM = 1.2
-_ME_MIN_ROW_IN = 11 * _ME_LINE_HEIGHT_EM / 72 + _ME_CELL_TB_INSETS_IN  # ≈ 0.283
-# Word-wrapping wastes some of each line (breaks fall on word boundaries), so
-# widen the estimated text width before dividing by the cell width.
-_ME_WRAP_WASTE = 1.08
-# A label that would wrap in the label column steps down until it fits on one
-# line (a wrapped label is what re-grew the 0.28" rows to 5.91" total in the
-# live run — 'Geographic Footprint' is wider than the 1.457" usable column at
-# 11 pt). Pair with concise row labels from pitch-content (≤ ~18 chars).
-_ME_LABEL_SIZE_STEPS = (11, 10, 9)
+# Row-label size in the market-entry table's narrow (1.457" usable) label column.
+# A label too wide for the column wraps and re-grows its row, which is one of the
+# two mechanisms behind PRL17's 5.91"-rendered table. Until v0.5.39 the assembler
+# pre-empted that by measuring each label against a Palatino advance-width table
+# and stepping the over-wide ones down individually; the converge loop now measures
+# the rendered table and caps the label column when it actually overruns, which
+# also keeps the column uniform. Pair with concise labels from pitch-content
+# (≤ ~18 chars) so the cap is rarely needed.
+_ME_LABEL_SIZE = 11
 
-
-def _me_label_size_pt(label: str, usable_width_in: float) -> int:
-    """Largest step size at which `label` fits the label column on one line."""
-    for pt in _ME_LABEL_SIZE_STEPS:
-        if palatino_text_width_in(label, pt) <= usable_width_in:
-            return pt
-    return _ME_LABEL_SIZE_STEPS[-1]
-
-
-def _me_cell_min_height_in(
-    text: str, usable_width_in: float, font_pt: float, wrap_waste: float = _ME_WRAP_WASTE
-) -> float:
-    """Estimated rendered height of one filled cell (its row's content minimum).
-
-    `wrap_waste` pads prose for word-boundary wrapping; labels pass 1.0 — the
-    per-label font step-down already guarantees they fit on one line, and the
-    character table's kerning-less sums are the conservative side of that check.
-    """
-    lines = 0
-    for segment in (text.splitlines() or [""]):
-        width = palatino_text_width_in(segment, font_pt) * wrap_waste
-        lines += max(1, math.ceil(width / usable_width_in))
-    return lines * font_pt * _ME_LINE_HEIGHT_EM / 72 + _ME_CELL_TB_INSETS_IN
 
 # Slide 10 Considerations/Mitigants table sizing. The library ships the header
 # row at 12 pt and the body cells at 10 pt; the old code hardcoded 9 pt / 8 pt,
 # which rendered noticeably smaller than the template.
 _RISK_HEADER_SIZE = 12
 _RISK_BODY_SIZE = 10
-# The table must render at the library's shipped height (5.17", PowerPoint's
-# Size pane shows 5.18") — a stored row height is only a render-time MINIMUM,
-# so long mitigant copy re-grows its row and the whole table with it (a live
-# run rendered 5.36"). When the estimated content heights don't fit at 10 pt,
-# the body steps down until they do (the header row stays 12 pt), then the
-# declared rows are clamped back to the library height with the estimates as
-# per-row floors (mirrors the market-entry treatment).
-_RISK_BODY_SIZE_STEPS = (_RISK_BODY_SIZE, 9, 8)
 
 
 def _fill_risk_table(slide, content: PitchDeckContent) -> None:
     """Fill the Considerations/Mitigants table and clamp it to the library height.
 
-    Estimates each row's rendered height from its widest cell (risk vs. joined
-    mitigants), steps the body font down ``_RISK_BODY_SIZE_STEPS`` until the
-    estimates fit the library's shipped table height, writes the cells at that
-    size, then scales the declared row heights back to exactly the library
-    height with the estimates as per-row content floors — so the rendered
-    table always lands on the library's 5.18".
+    Writes the cells at the library's own sizes — 12 pt header, 10 pt body — and
+    clamps the declared rows back to the height the library ships the table at.
+
+    It does **not** pre-shrink the body font. Until v0.5.39 it estimated every
+    row's rendered height from its widest cell and stepped the body down 10 -> 9 ->
+    8 pt until the estimates fit, which is how PRL18 still shipped a 5.36" table
+    against a 5.1715" library height: the estimate said it fit. The converge loop
+    now measures the rendered table and steps the font down only when the render
+    actually overruns — and only as far as it has to, so a deck whose copy fits at
+    10 pt keeps the template's size instead of being shrunk by a cautious model.
     """
     table_frame = find_table_shape(slide)
     table = table_frame.table
@@ -341,29 +247,13 @@ def _fill_risk_table(slide, content: PitchDeckContent) -> None:
         (row.risk, "\n".join(row.mitigants)) for row in content.risk_mitigants[:max_rows]
     ]
     body += [("", "")] * (len(table.rows) - 1 - len(body))
-    usable = [Emu(col.width).inches - _ME_CELL_SIDE_INSETS_IN for col in table.columns]
-
-    def row_minimums(body_pt: int) -> list[int]:
-        sized_rows = [(header, _RISK_HEADER_SIZE)] + [(cells, body_pt) for cells in body]
-        return [
-            Inches(max(_me_cell_min_height_in(text, usable[c], pt) for c, text in enumerate(cells)))
-            for cells, pt in sized_rows
-        ]
-
-    body_size = _RISK_BODY_SIZE_STEPS[0]
-    minimums = row_minimums(body_size)
-    for pt in _RISK_BODY_SIZE_STEPS[1:]:
-        if sum(minimums) <= library_height:
-            break
-        body_size = pt
-        minimums = row_minimums(pt)
 
     set_cell_text(table.cell(0, 0), header[0], size_pt=_RISK_HEADER_SIZE)
     set_cell_text(table.cell(0, 1), header[1], size_pt=_RISK_HEADER_SIZE)
     for idx, (risk, mitigants) in enumerate(body):
-        set_cell_text(table.cell(idx + 1, 0), risk, size_pt=body_size)
-        set_cell_text(table.cell(idx + 1, 1), mitigants, size_pt=body_size)
-    _set_table_height(table_frame, library_height, minimums)
+        set_cell_text(table.cell(idx + 1, 0), risk, size_pt=_RISK_BODY_SIZE)
+        set_cell_text(table.cell(idx + 1, 1), mitigants, size_pt=_RISK_BODY_SIZE)
+    set_table_height(table_frame, library_height)
 
 
 def _output_currency_letter(workbook_path) -> str:
@@ -461,30 +351,17 @@ def _fill_market_entry_targets(
     table_frame = find_table_shape(slide)
     table = table_frame.table
     n_cols = len(table.columns)  # label column + target columns (3 in the library)
-    usable = [
-        max(0.5, Emu(col.width).inches - _ME_CELL_SIDE_INSETS_IN) for col in table.columns
-    ]
-    # Per-row rendered content minimums (see _set_table_height): every row floors
-    # at a single 11 pt label line; filled cells raise it by their estimated wrap.
-    row_mins_in = [_ME_MIN_ROW_IN] * len(table.rows)
     # Table row 0 is the blank logo/header row; data labels start at row 1. With
     # the fixed 12-row structure every data row is populated — no blank rows.
     for i, label in enumerate(row_labels):
         row = i + 1
         if row >= len(table.rows):
             break
-        label_pt = _me_label_size_pt(label, usable[0])
-        set_cell_text(table.cell(row, 0), label, size_pt=label_pt, color_hex=_ME_LABEL_COLOR)
-        row_mins_in[row] = max(
-            row_mins_in[row], _me_cell_min_height_in(label, usable[0], label_pt, wrap_waste=1.0)
-        )
+        set_cell_text(table.cell(row, 0), label, size_pt=_ME_LABEL_SIZE, color_hex=_ME_LABEL_COLOR)
         for col in range(1, n_cols):
             target = targets[col - 1] if (col - 1) < len(targets) else None
             value = target.cells[i] if target is not None else ""
             set_cell_text(table.cell(row, col), value, size_pt=_ME_VALUE_SIZE)
-            row_mins_in[row] = max(
-                row_mins_in[row], _me_cell_min_height_in(value, usable[col], _ME_VALUE_SIZE)
-            )
     for row in range(len(row_labels) + 1, len(table.rows)):
         for col in range(n_cols):
             set_cell_text(table.cell(row, col), "", size_pt=_ME_VALUE_SIZE)
@@ -507,12 +384,11 @@ def _fill_market_entry_targets(
             set_text(logo, [""])
 
     # Clamp the now-filled table to a fixed height so long content can't run it
-    # off the slide. Done last, after every cell is populated; the per-row
-    # content minimums keep the declared heights achievable so PowerPoint's
-    # render-time row growth can't push the total past the clamp.
-    _set_table_height(
-        table_frame, _ME_TABLE_HEIGHT, min_heights=[Inches(m) for m in row_mins_in]
-    )
+    # off the slide. Done last, after every cell is populated. The clamp alone does
+    # not stop render-time row growth — a declared row height is only a minimum —
+    # and the converge loop measures the render and steps the body font down when
+    # it happens. That replaced per-row content-height estimates here.
+    set_table_height(table_frame, _ME_TABLE_HEIGHT)
 
 
 class _PitchLayout:
@@ -578,6 +454,7 @@ def assemble_pitch_deck(
     captable_workbook_path: Path | str | None = None,
     ownership_workbook_path: Path | str | None = None,
     financial_metric_labels: list[str] | None = None,
+    converge: bool = True,
 ) -> Path:
     """Fill the INFOR slide-library pitch deck.
 
@@ -804,6 +681,17 @@ def assemble_pitch_deck(
     # Disclaimer + contact are static library entries — left untouched.
 
     prs.save(output_path)
+
+    # Write -> verify -> repair -> re-verify against the deck contract, BEFORE the
+    # Excel pictures go in: the repair loop re-saves through python-pptx, and doing
+    # that after the COM insertions would round-trip the pasted pictures for no
+    # reason. A picture cannot overflow its box — only text and tables re-grow — so
+    # nothing the insertions add needs fitting.
+    if converge:
+        assert_converged(
+            output_path,
+            converge_deck(output_path, library=template, out_dir=out_dir / ".qa"),
+        )
 
     # Paste the generated cap table into slide 7's placeholder (mirrors the
     # earnings overview insertion). Done after save so the picture write re-opens

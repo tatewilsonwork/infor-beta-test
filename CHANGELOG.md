@@ -2,6 +2,82 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
+## [0.5.39] — 2026-07-27
+
+**Migration Phase B step 3 — the converge loop, and the estimation code is gone. Phase B is complete.** `verify_deck` moves from a standalone oracle into both assemblers as write → verify → repair → re-verify, and the four hand-calibrated heuristics it was built to replace are deleted: **224 lines of Python that predicted a layout engine**. Nothing now estimates how tall or wide text will render; the renderer is asked.
+
+**Phase C is deliberately not started.**
+
+### The prerequisite: per-shape render attribution
+
+Step 2 documented a blind spot and this release closes it, because a repair loop that cannot attribute overflowing ink to a *shape* does not know which shape to shrink.
+
+`rendered-overflow` counts ink landing in **nobody's** declared box. That is what keeps it free of false positives, and it is also structurally blind to an overflow running straight into the shape below, which the lower shape's own claim masks — inside that box the pixels belong to two shapes at once, so no threshold separates them. New **`masked-overflow`** measures it by **rendering the shape alone**: for each candidate, a probe deck carries the shape on its own layout plus an empty slide of that layout, and subtracting the second from the first leaves nothing but that shape's ink. Absolute positioning is what makes it sound — removing a neighbour cannot move or re-wrap the shape under test — and every probe rides in one deck, so the pass costs one extra LibreOffice conversion (2.5–7.7 s measured per artefact).
+
+Proven on the case step 2 had recorded as unreachable: the earnings-update fixture's broker table declares a bottom of 6.184" with the summary box at 6.221", only **0.037"** of the overflow is unclaimed, and rendering the table alone measures **0.153"** against a 0.000" library baseline. That slide previously reached a reviewer only indirectly, through an unrelated `TextBox 6` finding.
+
+### The finding that mattered most: LibreOffice is *optimistic* about autofit
+
+**LibreOffice treats ANY `<a:normAutofit>` as shrink-to-fit and recomputes its own scale — explicit `fontScale` included. PowerPoint applies the stored scale and nothing more.** Measured on a purpose-built deck: identical over-long copy renders as a 0.100" overflow with no autofit element and **clean at every one of `fontScale` 100/90/80/70**.
+
+So for an autofit shape the as-shipped render is optimistic, not conservative, and **v0.5.37's contract was blind to the PRL14 defect class on any freshly built deck** — every INFOR overview bullet block carries such an autofit. It caught PRL14 only because that pre-fix artefact happens to have no autofit element at all.
+
+Two consequences, both shipped:
+
+- Probes **bake the stored scale into the run sizes and replace the autofit with `<a:noAutofit/>`** (`pptx_helpers.apply_text_scale` / `strip_autofit` / `normal_autofit_scale`). `lnSpcReduction` is deliberately not modelled, which renders slightly taller than ships — the safe direction.
+- `rendered-overflow` now **skips autofit shapes entirely** so it cannot outrank attribution. On the fixture's Business Updates block the two disagree by an order of magnitude — 0.14" as-shipped against **1.51"** baked — and reporting the smaller number would both understate the defect and tell the repair loop it was nearly there.
+
+This is also the reason `fit_overview_textbox` cannot simply be trusted after the fact: it is why the deleted em constants existed, and why the replacement had to be a probe rather than a re-measurement of the shipped file.
+
+### Two more defects the oracle exposed, both fixed at source
+
+1. **The earnings assembler never sized the Business Updates box.** The library ships `TextBox 6` one line tall (0.28") with **2.4" of empty band beneath it**, and the assembler wrote the bullets and relied on autofit — so they rendered full-size straight through the "Broker Estimates vs Actuals" header. Exactly the defect `fit_overview_textbox` was written for in v0.5.23, on a shape nobody had ever rendered. Now band-sized like the overview.
+2. **`set_cell_text("")` made every row of a market-entry table grow.** Blanking a cell wrote a zero-length `<a:t/>` run with no declared paragraph size, so the cell reserved a line at the *table style's* default. With an unused target column the table rendered **0.587" past the slide edge** — i.e. **every pitch deck with an odd market-entry target count**. Font stepping could not touch it (measured identical at 6/7/8/9 pt) because the empty cell's size was never what was being stepped. Blanking now leaves a genuinely empty paragraph carrying the requested size: **0.587" → 0.007"**, no repair iteration needed.
+
+### The converge loop
+
+New **`scripts/deck_repair.py`**. Bounded to 3 iterations; the stage **fails** via `DeckNotConvergedError` when it cannot converge, because shipping a shrunk-but-still-overflowing deck quietly is what the retired estimator did for thirteen releases. Deterministic findings drive the loop; vision findings stay advisory and reach the caller for the `deck` checkpoint. Both assemblers call it after the fill and **before** the Excel picture insertions — a picture cannot overflow its box, and repairing afterwards would round-trip the pasted picture for nothing.
+
+Repairs are measured, never estimated: to choose a size it builds one probe slide per candidate, renders the whole ladder in **a single** conversion, and reads back how far the ink actually falls past the box. Text shapes step the autofit `fontScale` (100 → 70, the retired `fit_text_scale` floor); tables cap their body cells' point size and re-clamp through `set_table_height`. Header rows are left alone — shrinking uniformly is what made an earlier revision render smaller than the template (v0.5.14).
+
+**A cap, not a subtraction** — the one non-obvious repair rule, and what made deleting the Palatino width table safe. Each table step caps every body run at `max_size - k`, so the shrink lands where there is most to give. The market-entry table has 11 pt labels against 9 pt values: step 1 caps at 10 pt, taking the labels down and leaving the values at the 9 pt they were deliberately set to. Subtracting a point from each run instead — measured — dropped the values to 8 pt for a defect the labels caused. On a uniform body a cap is identical to a subtraction.
+
+**One bug worth recording, because it looked like the loop simply not working.** The acceptance threshold was taken from the finding's `limit_in`, which on `rendered-overflow` is a *masked* measurement, while a probe measures *unmasked* own-ink. On the market-entry table those read 0.18" and 0.59", so the threshold was unsatisfiable and the loop spent its whole budget re-applying the deepest step with no progress. Both sides now come from the attributed baseline.
+
+### The deletions — one commit each, fixtures re-verified between
+
+| | deleted | lines |
+|---|---|---|
+| 3a | `_FIT_CHAR_WIDTH_EM` / `_FIT_LINE_HEIGHT_EM` / `_FIT_PARA_SPACING_IN` / `_FIT_MIN_SCALE` / `_FIT_SCALE_STEP`, `_shape_text_width_in`, `estimate_text_height_in`, `fit_text_scale`, and `fit_overview_textbox`'s scale solve | 73 |
+| 3b | `set_table_height`'s `min_heights` waterfall + the market-entry per-row minimum computation | 41 |
+| 3c | `_RISK_BODY_SIZE_STEPS` + the `row_minimums` ladder, `_me_cell_min_height_in` and its three layout constants | 60 |
+| 3d | `_PALATINO_CHAR_WIDTH_PER_PT` (95 entries) + `palatino_text_width_in`, `_me_label_size_pt` + `_ME_LABEL_SIZE_STEPS` | 50 |
+| | **total** | **224** |
+
+`fit_overview_textbox` keeps only what was never an estimate — sizing the box to the free band above the next section header, which is geometry read off a neighbouring shape. `set_table_height` keeps the clamp, because clamping is not estimation. `pptx_helpers` no longer imports `math`.
+
+Each deletion is its own commit with the three regression fixtures re-verified before moving on, in the plan's order (3a alone first, 3d last since 3b and 3c consumed it).
+
+### Verification against the exit criteria
+
+- **All three regression fixtures still caught.** PRL17 `rendered-overflow` 0.18" past a 5.710" declaration (still invisible to the XML tier); PRL18 `table-taller-than-library` 5.360" vs 5.1715"; PRL14 `rendered-overflow` 2.58" past a 0.58" box, still naming the LTM band. Unchanged through all four deletions.
+- **The EU broker-table masking case is caught directly**, as `masked-overflow` on `Table 4` naming `Rectangle 1111`, not via `TextBox 6`.
+- **PRL17 and PRL18 are now also *repaired*** — one measured pass each, PRL17 by a font cap with its declared height untouched, PRL18 by the clamp.
+- **A freshly assembled deck of each deliverable converges.** The **frozen fixtures do not**, and that is correct rather than a gap: `earnings-update-deck.pptx` is a v0.5.5-era artefact whose two text blocks are over budget for boxes that were never sized, so the loop spends its ladder and refuses. `pitch-deck.pptx` converges in **zero** iterations — its 12 blocking findings are all string-tier `[x]` tokens, which no font size fixes and the loop correctly does not touch.
+
+### Added
+- `scripts/deck_repair.py` — `converge_deck` / `assert_converged` / `ConvergeResult` / `DeckNotConvergedError`.
+- `deck_contract`: `masked-overflow`, `measure_attributed_overflow`, `measure_probe_overflow`, `build_probe_deck`, `ProbeRequest` / `ProbePlan`, `bake_stored_autofit`, `LibraryBaseline.attributed`, and `verify_deck(attribute=…)`.
+- `pptx_helpers`: `normal_autofit_scale`, `strip_autofit`, `apply_text_scale`, and `set_table_height` (moved from `pitch_deck_assembler._set_table_height`, now shared).
+- `scripts/tests/test_deck_repair.py` — 9 tests. Both assemblers gain `converge: bool = True`; the assembler tests default it **off** (it renders — seconds per call) and the geometry tests that exist to exercise it opt in.
+
+### Fixed
+- `slide_render`'s LibreOffice conversion gets **one retry**. A conversion that starts is normally deterministic, but soffice exited without a PDF once across a 610-test suite, surfacing as `render-unavailable` on a deck that renders fine in isolation. The converge loop renders several times per assembly, so a per-render coin flip would surface as an unconverged deck. A genuinely absent or wedged LibreOffice still fails after the retry, unchanged.
+
+### Changed
+- The deliberately-over-budget overview test now asserts the stage **fails** instead of shipping at the 70% floor. That is the behaviour change the phase exists for: the remedy for over-budget copy is fewer words, and now something says so, naming the shape and how far past it renders.
+- Pinned fixture findings updated for the earnings-update deck (`masked-overflow` 3, `rendered-overflow` 0) with the reasoning recorded in `fixtures/README.md`.
+
 ## [0.5.38] — 2026-07-27
 
 **Migration Phase I items 2–3 — Windows COM dev-path hygiene.** Dev-environment friction only; nothing here touches production (Cowork has no Excel and never enters these paths) and Phase D deletes the COM path outright. Item 1 (degrade an exhausted clipboard retry) is included since it is what made the new opt-in gate untrustworthy. **Phase I item order in `docs/migration-plan.md` is unchanged; Phase B step 3 and Phases C–H are untouched.**

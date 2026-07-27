@@ -124,18 +124,37 @@ at pixels.
 v0.5.33 cross-tab relink and deletion gate did their job on the pitch run. (Text
 and table cells; rasterised range pictures are out of scope by design, above.)
 
-**One geometric defect, earnings-update fixture only** — `TextBox 6` on slide 3
-(Business Updates) renders 0.14" below a box that declares 0.28" of height, and
-the bullets are autofit-crushed to roughly 4 pt: legible in outline, not on the
-page. Reported as `rendered-overflow`. That deck is v0.5.5-era, 29 releases
-before `fit_overview_textbox` existed.
+**Three geometric defects, earnings-update fixture only** — all v0.5.5-era, 29
+releases before `fit_overview_textbox` existed, and all reported as
+`masked-overflow` because attribution is the only tier that can measure them:
 
-Also on that slide, **not** reported: the summary box (`Rectangle 1111`, top
-6.221") is drawn over the broker table's last row (`EPS, Adj.`), whose frame
-declares a bottom of 6.184". Only 0.037" of that overflow lands outside every
-declared box, under the reporting tolerance — see the "Known blind spot" section
-of `deck_contract.py`'s module docstring. A reviewer still reaches the slide via
-the `TextBox 6` finding above.
+- `TextBox 6` on slide 3 (Business Updates) holds 874 characters in a box that
+  declares 0.28" of height. The library ships that box one line tall with 2.4" of
+  empty band beneath it and the v0.5.5 assembler relied on autofit alone —
+  **1.51"** of overflow once the stored scale is baked in.
+- `TextBox 9` on slide 2 (overview bullets) renders **0.26"** into the LTM Revenue
+  Breakdown band. This is the recurring "overview text overlaps the LTM revenue
+  breakdown" analyst report that v0.5.23 fixed for the pitch deck; the pitch
+  fixture carries a 95% scale from `fit_overview_textbox` and is clean.
+- `Table 4` (broker estimates), below.
+
+Note what the *as-shipped* render says about the first two: 0.14" and nothing at
+all. LibreOffice honours their `<a:normAutofit>` by inventing its own shrink,
+where PowerPoint applies only the stored scale — so an autofit shape has to be
+measured with the scale baked in and the autofit stripped, which is what
+attribution does. Measuring the shipped XML would have certified both as fine.
+
+**A second geometric defect on the same slide** — the summary box
+(`Rectangle 1111`, top 6.221") is drawn over the broker table's last row
+(`EPS, Adj.`), whose frame declares a bottom of 6.184". Only 0.037" of that
+overflow lands outside every declared box, so counting unclaimed ink cannot see
+it; rendering the table alone measures its own ink at **0.153"**. Reported as
+`masked-overflow` on `Table 4`, naming `Rectangle 1111`.
+
+Until v0.5.39 this was documented as a blind spot and a reviewer reached the slide
+only indirectly, via the unrelated `TextBox 6` finding above. It is now the
+regression anchor for the per-shape attribution tier
+(`test_catches_the_broker_table_masked_by_the_summary_box`).
 
 ### What `verify_deck` reports on each fixture
 
@@ -146,10 +165,18 @@ change here is a conscious edit rather than silent drift.
 |---|---|---|
 | `unfilled-token` (blocking) | 10 | 9 |
 | `unsubstituted-currency-token` (blocking) | 2 | — |
-| `rendered-overflow` (blocking) | — | 1 |
+| `masked-overflow` (blocking) | — | 3 |
 | `expected-placeholder` (advisory) | 2 | 1 |
 | `vision-review` (advisory) | 10 | 3 |
-| **total** | 12 blocking / 12 advisory | 10 blocking / 4 advisory |
+| **total** | 12 blocking / 12 advisory | 12 blocking / 4 advisory |
+
+The pitch fixture's twelve blocking findings are all string-tier, which is why the
+Phase B converge loop reports it converged in **zero** iterations — none of them is
+fixable by shrinking text. The earnings-update fixture does **not** converge: its
+two text blocks are over budget for boxes that were never sized, and the loop
+correctly refuses rather than shipping them shrunk-and-spilling. A freshly
+assembled deck from the current assembler converges — see
+`test_assembled_earnings_deck_converges_against_the_contract`.
 
 No `shape-outside-slide` and no `table-taller-than-library` on either: the
 geometric tier measures each deck against the **blank library** rather than

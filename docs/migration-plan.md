@@ -23,9 +23,11 @@ opens the artefact.** The plan below is ordered around that fact.
 
 Three structural consequences of building blind, all of which this plan removes:
 
-- A text layout engine reimplemented in Python — `_PALATINO_CHAR_WIDTH_PER_PT`,
+- ~~A text layout engine reimplemented in Python — `_PALATINO_CHAR_WIDTH_PER_PT`,
   `palatino_text_width_in`, `fit_overview_textbox`'s hand-calibrated em constants
-  (recalibrated ~15% in v0.5.23), `_set_table_height`'s growth-aware row floors.
+  (recalibrated ~15% in v0.5.23), `_set_table_height`'s growth-aware row floors.~~
+  **Gone in v0.5.39** — 224 lines, replaced by measure-then-adjust against a real
+  render (Phase B step 3).
 - A 1,123-line workbook merger (+820 lines of tests) reconciling six standalone
   workbooks after the fact, and the bug class that comes with it: LibreOffice `~`
   union operators triggering Excel repair, external-ref rebinding, order-dependent
@@ -43,7 +45,7 @@ the PRL-class bug becomes a caught test failure instead of a v0.5.35.
 | Phase | Change | Depends on | Net lines |
 |---|---|---|---|
 | A | Clear the decks — versioning, render parity, golden fixtures | — | ~0 |
-| B | Visual oracle → converge loop | A | +400 / −300 |
+| B | ✅ Visual oracle → converge loop | A | +1,667 / −389 |
 | I | Windows COM dev-path hygiene (runs between B1 and B2) | B1 | ~+60 |
 | C | Name-based template addressing | B | −350 |
 | D | One workbook, one backend | C | **−2,000** |
@@ -169,21 +171,60 @@ one release earlier). Two design decisions worth carrying into step 3:
   the library's 5.7197" — and renders 5.91", so it is only visible on the raster.
   A contract with either check alone catches one of the three bugs, not two.
 
-Step 3 has **not** started (it needs analyst sign-off), so no assembler was
-touched and no estimation code was deleted.
 3. **Promote into both assemblers** as write → verify → repair → re-verify,
    bounded to ~3 iterations, stage fails if it cannot converge.
 
 **Then delete** — only once step 3 is trusted:
 
-- `_PALATINO_CHAR_WIDTH_PER_PT` and `palatino_text_width_in` (`pptx_helpers.py:81`)
-- the `fit_overview_textbox` em constants (`pptx_helpers.py:458`)
-- `_set_table_height`'s `min_heights` estimation (`pitch_deck_assembler.py:151`)
+- `_PALATINO_CHAR_WIDTH_PER_PT` and `palatino_text_width_in`
+- the `fit_overview_textbox` em constants
+- `_set_table_height`'s `min_heights` estimation
 - `_fill_risk_table`'s font-stepping ladder
 
 Each becomes measure-then-adjust against the real render.
 
 **Exit:** all three historical bugs caught by CI; the estimation code is gone.
+
+✅ **Step 3 shipped 2026-07-27 (v0.5.39). PHASE B COMPLETE.** `scripts/deck_repair.py`
+is the loop; **224 lines** of estimation code deleted across four commits (3a alone
+first, 3d last), with the three fixtures re-verified between each. Exit criteria met:
+all three still caught, and PRL17 / PRL18 are now also *repaired* in one measured
+pass each. Detail in the CHANGELOG; four things worth carrying forward:
+
+- **Attribution came first, as a prerequisite rather than a refinement.** A repair
+  step that cannot attribute overflowing ink to a shape does not know which shape
+  to shrink. `masked-overflow` renders a shape *alone* (its own layout, minus an
+  empty slide of that layout) and measures its own ink; every probe rides in one
+  deck, so the pass costs one extra conversion. It closes step 2's documented blind
+  spot — the EU broker table, 0.037" unclaimed but 0.153" attributed.
+- **LibreOffice is OPTIMISTIC about autofit, not conservative.** It treats any
+  `<a:normAutofit>` as shrink-to-fit and recomputes its own scale, explicit
+  `fontScale` included; PowerPoint applies the stored scale and nothing more.
+  Measured: identical over-long copy renders 0.100" over with no autofit element
+  and **clean at fontScale 100/90/80/70**. So v0.5.37's contract was blind to the
+  PRL14 defect class on any freshly built deck — every INFOR overview block carries
+  such an autofit, and PRL14 was caught only because that artefact has none. Probes
+  now bake the scale in and strip the autofit; `rendered-overflow` skips autofit
+  shapes so it cannot outrank attribution (the two disagree 0.14" vs 1.51" on the
+  EU fixture). **The Phase A "LibreOffice is the conservative oracle" finding holds
+  only for shapes without autofit** — worth remembering in Phase G.
+- **The oracle found two defects nobody had recorded, both fixed at source:** the EU
+  assembler never sized the Business Updates box (0.28" tall, 2.4" of empty band
+  beneath, relying on autofit — the v0.5.23 defect on an unrendered shape), and
+  `set_cell_text("")` wrote a zero-length run with no declared size, so an empty
+  cell reserved a line at the table style's default and **every pitch with an odd
+  market-entry target count rendered 0.587" off the slide edge**.
+- **Deleting an estimate can cost quality if the replacement is naive.** Dropping
+  the Palatino width table with a per-run "subtract k points" repair converged, but
+  took market-entry values from 9 pt to 8 pt for a defect the 11 pt labels caused.
+  The repair now **caps** every body run at `max_size - k` instead, so the shrink
+  lands where there is most to give. Measure the replacement, not just the deletion.
+
+The frozen fixtures deliberately do **not** converge: `earnings-update-deck.pptx` is
+a v0.5.5 artefact whose text blocks are over budget for boxes that were never
+sized, and `pitch-deck.pptx` converges in zero iterations because all 12 of its
+blocking findings are string-tier. Freshly assembled decks of both deliverables do
+converge.
 
 ## Phase I — Windows COM dev-path hygiene
 

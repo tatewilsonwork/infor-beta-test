@@ -16,6 +16,12 @@ None is synthesized, and each replay asserts the measurement, not just that
 The split between 1 and 2 is the point of the two checks, and a contract with
 only the XML tier would catch just one of the three.
 
+A fourth defect anchors the **attribution** tier, and it is not historical — it is
+live in the earnings-update fixture. Its broker table renders under the summary
+box that sits 0.037" below it, so counting unclaimed ink can only see 0.037" of an
+overflow that is really 0.15". `masked-overflow` measures it by rendering the
+table alone.
+
 **The vision tier is deliberately not asserted for verdicts.** It carries no OCR;
 it renders slides, extracts picture crops, and returns an agenda for the
 checkpoint agent. What is asserted here is that the agenda points at the right
@@ -37,6 +43,7 @@ from deck_contract import (
     default_library_path,
     match_library_slide,
     library_baseline,
+    measure_attributed_overflow,
     verify_deck,
     vision_pass,
 )
@@ -134,6 +141,126 @@ def test_catches_overview_bullets_running_into_the_ltm_band(tmp_path):
     assert "Rectangle 15" in overflow[0].detail, (
         f"the finding does not name the band it overruns: {overflow[0].detail}"
     )
+
+
+# ─── Per-shape render attribution ────────────────────────────────────────────
+
+
+@needs_render
+def test_catches_the_broker_table_masked_by_the_summary_box(tmp_path):
+    """The blind spot `rendered-overflow` structurally cannot see.
+
+    The earnings-update fixture's broker table declares a bottom of 6.184" and the
+    summary box starts at 6.221", so the table's re-grown last row (`EPS, Adj.`)
+    renders underneath the summary box's text. Only 0.037" of that lands outside
+    every declared box — under tolerance — so counting unclaimed ink says nothing.
+
+    Rendering the table alone measures its own ink at ~0.15". Before this check the
+    slide reached a reviewer only indirectly, via the unrelated `TextBox 6`
+    finding on the same slide.
+    """
+    findings = verify_deck(_EARNINGS, vision=False, out_dir=tmp_path)
+    masked = [f for f in _of_kind(findings, "masked-overflow") if f.shape == "Table 4"]
+
+    assert masked, f"the broker table's masked overflow was not caught; got {_kinds(findings)}"
+    assert masked[0].slide == 2  # zero-based; slide 3 in PowerPoint
+    assert masked[0].severity == SEVERITY_BLOCKING
+    assert masked[0].measured_in == pytest.approx(0.153, abs=0.03), (
+        f"attributed overflow measured {masked[0].measured_in:.3f}\" — expected the "
+        f"~0.15\" the re-grown 'EPS, Adj.' row renders past 6.184\""
+    )
+    # Naming the masking shape is the actionable half: a repair step has to know
+    # which of the two shapes to shrink.
+    assert "Rectangle 1111" in masked[0].detail, (
+        f"the finding does not name the shape it renders into: {masked[0].detail}"
+    )
+
+    # And it is NOT the unclaimed-ink check that found it.
+    assert not [f for f in _of_kind(findings, "rendered-overflow") if f.shape == "Table 4"], (
+        "unclaimed ink cannot see this overflow — a rendered-overflow finding on "
+        "the broker table means the masking geometry changed"
+    )
+
+
+@needs_render
+def test_attribution_does_not_double_report_an_already_visible_overflow(tmp_path):
+    """One finding per shape, so the repair loop cannot double-count.
+
+    PRL17's market-entry table is both masked from below (`Text Placeholder 3`
+    sits 0.118" under it) and overflowing into unclaimed space, so both checks
+    measure it. `rendered-overflow` wins and `masked-overflow` stays quiet.
+    """
+    findings = verify_deck(_PRL17, vision=False, out_dir=tmp_path)
+    tables = [
+        f.kind
+        for f in findings
+        if f.shape == "Table 1215" and f.kind in {"rendered-overflow", "masked-overflow"}
+    ]
+    assert tables == ["rendered-overflow"], f"expected exactly one overflow finding, got {tables}"
+
+
+@needs_render
+def test_attribution_measures_only_the_probed_shape(tmp_path):
+    """The probe subtracts the layout, so a shape's own ink is all that is measured.
+
+    Asserted against the library rather than a built deck: every masked candidate
+    there is an unfilled placeholder sitting on a decorated layout, so anything
+    beyond render noise (one pixel row = 0.007" at 150 dpi) would mean layout or
+    neighbour ink is leaking into the measurement.
+    """
+    attributed = measure_attributed_overflow(default_library_path(), tmp_path)
+    assert attributed, "the library has masked candidates, so the pass must measure something"
+    worst = max(depth for shapes in attributed.values() for depth in shapes.values())
+    assert worst < 0.02, (
+        f"library attribution measured {worst:.3f}\" of own-ink overflow on a blank "
+        f"placeholder — the layout subtraction is leaking ink into the measurement"
+    )
+
+
+def test_attribute_false_skips_the_attribution_pass(tmp_path):
+    """The extra conversion is opt-out-able without losing the ordinary render tier."""
+    assert not _of_kind(
+        verify_deck(_EARNINGS, vision=False, attribute=False, out_dir=tmp_path / "eu"),
+        "masked-overflow",
+    )
+    # PRL14's overview block carries no autofit at all, so the unclaimed-ink tier
+    # still owns it and must still fire with attribution off.
+    assert _of_kind(
+        verify_deck(_PRL14, vision=False, attribute=False, out_dir=tmp_path / "prl14"),
+        "rendered-overflow",
+    ), "the ordinary render tier must still run"
+
+
+@needs_render
+def test_autofit_shapes_are_measured_by_attribution_not_by_unclaimed_ink(tmp_path):
+    """An autofit shape's as-shipped render is not evidence about PowerPoint.
+
+    LibreOffice honours any `<a:normAutofit>` by inventing its own shrink;
+    PowerPoint applies the stored `fontScale` and nothing more. So measuring the
+    deck as-rendered understates an autofit shape's overflow — on the
+    earnings-update fixture's Business Updates block by an order of magnitude,
+    0.14" (LibreOffice's squeeze residual) against 1.51" once the stored scale is
+    baked in and the autofit removed.
+
+    Reporting the smaller number would both understate the defect and tell the
+    repair loop it was nearly there, so the unclaimed-ink check skips autofit
+    shapes entirely and attribution owns them.
+    """
+    findings = verify_deck(_EARNINGS, vision=False, out_dir=tmp_path)
+    autofit_shapes = {"TextBox 9", "TextBox 6"}
+
+    assert not [f for f in _of_kind(findings, "rendered-overflow") if f.shape in autofit_shapes], (
+        "an autofit shape must not be measured on the as-shipped render"
+    )
+    masked = {f.shape: f for f in _of_kind(findings, "masked-overflow")}
+    assert autofit_shapes <= set(masked), (
+        f"attribution must own the autofit shapes; got {sorted(masked)}"
+    )
+    assert masked["TextBox 6"].measured_in > 1.0, (
+        f"expected the baked-scale overflow (~1.5\"), got "
+        f"{masked['TextBox 6'].measured_in:.3f}\" — the autofit is not being baked"
+    )
+    assert "autofit baked into its run sizes" in masked["TextBox 6"].detail
 
 
 # ─── The library is the geometric baseline ───────────────────────────────────
@@ -403,7 +530,10 @@ def test_findings_are_ordered_blocking_first(tmp_path):
             "earnings-update-deck.pptx",
             {
                 "unfilled-token": 9,  # 9 contact cells
-                "rendered-overflow": 1,  # slide 3 Business Updates block
+                # All three geometric defects are attribution's: the broker table is
+                # masked by the summary box, and both text blocks carry an autofit
+                # that the as-shipped render would hide.
+                "masked-overflow": 3,
                 "expected-placeholder": 1,  # pie chart placeholder
                 "vision-review": 3,  # cover, overview, contact
             },
