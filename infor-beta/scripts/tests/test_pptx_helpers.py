@@ -429,12 +429,12 @@ if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 
-# ─── fit_overview_textbox / fit_text_scale ───────────────────────────────────
+# ─── fit_overview_textbox ────────────────────────────────────────────────────
 
 from pptx.oxml.ns import qn as _qn
 from pptx.util import Emu as _Emu
 
-from pptx_helpers import estimate_text_height_in, fit_overview_textbox, fit_text_scale
+from pptx_helpers import fit_overview_textbox, normal_autofit_scale
 
 
 def _make_overview_slide():
@@ -463,42 +463,37 @@ def _font_scale_of(shape):
 
 
 class FitOverviewTextboxTests(unittest.TestCase):
-    def test_estimate_grows_with_text_and_shrinks_with_font(self):
-        short = estimate_text_height_in(["word"] * 2, 4.5, 10.5)
-        long = estimate_text_height_in(["x" * 150] * 8, 4.5, 10.5)
-        self.assertLess(short, long)
-        self.assertLess(estimate_text_height_in(["x" * 150] * 8, 4.5, 8.0), long)
+    """What is left after v0.5.39: geometry only.
 
-    def test_fit_text_scale_returns_100_when_it_fits(self):
-        self.assertEqual(fit_text_scale(["short line"], 4.5, 3.0), 100.0)
+    Choosing a font scale used to live here, solved from hand-calibrated Palatino
+    em constants. That is now measured off a real render in `deck_repair`, and the
+    tests for it are in `test_deck_repair.py` — there is deliberately nothing here
+    that predicts how tall text will be.
+    """
 
-    def test_fit_text_scale_shrinks_overlong_copy_with_floor(self):
-        paras = ["x" * 160] * 8  # ~the PRL17 live-run block
-        scale = fit_text_scale(paras, 4.507, 3.156)
-        self.assertLess(scale, 100.0)
-        self.assertGreaterEqual(scale, 70.0)
-        # A absurdly long block bottoms out at the floor instead of vanishing.
-        self.assertEqual(fit_text_scale(["x" * 500] * 30, 4.507, 3.156), 70.0)
-
-    def test_fit_sizes_box_to_band_and_writes_explicit_scale(self):
+    def test_fit_sizes_box_to_the_band_and_enables_autofit(self):
         prs, slide, box = _make_overview_slide()
         for _ in range(8):
             p = box.text_frame.add_paragraph()
             p.add_run().text = "Propel is a Toronto-based fintech that facilitates access to credit for underbanked consumers across three operating brands and multiple funding programs"
-        scale = fit_overview_textbox(slide, box)
+        avail = fit_overview_textbox(slide, box)
+
         # Box sized to the band above the LTM header (4.747 - 0.12 - 1.471).
-        self.assertAlmostEqual(_Emu(box.height).inches, 4.747 - 0.12 - 1.471, places=2)
-        # Over-long copy must carry an explicit fontScale so PowerPoint shrinks on open.
-        self.assertLess(scale, 100.0)
-        self.assertEqual(_font_scale_of(box), scale)
+        expected = 4.747 - 0.12 - 1.471
+        self.assertAlmostEqual(avail, expected, places=2)
+        self.assertAlmostEqual(_Emu(box.height).inches, expected, places=2)
+        # Shrink-on-overflow is enabled, at full size: the measured repair loop is
+        # what lowers the scale, and it must not be pre-empted by a guess here.
+        self.assertEqual(normal_autofit_scale(box), 100.0)
+        self.assertIsNone(_font_scale_of(box))
 
     def test_fit_keeps_short_copy_at_full_size(self):
         prs, slide, box = _make_overview_slide()
         box.text_frame.paragraphs[0].add_run().text = "One short line"
-        scale = fit_overview_textbox(slide, box)
-        self.assertEqual(scale, 100.0)
+        fit_overview_textbox(slide, box)
         # autofit enabled, but no explicit downscale
         self.assertIsNone(_font_scale_of(box))
+        self.assertEqual(normal_autofit_scale(box), 100.0)
 
     def test_fit_without_band_header_keeps_existing_height(self):
         prs = Presentation()
