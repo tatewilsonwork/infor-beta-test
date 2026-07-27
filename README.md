@@ -49,7 +49,7 @@ The conductor runs one plan per deliverable, resolved as `plans/<deliverable>.ya
 
 ## Conventions
 
-- Single plugin version, all skills in lock-step. Skill directory names carry no `-infor` suffix; deliverable-specific skills are prefixed by deliverable (`earningsupdate-*`, `pitch-*`).
+- One plugin version, recorded in `marketplace.json` / `plugin.json` / `pyproject.toml` only — skills carry no `version:` frontmatter. Skill directory names carry no `-infor` suffix; deliverable-specific skills are prefixed by deliverable (`earningsupdate-*`, `pitch-*`).
 - Output files land in the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), not the analyst's `cwd`.
 - Templates are resolved via the plugin-aware `find_template.sh` helper, never hardcoded paths.
 - Excel does the math, not the LLM — arithmetic lives in cell formulas for auditability.

@@ -76,8 +76,19 @@ No behaviour change. One release.
    `.xlsx` (or run both shipped plans once) and commit them as reference
    artefacts. Everything after this is validated against them.
 
-**Exit:** `pytest` green; a fixture deck renders to byte-comparable PNGs on
-Windows and Linux.
+**Exit:** `pytest` green; a fixture deck renders to comparable PNGs on both
+render paths. "Byte-comparable" was the original wording and is unachievable
+across two rasterizers — the criterion is **same slide count, same page
+dimensions, and identical findings from the geometric checks**; visual
+comparison is an eyeball pass, not an assertion. Encoded as
+`scripts/tests/test_render_parity.py`.
+
+✅ **Shipped 2026-07-27 (v0.5.35).** See the CHANGELOG entry for the five
+findings recorded and deliberately left for later phases — in particular that
+LibreOffice wraps Palatino ~one line taller than PowerPoint even with the same
+font file, making LibreOffice the *conservative* oracle for Phase B, and that
+LibreOffice has no `palatinolinotype` substitution entry (prod font resolution
+still needs one `fc-match` on a Cowork shell).
 
 ## Phase B — Visual oracle, then converge loop
 

@@ -9,7 +9,6 @@ description: >
   CapIQ links, charts, and formatting via Excel COM on Windows; falls back to a best-effort openpyxl
   merge off-Windows. The individual source workbooks are replaced by the combined file once the
   merge is verified; a degraded or partially-linked merge preserves them for a retry.
-version: 0.5.34
 allowed-tools: [Read, Write, Bash]
 ---
 

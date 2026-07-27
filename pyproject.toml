@@ -1,6 +1,6 @@
 [project]
 name = "infor-beta"
-version = "0.5.34"
+version = "0.5.35"
 description = "INFOR Financial Group internal Claude Code plugin — clean-break rebuild of infor-workflows."
 requires-python = ">=3.11"
 dependencies = [
@@ -9,7 +9,15 @@ dependencies = [
     "python-pptx>=1,<2",
     "openpyxl>=3,<4",
     "pywin32>=308 ; sys_platform == 'win32'",
-    "pypdfium2>=4 ; sys_platform != 'win32'",
+    # Unconditional: LibreOffice + pypdfium2 is the default slide renderer on
+    # every platform, so Windows dev renders exactly the way Cowork/Linux prod
+    # does. (Was `sys_platform != 'win32'` through v0.5.34, which is why a
+    # production rendering bug could not be reproduced locally.)
+    "pypdfium2>=4",
+    # Pillow backs pypdfium2's `.to_pil()` and `_trim_white_margins`; it was an
+    # undeclared dependency of the LibreOffice path until that path became the
+    # default on every platform.
+    "pillow>=10",
 ]
 
 [project.optional-dependencies]

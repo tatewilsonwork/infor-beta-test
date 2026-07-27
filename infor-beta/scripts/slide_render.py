@@ -5,21 +5,36 @@ third line) is invisible to python-pptx — the XML is valid, the text just
 doesn't fit. The deck-assembler workflow renders the overflow-prone slides to
 PNG, the agent inspects them, and shrinks/autofits text until clean.
 
-Two backends mirror `excel_to_powerpoint`:
+**LibreOffice headless is the default backend on every platform** — convert the
+deck to PDF with `soffice --headless --convert-to pdf`, render the requested
+pages via `pypdfium2`. Production (Cowork / Linux) has no other option, and
+before v0.5.35 Windows dev rendered through PowerPoint COM instead, which meant
+a production rendering bug could not be reproduced locally. One renderer
+everywhere closes that gap.
 
-  - **PowerPoint COM** (Windows + PowerPoint) — `Slide.Export(path, "PNG")`.
-  - **LibreOffice headless** (Cowork / Linux / macOS) — convert the deck to PDF
-    with `soffice --headless --convert-to pdf`, render the requested pages via
-    `pypdfium2`.
+The **PowerPoint COM** backend (`Slide.Export(path, "PNG")`, Windows +
+PowerPoint only) is still reachable, but only on an explicit opt-in:
+
+    render_deck_to_png(deck, out, backend="powerpoint")
+    # or, for a whole session: INFOR_SLIDE_RENDER_BACKEND=powerpoint
+
+There is deliberately **no automatic fallback** from LibreOffice to COM. A
+silent fallback is what produced the dev/prod divergence in the first place: a
+missing LibreOffice should be a loud failure telling you to install it, not a
+quiet switch back to a renderer production does not have. Phase D deletes the
+COM path outright.
 """
 
 from __future__ import annotations
 
-import shutil
+import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
+
+BACKEND_LIBREOFFICE = "libreoffice"
+BACKEND_POWERPOINT = "powerpoint"
+BACKEND_ENV_VAR = "INFOR_SLIDE_RENDER_BACKEND"
 
 
 def render_deck_to_png(
@@ -28,10 +43,16 @@ def render_deck_to_png(
     *,
     slide_indices: list[int] | None = None,
     dpi: int = 150,
+    backend: str | None = None,
 ) -> list[Path]:
     """Render slides to PNG and return the image paths in slide order.
 
     `slide_indices` is zero-based; None renders every slide.
+
+    `backend` selects the renderer: ``"libreoffice"`` (default, and the only
+    backend production has) or ``"powerpoint"`` (Windows + PowerPoint COM,
+    explicit opt-in only — Phase D removes it). Omitting it honours
+    ``INFOR_SLIDE_RENDER_BACKEND`` before defaulting to LibreOffice.
     """
     deck = Path(deck_path).resolve()
     if not deck.exists():
@@ -39,11 +60,14 @@ def render_deck_to_png(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if sys.platform == "win32":
-        try:
-            return _powerpoint_com_render(deck, out_dir, slide_indices)
-        except RuntimeError:
-            pass
+    resolved = (backend or os.environ.get(BACKEND_ENV_VAR) or BACKEND_LIBREOFFICE).strip().lower()
+    if resolved == BACKEND_POWERPOINT:
+        return _powerpoint_com_render(deck, out_dir, slide_indices)
+    if resolved != BACKEND_LIBREOFFICE:
+        raise ValueError(
+            f"unknown slide-render backend {resolved!r}; "
+            f"expected {BACKEND_LIBREOFFICE!r} or {BACKEND_POWERPOINT!r}"
+        )
     return _libreoffice_render(deck, out_dir, slide_indices, dpi)
 
 
@@ -97,17 +121,21 @@ def _powerpoint_com_render(deck: Path, out_dir: Path, slide_indices: list[int] |
 def _libreoffice_render(
     deck: Path, out_dir: Path, slide_indices: list[int] | None, dpi: int
 ) -> list[Path]:
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    from excel_to_powerpoint import find_soffice  # shared LibreOffice locator
+
+    soffice = find_soffice()
     if soffice is None:
         raise RuntimeError(
-            "LibreOffice (soffice/libreoffice) not found on PATH; required for "
-            "the non-Windows slide renderer. Install LibreOffice or run on a "
-            "Windows machine with PowerPoint."
+            "LibreOffice (soffice/libreoffice) not found on PATH; it is the "
+            "default slide renderer on every platform. Install LibreOffice — on "
+            "Windows dev too, so local renders match production. To render "
+            "through PowerPoint instead, opt in explicitly with "
+            f"backend={BACKEND_POWERPOINT!r} (Windows only; removed in Phase D)."
         )
     try:
         import pypdfium2 as pdfium
     except ImportError as exc:
-        raise RuntimeError("pypdfium2 is required for the non-Windows slide renderer") from exc
+        raise RuntimeError("pypdfium2 is required for the LibreOffice slide renderer") from exc
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         try:
