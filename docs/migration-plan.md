@@ -49,9 +49,16 @@ the PRL-class bug becomes a caught test failure instead of a v0.5.35.
 | E | Conductor as code | D | −150 |
 | F | Stage granularity | E | −400 |
 | G | Falsification pass | B | +500 |
+| H | Single-surface analyst intake | E (H1: none) | +300 / −200 |
 
-A gates everything. After A, **G can run in parallel with C/D/E** — different
-files, no overlap. B → C → D → E → F is a hard chain.
+A gates everything. After A, **G and H1 can run in parallel with C/D/E** —
+different files, no overlap. B → C → D → E → F is a hard chain; H2 wants E done
+first.
+
+Phases A–G are structural: they attack the failure mode the release history
+exposes. **H is the one phase driven by analyst experience rather than defect
+data** — it is in the plan because the intake is unpleasant to use, not because
+it breaks.
 
 ---
 
@@ -215,6 +222,58 @@ Additive; may start any time after B, in parallel with C/D/E.
 2. A `deckcheck` stage after `deck` that reads the rendered PNGs, the provenance
    records, and the source filings, and attempts to **disprove** every figure on
    the deck.
+
+## Phase H — Single-surface analyst intake
+
+Best after E (the conductor is a program by then, so intake is a function that
+returns a dict — the shape a form submission already has). **H1 is independent
+and may be pulled forward at any time.**
+
+**The problem is delivery, not content.** The question set is already code-owned
+and locked (v0.5.27): `deal_init.render_init_dialogs` (Listing / Sector /
+Filings) and `deck_spec.render_deck_spec_dialogs` (Notes / CIM / Valuation /
+Risk notes / Targets / Highlights) are rendered verbatim — Claude is not
+inventing options. What is unpleasant is that a pitch start is **four sequential
+`AskUserQuestion` round trips plus three plain-text blocks** (filings note,
+defaults echo, documents note) interleaved down the chat. The analyst never sees
+the whole intake at once and answers it in four bites.
+
+### H1 — One declarative spec behind every rendering
+
+**Prerequisite, and valuable on its own.** The current "cannot drift" guarantee
+is narrower than it looks: `_dialog_item_plan_inputs` derives the numbered-item →
+plan-input **mapping** from the dialog order, so the *answer mapping* is safe —
+but `_PITCH_SPEC_PROMPT` (`deck_spec.py:540`) is a hand-written string literal
+carrying its own copy of every question's wording, defaults, and option labels,
+independent of `_PITCH_SPEC_DIALOGS`. Change a dialog option label and nothing
+forces the text prompt to follow. **There are already two hand-maintained content
+renderings; a widget would make three.**
+
+So H1 collapses them: one declarative `IntakeSpec` (fields, options, defaults,
+plan-input target, required/optional) with the dialogs and the text prompt both
+*generated* from it. Ship this whether or not H2 ever happens — it removes an
+existing drift surface and makes the locked-questionnaire principle structural
+rather than conventional.
+
+### H2 — Inline interactive form
+
+A third generated rendering: one fixed-design intake form, every field visible at
+once, a Start button that posts all answers back as a single structured payload.
+Four round trips → one. Rendered inline via the host's `show_widget` (the
+`visualize` MCP server), whose `sendPrompt(text)` global submits the payload as
+if the analyst typed it.
+
+Because H1 made the spec declarative, the form is generated, not authored — a
+third rendering of one source, not a fork.
+
+> **Open decision — resolve before H2.** `visualize` is a **host-provided** MCP
+> server, confirmed present on the desktop session where this was scoped;
+> unconfirmed on the Cowork/Linux production runtime. One check on a Cowork shell
+> settles it (same class as the Phase A `fc-match`). Note that a plugin cannot
+> *depend* on a host MCP server in any case, so the fallback chain
+> **widget → dialogs → text is mandatory** and the widget can only ever front the
+> dialogs, never replace them. If `visualize` is absent on Cowork, H1 still stands
+> on its own and H2 becomes desktop-only ergonomics.
 
 ---
 
