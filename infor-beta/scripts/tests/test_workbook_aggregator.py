@@ -669,10 +669,22 @@ def test_combine_invokes_recalc_on_openpyxl_path(tmp_path: Path, monkeypatch):
     assert seen == [result.output_path]
 
 
+def _libreoffice_at(monkeypatch, path: str | None):
+    """Point the shared locator at ``path`` (or None for "not installed").
+
+    Patches ``find_soffice``, NOT ``shutil.which``: the locator also probes the
+    standard install locations, so a which()-only patch cannot hide a real Windows
+    MSI install — the "absent" tests would then silently exercise the present path.
+    ``_recalc_with_libreoffice`` imports the locator lazily, so patching the source
+    module's attribute reaches it at call time.
+    """
+    monkeypatch.setattr("excel_to_powerpoint.find_soffice", lambda: path)
+
+
 def test_recalc_returns_false_when_libreoffice_absent(tmp_path: Path, monkeypatch):
-    # No soffice/libreoffice on PATH -> graceful no-op; formulas left untouched.
+    # No soffice/libreoffice anywhere -> graceful no-op; formulas left untouched.
     wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["Total", "=1+1"]]})
-    monkeypatch.setattr(workbook_aggregator.shutil, "which", lambda name: None)
+    _libreoffice_at(monkeypatch, None)
     assert _recalc_with_libreoffice(wb_path) is False
     # The merged file is unchanged — the formula is preserved un-evaluated.
     assert load_workbook(wb_path)["S"]["B1"].value == "=1+1"
@@ -682,11 +694,7 @@ def test_recalc_replaces_file_and_preserves_formula_when_present(tmp_path: Path,
     # With LibreOffice present, the recalced workbook replaces the merged file and
     # the formula survives (LibreOffice's xlsx export keeps formula strings).
     wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["Total", "=1+1"]]})
-    monkeypatch.setattr(
-        workbook_aggregator.shutil,
-        "which",
-        lambda name: "/usr/bin/soffice" if name in ("soffice", "libreoffice") else None,
-    )
+    _libreoffice_at(monkeypatch, "/usr/bin/soffice")
 
     def fake_convert(soffice, src, out_fmt, out_dir):
         # Emulate LibreOffice recalc-on-load: keep the formula, add a sentinel cell
@@ -702,10 +710,34 @@ def test_recalc_replaces_file_and_preserves_formula_when_present(tmp_path: Path,
     assert merged["B1"].value == "=1+1"        # formula preserved (auditability)
 
 
+def test_recalc_resolves_libreoffice_through_find_soffice(tmp_path: Path, monkeypatch):
+    """v0.5.36: the recalc must resolve LibreOffice via ``find_soffice``.
+
+    A bare ``shutil.which`` (what shipped in v0.5.35) is never satisfied by the
+    Windows MSI install, so the recalc silently no-op'd on a dev box that had
+    LibreOffice — the combined workbook then kept `None` cross-tab values. Locked
+    platform-independently: PATH lookups return nothing and only the locator knows
+    the binary, so a site back on ``which`` cannot find it.
+    """
+    wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["Total", "=1+1"]]})
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    _libreoffice_at(monkeypatch, "/opt/libreoffice/soffice")
+    seen: list[str] = []
+
+    def fake_convert(soffice, src, _out_fmt, out_dir):
+        seen.append(soffice)
+        load_workbook(src).save(Path(out_dir) / f"{Path(src).stem}.xlsx")
+
+    monkeypatch.setattr("excel_to_powerpoint._soffice_convert", fake_convert)
+
+    assert _recalc_with_libreoffice(wb_path) is True
+    assert seen == ["/opt/libreoffice/soffice"]
+
+
 def test_recalc_returns_false_when_conversion_yields_nothing(tmp_path: Path, monkeypatch):
     # soffice present but produces no output file -> graceful False, file untouched.
     wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["Total", "=1+1"]]})
-    monkeypatch.setattr(workbook_aggregator.shutil, "which", lambda name: "/usr/bin/soffice")
+    _libreoffice_at(monkeypatch, "/usr/bin/soffice")
     monkeypatch.setattr("excel_to_powerpoint._soffice_convert", lambda *a, **k: None)
     assert _recalc_with_libreoffice(wb_path) is False
     assert load_workbook(wb_path)["S"]["B1"].value == "=1+1"
@@ -728,7 +760,7 @@ def test_recalc_never_raises_when_strip_step_fails(tmp_path: Path, monkeypatch, 
     # still carry the '~' unions Excel would repair-strip on open.
     wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["Total", "=1+1"]]})
     original = wb_path.read_bytes()
-    monkeypatch.setattr(workbook_aggregator.shutil, "which", lambda name: "/usr/bin/soffice")
+    _libreoffice_at(monkeypatch, "/usr/bin/soffice")
 
     def fake_convert(soffice, src, out_fmt, out_dir):
         wb = load_workbook(src)
@@ -805,7 +837,7 @@ def test_recalc_strips_lo_union_operators(tmp_path: Path, monkeypatch):
     # End-to-end through _recalc_with_libreoffice: the emulated LibreOffice
     # export re-writes a union formula with '~'; the post-recalc fix restores ','.
     wb_path = _make_workbook(tmp_path / "c.xlsx", {"S": [["=AVERAGE(A1:A2)"]]})
-    monkeypatch.setattr(workbook_aggregator.shutil, "which", lambda name: "/usr/bin/soffice")
+    _libreoffice_at(monkeypatch, "/usr/bin/soffice")
 
     def fake_convert(soffice, src, out_fmt, out_dir):
         wb = load_workbook(src)

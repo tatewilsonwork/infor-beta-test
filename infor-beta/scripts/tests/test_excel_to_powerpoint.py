@@ -1,18 +1,22 @@
-"""Tests for the cap-table Excel→PowerPoint renderer's LibreOffice recalc path.
+"""Tests for the cap-table Excel→PowerPoint renderer's LibreOffice recalc path,
+plus the shared ``find_soffice`` locator every LibreOffice caller resolves through.
 
 The Windows COM path forces ``excel.CalculateFull()``; the non-Windows
 (Cowork/Linux) path must force LibreOffice to recalculate the openpyxl-authored,
 manual-calc workbook on load, or every formula cell prints as 0/blank.
 """
 
-import shutil
+import re
 import sys
 from pathlib import Path
 
 import pytest
 from openpyxl import Workbook, load_workbook
 
-from excel_to_powerpoint import _soffice_convert, _write_lo_recalc_profile
+import excel_to_powerpoint as e2p
+from excel_to_powerpoint import _soffice_convert, _write_lo_recalc_profile, find_soffice
+
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 
 
 def test_soffice_convert_timeout_raises_runtime_error(tmp_path: Path, monkeypatch):
@@ -29,6 +33,60 @@ def test_soffice_convert_timeout_raises_runtime_error(tmp_path: Path, monkeypatc
     monkeypatch.setattr(e2p.subprocess, "run", _hang)
     with pytest.raises(RuntimeError, match="timed out"):
         _soffice_convert("soffice", tmp_path / "x.xlsx", "pdf", tmp_path)
+
+
+# ─── The shared LibreOffice locator (v0.5.35 flip / v0.5.36 consolidation) ────
+
+
+def test_find_soffice_returns_path_hit_before_install_locations(tmp_path: Path, monkeypatch):
+    """PATH first — that is how Cowork / Linux prod resolves the binary."""
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/soffice" if name == "soffice" else None)
+    monkeypatch.setattr(e2p, "_SOFFICE_FALLBACK_PATHS", (str(tmp_path),))
+
+    assert find_soffice() == "/usr/bin/soffice"
+
+
+def test_find_soffice_falls_back_to_standard_install_location(tmp_path: Path, monkeypatch):
+    """The Windows MSI puts nothing on PATH, so PATH-miss must not mean absent."""
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    installed = tmp_path / "soffice.exe"
+    installed.write_bytes(b"")
+    monkeypatch.setattr(
+        e2p, "_SOFFICE_FALLBACK_PATHS", (str(tmp_path / "not-here.exe"), str(installed))
+    )
+
+    assert find_soffice() == str(installed)
+
+
+def test_find_soffice_is_none_when_libreoffice_absent(monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    monkeypatch.setattr(e2p, "_SOFFICE_FALLBACK_PATHS", ())
+
+    assert find_soffice() is None
+
+
+def test_no_bare_libreoffice_path_lookups_outside_the_locator():
+    """Every LibreOffice caller resolves through ``find_soffice``.
+
+    v0.5.35 made LibreOffice the default renderer on every platform but wired the
+    locator into ``slide_render`` only; five other call sites still probed PATH
+    directly, which the Windows MSI never satisfies — so they failed or silently
+    degraded on the very dev box the flip existed to keep honest. This locks the
+    consolidation: the PATH probe lives in exactly one module.
+    """
+    probe = re.compile(r"""which\(\s*["'](soffice|libreoffice)""")
+    offenders = [
+        f"{py.relative_to(_SCRIPTS_DIR).as_posix()}:{n}"
+        for py in sorted(_SCRIPTS_DIR.rglob("*.py"))
+        if py.name != "excel_to_powerpoint.py"  # the locator's own module
+        for n, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1)
+        if probe.search(line)
+    ]
+
+    assert not offenders, (
+        "resolve LibreOffice through excel_to_powerpoint.find_soffice() rather than a "
+        f"bare PATH lookup (it also probes the standard install locations): {offenders}"
+    )
 
 
 def test_write_lo_recalc_profile_forces_always_recalc(tmp_path: Path):
@@ -69,7 +127,7 @@ def _build_cacheless_cap_table(path: Path) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows uses the Excel COM path")
 def test_libreoffice_recalc_populates_inworkbook_formulas(tmp_path: Path):
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = find_soffice()
     if soffice is None:
         pytest.skip("LibreOffice (soffice/libreoffice) not installed")
 

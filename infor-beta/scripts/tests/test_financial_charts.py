@@ -46,6 +46,18 @@ def _raise_runtime(*_args, **_kwargs):
     """A stand-in backend that mimics 'Excel COM unavailable' (RuntimeError)."""
     raise RuntimeError("excel COM unavailable in test")
 
+
+def _no_libreoffice(monkeypatch):
+    """Pretend LibreOffice is absent.
+
+    Patches the shared locator, NOT ``shutil.which``: ``find_soffice`` also probes
+    the standard install locations, so a which()-only patch leaves a real Windows
+    MSI install visible and the "degrades gracefully" assertions never run.
+    The renderers import the locator lazily, so patching the source module's
+    attribute reaches them at call time.
+    """
+    monkeypatch.setattr("excel_to_powerpoint.find_soffice", lambda: None)
+
 # A valid 1x1 transparent PNG — avoids a PIL dependency in the test.
 _PNG_1X1 = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
@@ -548,6 +560,37 @@ def test_render_pie_returns_none_without_ltm_tab(tmp_path: Path):
     assert "[Pie Chart Placeholder]" in text
 
 
+# --- LibreOffice is resolved through the shared locator ------------------------
+
+
+def test_recalc_values_resolves_libreoffice_through_find_soffice(tmp_path: Path, monkeypatch):
+    """v0.5.36: the chart renderers must resolve LibreOffice via ``find_soffice``.
+
+    Phase A (v0.5.35) made LibreOffice the default renderer everywhere but left
+    these sites on a bare ``shutil.which``, which the Windows MSI never satisfies —
+    so dev either failed or silently degraded. Locked platform-independently: every
+    PATH lookup returns None and only the locator knows where the binary is, so a
+    site that goes back to ``which`` cannot find it.
+    """
+    path = _fs_workbook(tmp_path)
+    wb = load_workbook(path)
+    wb.active.title = "financial-summary"
+    wb.save(path)
+    monkeypatch.setattr("shutil.which", lambda *_a, **_k: None)
+    monkeypatch.setattr("excel_to_powerpoint.find_soffice", lambda: "/opt/libreoffice/soffice")
+    seen: list[str] = []
+
+    def fake_convert(soffice, src, _out_fmt, out_dir):
+        seen.append(soffice)
+        (Path(out_dir) / f"{Path(src).stem}.xlsx").write_bytes(Path(src).read_bytes())
+
+    monkeypatch.setattr("excel_to_powerpoint._soffice_convert", fake_convert)
+
+    financial_charts._libreoffice_recalc_values(path, "financial-summary", 2, 7, [6])
+
+    assert seen == ["/opt/libreoffice/soffice"]
+
+
 # --- graceful degradation when LibreOffice is unavailable (Issue 1b / Issue 3) ---
 
 
@@ -559,8 +602,7 @@ def test_fs_charts_persist_when_libreoffice_missing(tmp_path: Path, monkeypatch)
     wb = load_workbook(path)
     wb.active.title = "financial-summary"
     wb.save(path)
-    # Pretend soffice / libreoffice is not on PATH.
-    monkeypatch.setattr(financial_charts.shutil, "which", lambda *a, **k: None)
+    _no_libreoffice(monkeypatch)
 
     pngs = financial_charts._build_charts_openpyxl_libreoffice(
         path, "financial-summary", 2, 7, [6, 7, 8, 9]
@@ -595,7 +637,7 @@ def test_pie_persists_when_libreoffice_missing(tmp_path: Path, monkeypatch):
     LibreOffice is absent. The backend returns None (no PNG) instead of raising."""
     path = _ltm_workbook(tmp_path)
     first, last = ltm_revenue_overview_range(load_workbook(path).active)
-    monkeypatch.setattr(financial_charts.shutil, "which", lambda *a, **k: None)
+    _no_libreoffice(monkeypatch)
 
     png = financial_charts._build_pie_openpyxl_libreoffice(path, "ltm-metrics", first, last)
 
@@ -647,7 +689,7 @@ def test_fs_charts_and_pie_coexist_on_combined_workbook(tmp_path: Path, monkeypa
     charts (an openpyxl build that drops chart parts on load) nor a re-run
     accumulating a duplicate set next to the stale one (openpyxl 3.x, which
     round-trips chart parts — pre-fix a re-run grew 5 → 10)."""
-    monkeypatch.setattr(financial_charts.shutil, "which", lambda *a, **k: None)
+    _no_libreoffice(monkeypatch)
 
     # SKILL.md order: FS charts first, pie second.
     combined = _combined_workbook(tmp_path / "fs_then_pie")
@@ -734,7 +776,7 @@ def test_persist_eight_charts_when_libreoffice_missing(tmp_path: Path, monkeypat
     wb = load_workbook(path)
     wb.active.title = "financial-summary"
     wb.save(path)
-    monkeypatch.setattr(financial_charts.shutil, "which", lambda *a, **k: None)
+    _no_libreoffice(monkeypatch)
 
     pngs = financial_charts._build_charts_openpyxl_libreoffice(
         path, "financial-summary", 2, 7, list(range(6, 14))

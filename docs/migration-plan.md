@@ -90,7 +90,15 @@ dimensions, and identical findings from the geometric checks**; visual
 comparison is an eyeball pass, not an assertion. Encoded as
 `scripts/tests/test_render_parity.py`.
 
-✅ **Shipped 2026-07-27 (v0.5.35).** See the CHANGELOG entry for the five
+✅ **Shipped 2026-07-27 (v0.5.35),** exit criterion actually met in **v0.5.36**:
+v0.5.35 wired the new `find_soffice()` into `slide_render` only and left five
+other `shutil.which("soffice")` sites for Phase D, which kept `pytest` red (the
+cap-table renderer's COM→LibreOffice fallback could not find a Windows MSI
+install) and silently degraded the aggregator recalc and the chart renders on
+dev. All five now route through the locator, with a drift lock against a
+reappearing bare probe.
+
+See the CHANGELOG entry for the five
 findings recorded and deliberately left for later phases — in particular that
 LibreOffice wraps Palatino ~one line taller than PowerPoint even with the same
 font file, making LibreOffice the *conservative* oracle for Phase B, and that
