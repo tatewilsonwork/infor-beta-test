@@ -598,10 +598,12 @@ def test_market_entry_long_label_steps_down_instead_of_wrapping(tmp_path: Path):
             assert size_pt == 11, f"label {label!r} fits at 11 pt and must stay 11 pt"
         else:
             assert size_pt < 11, f"over-wide label {label!r} must step down"
-    # Every declared row height covers a single 11 pt line + insets — the floor
-    # PowerPoint renders even an empty row at (so declared == rendered).
-    for r in table.rows:
-        assert Emu(r.height).inches >= 0.283 - 1e-3
+    # The declared rows sum to exactly the clamp. There is deliberately no
+    # per-row content-height floor any more: whether the RENDERED table stays
+    # inside the clamp is measured by the converge loop, not estimated here
+    # (test_market_entry_long_content_converges).
+    assert sum(Emu(r.height).inches for r in table.rows) == pytest.approx(5.71, abs=0.001)
+    assert Emu(table_shape.height).inches == pytest.approx(5.71, abs=0.001)
 
 
 def test_market_entry_odd_count_blanks_unused_column_and_logo(tmp_path: Path):

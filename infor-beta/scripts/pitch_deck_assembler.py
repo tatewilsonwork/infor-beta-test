@@ -207,15 +207,10 @@ _ME_LABEL_COLOR = "FFFFFF"  # scheme bg1 (white) in the library
 # table's bottom above the slide edge (table top is 1.2" on a 7.5" slide).
 _ME_TABLE_HEIGHT = Inches(5.71)
 
-# Table-cell layout constants for the market-entry row-minimum estimates: the
-# library cells carry 0.1" side / 0.05" top+bottom insets, and a Palatino line
-# is ~1.2× the font size tall (PowerPoint renders a single 11 pt label row at
-# 0.283" = 11/72 × 1.2 + 0.1 — the floor below which no row can be declared,
-# since a stored row height is only a minimum).
+# Usable cell width = column width minus the library's 0.1" side insets.
 _ME_CELL_SIDE_INSETS_IN = 0.2
 _ME_CELL_TB_INSETS_IN = 0.1
 _ME_LINE_HEIGHT_EM = 1.2
-_ME_MIN_ROW_IN = 11 * _ME_LINE_HEIGHT_EM / 72 + _ME_CELL_TB_INSETS_IN  # ≈ 0.283
 # Word-wrapping wastes some of each line (breaks fall on word boundaries), so
 # widen the estimated text width before dividing by the cell width.
 _ME_WRAP_WASTE = 1.08
@@ -306,7 +301,7 @@ def _fill_risk_table(slide, content: PitchDeckContent) -> None:
     for idx, (risk, mitigants) in enumerate(body):
         set_cell_text(table.cell(idx + 1, 0), risk, size_pt=body_size)
         set_cell_text(table.cell(idx + 1, 1), mitigants, size_pt=body_size)
-    set_table_height(table_frame, library_height, minimums)
+    set_table_height(table_frame, library_height)
 
 
 def _output_currency_letter(workbook_path) -> str:
@@ -407,9 +402,6 @@ def _fill_market_entry_targets(
     usable = [
         max(0.5, Emu(col.width).inches - _ME_CELL_SIDE_INSETS_IN) for col in table.columns
     ]
-    # Per-row rendered content minimums (see set_table_height): every row floors
-    # at a single 11 pt label line; filled cells raise it by their estimated wrap.
-    row_mins_in = [_ME_MIN_ROW_IN] * len(table.rows)
     # Table row 0 is the blank logo/header row; data labels start at row 1. With
     # the fixed 12-row structure every data row is populated — no blank rows.
     for i, label in enumerate(row_labels):
@@ -418,16 +410,10 @@ def _fill_market_entry_targets(
             break
         label_pt = _me_label_size_pt(label, usable[0])
         set_cell_text(table.cell(row, 0), label, size_pt=label_pt, color_hex=_ME_LABEL_COLOR)
-        row_mins_in[row] = max(
-            row_mins_in[row], _me_cell_min_height_in(label, usable[0], label_pt, wrap_waste=1.0)
-        )
         for col in range(1, n_cols):
             target = targets[col - 1] if (col - 1) < len(targets) else None
             value = target.cells[i] if target is not None else ""
             set_cell_text(table.cell(row, col), value, size_pt=_ME_VALUE_SIZE)
-            row_mins_in[row] = max(
-                row_mins_in[row], _me_cell_min_height_in(value, usable[col], _ME_VALUE_SIZE)
-            )
     for row in range(len(row_labels) + 1, len(table.rows)):
         for col in range(n_cols):
             set_cell_text(table.cell(row, col), "", size_pt=_ME_VALUE_SIZE)
@@ -450,12 +436,11 @@ def _fill_market_entry_targets(
             set_text(logo, [""])
 
     # Clamp the now-filled table to a fixed height so long content can't run it
-    # off the slide. Done last, after every cell is populated; the per-row
-    # content minimums keep the declared heights achievable so PowerPoint's
-    # render-time row growth can't push the total past the clamp.
-    set_table_height(
-        table_frame, _ME_TABLE_HEIGHT, min_heights=[Inches(m) for m in row_mins_in]
-    )
+    # off the slide. Done last, after every cell is populated. The clamp alone does
+    # not stop render-time row growth — a declared row height is only a minimum —
+    # and the converge loop measures the render and steps the body font down when
+    # it happens. That replaced per-row content-height estimates here.
+    set_table_height(table_frame, _ME_TABLE_HEIGHT)
 
 
 class _PitchLayout:

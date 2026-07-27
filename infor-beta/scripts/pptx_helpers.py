@@ -610,7 +610,7 @@ def find_table_shape(slide):
     raise KeyError("no table shape found on slide")
 
 
-def set_table_height(table_frame, total_height, min_heights=None):
+def set_table_height(table_frame, total_height):
     """Resize a table to an exact total height by scaling its row heights.
 
     Mirrors setting a table's height in PowerPoint (drag the bottom handle / set
@@ -619,55 +619,29 @@ def set_table_height(table_frame, total_height, min_heights=None):
     target (rounding remainder folded into the last row). Call AFTER the cells are
     filled — row heights are only meaningful once content is in place.
 
-    A declared row height is only a render-time MINIMUM, so this clamp does not
-    by itself stop the layout engine re-growing a row whose text needs more. What
-    stops that is smaller text, and what decides how much smaller is the measured
-    render — see `deck_repair`, which steps the body font down until the rendered
-    table fits and re-clamps through this function.
+    A declared row height is only a render-time MINIMUM, so this clamp does not by
+    itself stop the layout engine re-growing a row whose text needs more.
 
-    `min_heights` (EMU, one per row) pins rows whose proportional share would fall
-    below a caller-supplied floor, taking the shortfall from rows with headroom.
-    Retained for callers that know a genuine structural minimum; the assemblers no
-    longer estimate one from character widths.
+    Until v0.5.39 it tried to: callers passed per-row `min_heights` estimated from
+    a Palatino character-width table and a 1.2-em line height, and a waterfall
+    pinned any row below its estimate. That is a layout engine reimplemented in
+    Python to guess an answer the renderer already knows, and it guessed wrong often
+    enough to need recalibrating. What actually stops row re-growth is smaller text,
+    and what decides how much smaller is the measured render — see `deck_repair`,
+    which steps the body font down until the rendered table fits and re-clamps
+    through this function.
     """
     table = table_frame.table
     rows = list(table.rows)
-    if not rows or sum(r.height for r in rows) <= 0:
+    base = sum(r.height for r in rows)
+    if not rows or base <= 0:
         return
     target = int(total_height)
-    mins = [int(m) for m in min_heights] if min_heights is not None else [0] * len(rows)
-
-    # Waterfall: pin rows whose proportional share of the remaining budget would
-    # dip below their floor; re-share the rest until stable.
-    free = set(range(len(rows)))
-    budget = target
-    alloc: dict[int, float] = {}
-    while free:
-        base = sum(rows[i].height for i in free)
-        if base <= 0 or budget <= 0:
-            for i in free:
-                alloc[i] = mins[i]
-            break
-        alloc = {i: rows[i].height * budget / base for i in free} | {
-            i: float(mins[i]) for i in range(len(rows)) if i not in free
-        }
-        pinned = [i for i in free if alloc[i] < mins[i]]
-        if not pinned:
-            break
-        for i in pinned:
-            free.discard(i)
-            budget -= mins[i]
-
-    heights = [max(int(round(alloc[i])), mins[i]) for i in range(len(rows))]
-    # Fold the rounding remainder into the last unpinned row so rows sum exactly.
-    spill = target - sum(heights)
-    for i in reversed(range(len(rows))):
-        if heights[i] + spill >= mins[i]:
-            heights[i] += spill
-            break
+    heights = [max(0, int(round(r.height * target / base))) for r in rows]
+    heights[-1] = max(0, heights[-1] + target - sum(heights))  # rows sum exactly
     for row, h in zip(rows, heights):
-        row.height = max(0, h)
-    table_frame.height = sum(max(0, h) for h in heights)
+        row.height = h
+    table_frame.height = sum(heights)
 
 
 # ─── Footnote currency token ─────────────────────────────────────────────────
