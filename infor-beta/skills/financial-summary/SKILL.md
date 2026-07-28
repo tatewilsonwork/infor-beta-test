@@ -107,16 +107,23 @@ value (and, for a non-flow combined metric, the `ltm_value`) as an Excel **formu
 components — `"=9000+800"`, not `9800` — so the arithmetic lives in the cell and stays auditable
 (Excel does the math, not you). The builder writes a `"="` string straight through as a formula.
 
-**In-artefact citation — REQUIRED.** Every figure you extract must carry its source ON the cell, so
-the artefact is auditable without this chat transcript. Pass `sources=[...]` on each `MetricSeries`
-— one entry per fiscal value, naming the filing **and** the statement/section it came from (e.g.
-`"FY2023 10-K, Consolidated Statements of Operations"`, or the attached filing's filename plus the
-section) — and set `ltm_source` on each **non-flow** metric's point-in-time LTM figure. The builder
-writes each as a `Source: <…>` cell comment on the value cell (shared `comment_citations` helper),
-on the deal workbook's `financial-summary` tab. Never skip a source —
-a headline figure with no citation is indistinguishable from an invented one. (Flow metrics' LTM
-cells are links into the `ltm-metrics` tab, whose bridge components carry their own citations, so
-they need no `ltm_source`.)
+**Provenance — REQUIRED, and structured.** Every figure you extract carries a
+`provenance.FigureSource` record: the **filing**, the **statement/section**, and the **page** you
+read it on — `FigureSource(filing="FY2023 10-K", statement="Consolidated Statements of Operations",
+page=61)`, or the attached filing's filename in place of the filing name. Pass `sources=[...]` on
+each `MetricSeries`, one entry per fiscal value, and set `ltm_source` on each **non-flow** metric's
+point-in-time LTM figure.
+
+Two things happen to each record: it goes into the stage's `ProvenanceLedger`, written as this
+stage's `provenance.json` fragment (`ledger.write(io.stage_dir)`) for the `deckcheck` stage to
+audit against; and the cell's `Source: <…>` comment is **rendered from it**, so the artefact and the
+machine-readable record cannot disagree. A **citation string is rejected** — it produces a record
+with the whole sentence in `filing` and no statement or page, which reads like provenance and cannot
+be followed.
+
+Never skip a source: a headline figure with no citation is indistinguishable from an invented one.
+(Flow metrics' LTM cells are links into the `ltm-metrics` tab, whose bridge components carry their
+own records, so they need no `ltm_source` — the builder records the link itself as a derivation.)
 
 ### Step 4 — Decide the LTM column (suppression rule)
 
@@ -214,27 +221,37 @@ sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
 
 from stage_io import stage_io
 from financial_summary_workbook import build_financial_summary_workbook, MetricSeries
+from provenance import FigureSource, ProvenanceLedger
 
 io = stage_io()
 company_name = io.inputs["company"]["legal_name"]
 deal_workbook = io.inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `financial-summary` tab
+ledger = ProvenanceLedger(stage="financial-summary")   # every figure's record; written at the end
 
 # FORMAT ILLUSTRATION ONLY — the labels/values below are obviously-synthetic
 # placeholders showing the call shape; NEVER reuse them as data. Every real
-# value comes from the target's filings (Step 3), with a source per figure.
+# value comes from the target's filings (Step 3), with a source record per figure.
 fiscal_labels = ["FY2021", "FY2022", "FY2023", "FY2024", "FY2025"]   # oldest -> newest
-src = "FY<year> 10-K, Consolidated Statements of Operations"          # one REAL source per value
+
+def src(year: int) -> FigureSource:
+    """One REAL record per value — the filing, the statement, and the page."""
+    return FigureSource(filing=f"FY{year} 10-K",
+                        statement="Consolidated Statements of Operations",
+                        page=99)          # the page you actually read it on
+sources = [src(y) for y in (2021, 2022, 2023, 2024, 2025)]
+
 metrics = [
     MetricSeries("Revenue", "US$MM", [1111.1, 2222.2, 3333.3, 4444.4, 5555.5],
-                 result_label="LTM Revenue", sources=[src] * 5),
+                 result_label="LTM Revenue", sources=sources),
     MetricSeries("Gross Profit", "US$MM", [111.1, 222.2, 333.3, 444.4, 555.5],
-                 result_label="LTM Gross Profit", sources=[src] * 5),
+                 result_label="LTM Gross Profit", sources=sources),
     MetricSeries("Adjusted EBITDA", "US$MM", [99.9, 99.9, 99.9, 99.9, 99.9],
-                 result_label="LTM Adj. EBITDA", sources=[src] * 5),
+                 result_label="LTM Adj. EBITDA", sources=sources),
     MetricSeries("Net Income", "US$MM", [88.8, 88.8, 88.8, 88.8, 88.8],
-                 result_label="LTM Net Income", sources=[src] * 5),
+                 result_label="LTM Net Income", sources=sources),
     # A non-flow metric would instead carry ltm_value=9999.9 and
-    # ltm_source="Q<q> 10-Q, Consolidated Balance Sheets" (no result_label).
+    # ltm_source=FigureSource(filing="Q<q> 10-Q", statement="Consolidated Balance
+    # Sheets", page=99) — no result_label.
 ]
 
 workbook_path = build_financial_summary_workbook(
@@ -246,8 +263,12 @@ workbook_path = build_financial_summary_workbook(
     metric_count=inputs.get("financial_metric_count") or 4,  # 4 or 8; must equal len(metrics)
     show_ltm=True,                       # False when the latest filing is a 10-K with no later stub
     deal_workbook=deal_workbook,
-    file_stem=f"{sanitized} - Financial Summary",
+    provenance=ledger,                   # filled in place, one record per figure written
 )
+
+# The stage's provenance fragment, beside its inputs/outputs. `deckcheck` merges
+# every stage's fragment into the run's <run_dir>/provenance.json.
+ledger.write(io.stage_dir)
 
 # ltm_bridge_specs: the flow metrics ltm-metrics must additionally bridge (Revenue
 # and Adj. EBITDA are always bridged by ltm-metrics, so they are excluded here).

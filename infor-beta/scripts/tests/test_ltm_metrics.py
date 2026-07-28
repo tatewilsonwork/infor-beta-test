@@ -7,6 +7,7 @@ from openpyxl import load_workbook
 
 from deal_workbook import TAB_LTM_METRICS, init_deal_workbook
 from ltm_metrics import Bridge, BridgeComponent, RevenueSegment, build_ltm_metrics_workbook
+from provenance import FigureSource, ProvenanceError, ProvenanceLedger
 
 
 def _build(tmp_path: Path, **overrides) -> Path:
@@ -182,14 +183,23 @@ def test_extra_bridges_default_none_leaves_workbook_unchanged(tmp_path: Path):
     assert ws["A28"].value is None
 
 
-# ─── In-artefact source citations (v0.5.34) ──────────────────────────────────
+# ─── Provenance records + the comments rendered from them (Phase G) ──────────
+#
+# v0.5.34 wrote the citation string straight onto the cell and that string WAS the
+# record. Phase G inverts it: a `FigureSource` goes in, a record comes out into the
+# run's ledger, and the comment is a view of the record. These tests assert both
+# halves — the comment text is unchanged, and a record now exists for it.
+
+_SEG_SRC = FigureSource(filing="Q3 2026 10-Q", statement="revenue disaggregation note")
+_FY_SRC = FigureSource(filing="FY2025 10-K", statement="income statement")
+_PRIOR_SRC = FigureSource(filing="Q3 2026 10-Q", statement="comparative prior-year period")
 
 
 def test_segment_source_written_as_cell_comment(tmp_path: Path):
     path = _build(
         tmp_path,
         segments=[
-            RevenueSegment("Segment A", 999.0, source="Q3 2026 10-Q, revenue disaggregation note"),
+            RevenueSegment("Segment A", 999.0, source=_SEG_SRC),
             RevenueSegment("Segment B", 888.0),  # no source -> no comment
         ],
     )
@@ -203,10 +213,9 @@ def test_bridge_component_source_written_as_cell_comment(tmp_path: Path):
     path = _build(
         tmp_path,
         revenue_bridge=[
-            BridgeComponent("FY2025 Revenue", 9999.0, source="FY2025 10-K, income statement"),
+            BridgeComponent("FY2025 Revenue", 9999.0, source=_FY_SRC),
             BridgeComponent("Q3 2026 YTD Revenue", 999.0),
-            BridgeComponent("Q3 2025 YTD Revenue", 888.0, subtract=True,
-                            source="Q3 2026 10-Q, comparative prior-year period"),
+            BridgeComponent("Q3 2025 YTD Revenue", 888.0, subtract=True, source=_PRIOR_SRC),
         ],
     )
     ws = _ws(path)
@@ -220,15 +229,99 @@ def test_bridge_component_source_written_as_cell_comment(tmp_path: Path):
 def test_tuple_forms_accept_trailing_source(tmp_path: Path):
     path = _build(
         tmp_path,
-        segments=[("Americas", 2500.0, "Q3 10-Q, segment note"), ("EMEA", 1100.0)],
+        segments=[("Americas", 2500.0, _SEG_SRC), ("EMEA", 1100.0)],
         revenue_bridge=[
-            ("FY2025 Revenue", 3500.0, False, "FY2025 10-K, income statement"),
+            ("FY2025 Revenue", 3500.0, False, _FY_SRC),
             ("Q3 2026 YTD Revenue", 2700.0),
             ("Q3 2025 YTD Revenue", 2138.0, True),
         ],
     )
     ws = _ws(path)
-    assert ws["B8"].comment.text == "Source: Q3 10-Q, segment note"
+    assert ws["B8"].comment.text == "Source: Q3 2026 10-Q, revenue disaggregation note"
     # 2 segments -> total row 10, spacer 11, bridge section 12, header 13, data 14-16.
     assert ws["B14"].comment.text == "Source: FY2025 10-K, income statement"
     assert ws["B15"].comment is None
+
+
+def test_page_number_reaches_the_comment(tmp_path: Path):
+    # The field the old string convention could not enforce: a page.
+    path = _build(
+        tmp_path,
+        segments=[("Americas", 2500.0, FigureSource(filing="FY2025 10-K",
+                                                    statement="Note 23: Segments", page=112))],
+    )
+    assert _ws(path)["B8"].comment.text == (
+        "Source: FY2025 10-K, Note 23: Segments, p. 112"
+    )
+
+
+def test_a_citation_string_is_rejected(tmp_path: Path):
+    # A string used to be the record. Accepting it now would build a record whose
+    # whole citation sits in `filing` with no statement or page — provenance that
+    # reads fine and cannot be followed.
+    with pytest.raises(ProvenanceError, match="FigureSource"):
+        _build(tmp_path, segments=[("Americas", 2500.0, "Q3 10-Q, segment note")])
+    with pytest.raises(ProvenanceError, match="FigureSource"):
+        _build(tmp_path, revenue_bridge=[("FY2025 Revenue", 3500.0, False, "FY2025 10-K")])
+
+
+def test_every_extracted_figure_lands_in_the_ledger(tmp_path: Path):
+    ledger = ProvenanceLedger(stage="ltm-metrics")
+    _build(
+        tmp_path,
+        segments=[
+            RevenueSegment("Segment A", 999.0, source=_SEG_SRC),
+            RevenueSegment("Segment B", 888.0, source=_SEG_SRC),
+        ],
+        revenue_bridge=[
+            BridgeComponent("FY2025 Revenue", 9999.0, source=_FY_SRC),
+            BridgeComponent("Q3 2026 YTD Revenue", 999.0, source=_FY_SRC),
+            BridgeComponent("Q3 2025 YTD Revenue", 888.0, subtract=True, source=_PRIOR_SRC),
+        ],
+        ebitda_bridge=None,
+        provenance=ledger,
+    )
+    by_figure = {f.figure: f for f in ledger.figures}
+    assert by_figure["LTM Revenue — Segment A"].value == 999.0
+    assert by_figure["LTM Revenue — Segment A"].location == "ltm-metrics!B8"
+    assert by_figure["LTM Revenue — Segment A"].units == "US$MM"
+    assert by_figure["LTM Revenue — Segment A"].sources == (_SEG_SRC,)
+    assert by_figure["LTM Revenue — FY2025 Revenue"].sources == (_FY_SRC,)
+    assert all(f.stage == "ltm-metrics" for f in ledger.figures)
+
+
+def test_bridge_total_is_recorded_as_a_derived_figure(tmp_path: Path):
+    # The join point `deckcheck` walks from a deck tile back to a filing: the LTM
+    # total has no source of its own, only the components that do.
+    ledger = ProvenanceLedger(stage="ltm-metrics")
+    _build(
+        tmp_path,
+        revenue_bridge=[
+            BridgeComponent("FY2025 Revenue", 5400.0, source=_FY_SRC),
+            BridgeComponent("Q3 2026 YTD Revenue", 3050.0, source=_FY_SRC),
+            BridgeComponent("Q3 2025 YTD Revenue", 2388.0, subtract=True, source=_PRIOR_SRC),
+        ],
+        provenance=ledger,
+    )
+    total = next(f for f in ledger.figures if f.figure == "LTM Revenue")
+    assert total.sources == ()
+    assert total.value == pytest.approx(5400.0 + 3050.0 - 2388.0)
+    assert total.derivation == (
+        "FY2025 Revenue + Q3 2026 YTD Revenue − Q3 2025 YTD Revenue"
+    )
+    assert total.location == "ltm-metrics!B19"
+
+
+def test_ledger_survives_a_round_trip_through_its_fragment(tmp_path: Path):
+    ledger = ProvenanceLedger(stage="ltm-metrics")
+    _build(
+        tmp_path,
+        segments=[RevenueSegment("Segment A", 999.0,
+                                 source=FigureSource(filing="FY2025 10-K",
+                                                     statement="Note 23", page="F-12"))],
+        provenance=ledger,
+    )
+    fragment = ledger.write(tmp_path / "stages" / "ltm-metrics")
+    reloaded = ProvenanceLedger.read(fragment)
+    assert reloaded.stage == "ltm-metrics"
+    assert [f.to_dict() for f in reloaded.figures] == [f.to_dict() for f in ledger.figures]

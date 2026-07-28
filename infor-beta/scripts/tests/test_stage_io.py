@@ -89,6 +89,19 @@ def test_deal_dir_is_derived_from_the_inputs_path(handoff):
     assert stage_io(_argv(inputs, outputs)).deal_dir == deal_dir.resolve()
 
 
+def test_run_dir_is_derived_from_the_stage_dir(handoff):
+    """`deckcheck` needs the whole run to merge every stage's provenance fragment.
+
+    Derived, not passed — the layout is fixed, so a fourth argument would only be
+    another thing to get wrong, and path arithmetic in a SKILL.md snippet would rot
+    the next time the layout moved.
+    """
+    deal_dir, inputs, outputs = handoff
+    io = stage_io(_argv(inputs, outputs))
+    assert io.run_dir == (deal_dir / "runs" / "2026-07-28-pitch-abc12345").resolve()
+    assert (io.run_dir / "stages" / "comps").resolve() == io.stage_dir
+
+
 def test_artefacts_dir_is_created_under_the_deal_dir(handoff):
     deal_dir, inputs, outputs = handoff
     artefacts = stage_io(_argv(inputs, outputs)).artefacts_dir

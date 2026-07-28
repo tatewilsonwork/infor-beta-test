@@ -1,9 +1,12 @@
 # infor-beta architecture migration plan
 
-> **This is a temporary working document. Delete it — and this `docs/` directory
-> if it is otherwise empty — once Phase G ships.** Record each completed phase in
-> `CHANGELOG.md` and the CLAUDE.md phase bullets as usual; this file is the
-> sequencing scratchpad, not the permanent record.
+> **This is a temporary working document.** It was to be deleted — with this
+> `docs/` directory if otherwise empty — once Phase G shipped. Phase G shipped in
+> v0.5.46 and the file **stays**: that instruction assumed G was last, and
+> **Phase F and H2 are still ahead with their specs only here** (F was in flight
+> against `conductor.py` as G landed). Delete once F lands and H2 is shipped or
+> formally dropped. Record each completed phase in `CHANGELOG.md` as usual; this
+> file is the sequencing scratchpad, not the permanent record.
 
 Written 2026-07-27, against v0.5.34.
 
@@ -641,7 +644,7 @@ or **judgment** (subagent with a real tool allow-list):
 Pitch drops from 11 dispatches to ~7 and the wave graph shortens. Keep a SKILL.md
 for a transform only if it stays separately invocable (`/captable`-style).
 
-## Phase G — Falsification
+## Phase G — Falsification ✅ shipped 2026-07-28 (v0.5.46)
 
 Additive; may start any time after B, in parallel with C/D/E.
 
@@ -651,6 +654,41 @@ Additive; may start any time after B, in parallel with C/D/E.
 2. A `deckcheck` stage after `deck` that reads the rendered PNGs, the provenance
    records, and the source filings, and attempts to **disprove** every figure on
    the deck.
+
+**Shipped as specified.** `scripts/provenance.py` holds `FigureSource` (validated
+on construction; owns the one `render()` both citation forms come out of),
+`FigureProvenance` and `ProvenanceLedger`; `comment_citations` is now the *view*
+of a record and rejects a string. `scripts/deckcheck.py` + `skills/deckcheck/`
+are the pass, scheduled last in both plans (earnings update 6/4, pitch 11/7).
+Analyst-facing citation text is unchanged byte for byte, which is what made the
+promotion safe.
+
+Four decisions worth carrying forward:
+
+- **A fragment per stage, merged per run.** Wave-mates run concurrently, so one
+  shared `provenance.json` would be a read-modify-write race between sub-agents.
+  Each stage writes `stages/<id>/provenance.json`; `<run_dir>/provenance.json` is
+  the merge, written by `deckcheck`. Needs nothing from the conductor — which is
+  also why this phase did not have to touch `conductor.py` at all.
+- **A derived figure carries a `derivation`, not a source.** An LTM bridge total's
+  provenance *is* its components' records. That chain (deck tile → cell → bridge →
+  component → filing page) is the thing `deckcheck` walks, and it only exists
+  because the record has fields.
+- **`deckcheck` can never gate**, enforced by `CheckFinding` refusing any severity
+  but `advisory`. A pass that could halt a run would have to be right about a
+  target's financial statements.
+- **The blank library is the baseline for "whose figure is this?"** — the Phase B
+  geometry trick applied to text. Measured on the pitch fixture: 70 figures → 48
+  and 49 pictures → 5, with the static credential slides and the library's own
+  logos dropping out automatically and no slide list to migrate.
+
+Suite: **747 passed, 0 skipped** (677 before).
+
+> **This document is NOT deleted, contrary to the note at the top.** That note
+> assumed Phase G was last. **Phase F (stage granularity) and H2 (the inline
+> intake form) are still ahead and their specs are here** — F was in flight
+> against `conductor.py` while this shipped. Delete `docs/` once F lands and H2 is
+> either shipped or formally dropped.
 
 ## Phase H — Single-surface analyst intake
 

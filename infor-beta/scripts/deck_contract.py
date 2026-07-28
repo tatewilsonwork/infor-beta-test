@@ -1319,12 +1319,16 @@ def _picture_shapes(slide):
             yield shape
 
 
-def _write_picture_crops(prs, out_dir: Path) -> list[tuple[int, str, Path]]:
+def write_picture_crops(prs, out_dir: Path) -> list[tuple[int, str, Path]]:
     """Extract each embedded picture blob at native resolution.
 
     The blob beats the slide render for reviewing a pasted range or a chart: the
     cap-table picture is placed at ~4.5x5.4" but carries far more pixels than
     150 dpi of slide gives it, and legibility of 8-9 pt figures depends on that.
+
+    Public because `deckcheck` needs the same crops for a different question: the
+    vision tier asks whether a rasterised range is *legible*, and the falsification
+    pass asks what figures it actually shows. One extractor, two readers.
     """
     crops: list[tuple[int, str, Path]] = []
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1420,7 +1424,7 @@ def vision_pass(
     root.mkdir(parents=True, exist_ok=True)
 
     result = VisionPass()
-    result.picture_crops = _write_picture_crops(prs, root / "pictures")
+    result.picture_crops = write_picture_crops(prs, root / "pictures")
 
     if renders is None:
         try:

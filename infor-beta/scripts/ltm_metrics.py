@@ -12,12 +12,14 @@ The tab stacks three blocks, separated by a blank spacer row:
 
 Arithmetic lives in cell formulas (% of total, the total row, the bridge sums)
 so the workbook stays analyst-auditable, matching the cap-table convention.
-Each hand-extracted input (a segment's LTM revenue, a bridge component) can
-carry a ``source`` citation — the filing + statement/note it came from — which
-is written as a ``Source: …`` cell comment on the amount cell (shared
-`comment_citations` helper), so the figures stay auditable in the artefact
-itself — and since Phase D that artefact *is* the deal workbook, so nothing has
-to carry the comments anywhere.
+Each hand-extracted input (a segment's LTM revenue, a bridge component) carries a
+``source`` :class:`provenance.FigureSource` — the filing, statement/note and page
+it came from. Since Phase G that record is the record: it goes into the run's
+provenance ledger, and the amount cell's ``Source: …`` comment is *rendered from*
+it (`comment_citations.cite_cell`), so the artefact and the machine-readable
+record cannot drift apart. Each bridge's result row is recorded too, as a
+*derived* figure whose provenance is its components — which is the chain
+`deckcheck` walks from a deck tile back to a filing page.
 """
 
 from __future__ import annotations
@@ -28,8 +30,9 @@ from pathlib import Path
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
-from comment_citations import append_source_text_to_comment
+from comment_citations import cite_cell
 from deal_workbook import TAB_LTM_METRICS, TabSpec, write_tab
+from provenance import FigureSource, ProvenanceError, ProvenanceLedger
 
 # No template_layout anchors here: this tab is authored from scratch (no shipped
 # template to shift), and every downstream reader locates its blocks by label,
@@ -55,29 +58,33 @@ _MINUS = "−"  # typographic minus sign used in bridge labels
 class RevenueSegment:
     """One row of the LTM revenue overview.
 
-    ``source`` (optional) names the filing + statement/note the segment figure
-    came from (e.g. ``"Q3 2026 10-Q, revenue disaggregation note"``); it is
-    written as a ``Source: …`` comment on the amount cell.
+    ``source`` is the :class:`provenance.FigureSource` naming the filing,
+    statement/note and page the segment figure came from — e.g.
+    ``FigureSource(filing="Q3 2026 10-Q", statement="revenue disaggregation
+    note", page=14)``. It is recorded in the run's provenance ledger and the
+    amount cell's ``Source: …`` comment is rendered from it.
     """
 
     name: str
     ltm_revenue: float
-    source: str | None = None
+    source: FigureSource | None = None
 
 
 @dataclass(frozen=True)
 class BridgeComponent:
     """One additive (or subtractive) line of an LTM bridge.
 
-    ``source`` (optional) names the filing + statement the component figure
-    came from (e.g. ``"FY2025 10-K, Consolidated Statements of Operations"``);
-    it is written as a ``Source: …`` comment on the amount cell.
+    ``source`` is the :class:`provenance.FigureSource` naming the filing,
+    statement and page the component figure came from — e.g.
+    ``FigureSource(filing="FY2025 10-K", statement="Consolidated Statements of
+    Operations", page=61)``. It is recorded in the run's provenance ledger and the
+    amount cell's ``Source: …`` comment is rendered from it.
     """
 
     name: str
     value: float
     subtract: bool = False
-    source: str | None = None
+    source: FigureSource | None = None
 
 
 @dataclass(frozen=True)
@@ -95,16 +102,33 @@ class Bridge:
     components: list[BridgeComponent] = field(default_factory=list)
 
 
+def _coerce_source(owner: str, source) -> FigureSource | None:
+    """Validate one figure's source record.
+
+    A citation string used to BE the record; since Phase G it is rendered from
+    one, so a string here would silently produce a record with the whole citation
+    in ``filing`` and no statement or page — provenance that reads fine and cannot
+    be followed. Reject it, naming the fix.
+    """
+    if source is None or isinstance(source, FigureSource):
+        return source
+    raise ProvenanceError(
+        f"{owner!r} has a source of type {type(source).__name__} ({source!r}); pass "
+        f"FigureSource(filing=…, statement=…, page=…) — a citation string is no "
+        f"longer a source record."
+    )
+
+
 def _coerce_segments(
     segments: list[RevenueSegment] | list[tuple],
 ) -> list[RevenueSegment]:
     out: list[RevenueSegment] = []
     for seg in segments:
         if isinstance(seg, RevenueSegment):
-            out.append(seg)
+            out.append(RevenueSegment(seg.name, seg.ltm_revenue, _coerce_source(seg.name, seg.source)))
         else:
             source = seg[2] if len(seg) > 2 else None
-            out.append(RevenueSegment(seg[0], float(seg[1]), source))
+            out.append(RevenueSegment(seg[0], float(seg[1]), _coerce_source(seg[0], source)))
     return out
 
 
@@ -116,12 +140,14 @@ def _coerce_components(
     out: list[BridgeComponent] = []
     for c in components:
         if isinstance(c, BridgeComponent):
-            out.append(c)
+            out.append(
+                BridgeComponent(c.name, c.value, c.subtract, _coerce_source(c.name, c.source))
+            )
         else:
             name, value = c[0], float(c[1])
             subtract = bool(c[2]) if len(c) > 2 else False
             source = c[3] if len(c) > 3 else None
-            out.append(BridgeComponent(name, value, subtract, source))
+            out.append(BridgeComponent(name, value, subtract, _coerce_source(name, source)))
     return out
 
 
@@ -168,6 +194,11 @@ def _section(ws: Worksheet, row: int, text: str) -> None:
     cell.font = _SECTION_FONT
 
 
+def _ref(cell) -> str:
+    """`"ltm-metrics!B12"` — a provenance record's location for a written cell."""
+    return f"{TAB_LTM_METRICS}!{cell.coordinate}"
+
+
 def _write_bridge(
     ws: Worksheet,
     *,
@@ -176,6 +207,7 @@ def _write_bridge(
     result_label: str,
     currency: str,
     components: list[BridgeComponent],
+    ledger: ProvenanceLedger,
 ) -> int:
     """Write a bridge block and return the row after its result row."""
     _section(ws, start_row, section_title)
@@ -197,8 +229,18 @@ def _write_bridge(
         v.number_format = "#,##0.0"
         ws.cell(row=r, column=1).border = _BORDER
         v.border = _BORDER
-        if comp.source:
-            append_source_text_to_comment(v, comp.source)
+        if comp.source is not None:
+            # The record first, the comment rendered from it — never the reverse.
+            cite_cell(
+                v,
+                ledger.record(
+                    f"{result_label} — {comp.name}",
+                    sources=comp.source,
+                    value=comp.value,
+                    units=currency,
+                    location=_ref(v),
+                ),
+            )
 
     last_data = first_data + len(components) - 1
     result_row = last_data + 1
@@ -218,6 +260,20 @@ def _write_bridge(
     for col in (1, 2):
         ws.cell(row=result_row, column=col).border = _BORDER
 
+    # The bridge total is DERIVED: its provenance is the components above, each of
+    # which carries its own filing record. This is the row the deck's LTM tile and
+    # the financial-summary tab's LTM link both read, so it is the join point
+    # `deckcheck` walks from a figure on a slide back to a filing page.
+    ledger.record(
+        result_label,
+        value=bridge_total(components),
+        units=currency,
+        location=_ref(rv),
+        derivation=" ".join(
+            f"{'−' if comp.subtract else '+'} {comp.name}" for comp in components
+        ).lstrip("+ "),
+    )
+
     return result_row + 1
 
 
@@ -233,8 +289,16 @@ def build_ltm_metrics_workbook(
     ebitda_label: str = "LTM Adj. EBITDA",
     extra_bridges: "list[Bridge] | list[dict] | None" = None,
     deal_workbook: Path | str,
+    provenance: ProvenanceLedger | None = None,
 ) -> Path:
     """Write the `ltm-metrics` tab (overview + bridges) into the deal workbook.
+
+    ``provenance`` is filled **in place** with one record per figure written —
+    every segment, every bridge component, and each bridge total as a derived
+    figure — and each amount cell's ``Source: …`` comment is rendered from its
+    record. Pass the stage's ledger and write it afterwards
+    (`ledger.write(io.stage_dir)`); pass nothing and the records are still built
+    (the comments come from them either way), just not kept.
 
     Returns the deal workbook's path. Since Phase D there is no standalone LTM
     metrics file: the tab is written straight into the deal's single workbook, so
@@ -262,6 +326,7 @@ def build_ltm_metrics_workbook(
     rev_components = _coerce_components(revenue_bridge)
     ebitda_components = _coerce_components(ebitda_bridge)
     extra = _coerce_bridges(extra_bridges)
+    ledger = provenance if provenance is not None else ProvenanceLedger(stage="ltm-metrics")
 
     def _write(_wb, ws) -> None:
         _fill_ltm_metrics_tab(
@@ -275,6 +340,7 @@ def build_ltm_metrics_workbook(
             ebitda_components=ebitda_components,
             ebitda_label=ebitda_label,
             extra=extra,
+            ledger=ledger,
         )
 
     write_tab(deal_workbook, TAB_LTM_METRICS, TabSpec(create=True, write=_write))
@@ -293,6 +359,7 @@ def _fill_ltm_metrics_tab(
     ebitda_components: list[BridgeComponent],
     ebitda_label: str,
     extra: list[Bridge],
+    ledger: ProvenanceLedger,
 ) -> None:
     """Write the tab's three blocks. Layout unchanged from the standalone workbook."""
     ws.sheet_view.showGridLines = False
@@ -325,8 +392,17 @@ def _fill_ltm_metrics_tab(
         v.number_format = "#,##0.0"
         ws.cell(row=r, column=1).border = _BORDER
         v.border = _BORDER
-        if seg.source:
-            append_source_text_to_comment(v, seg.source)
+        if seg.source is not None:
+            cite_cell(
+                v,
+                ledger.record(
+                    f"LTM Revenue — {seg.name}",
+                    sources=seg.source,
+                    value=seg.ltm_revenue,
+                    units=currency,
+                    location=_ref(v),
+                ),
+            )
 
     last_data = first_data + len(rows) - 1
     total_row = last_data + 1
@@ -351,6 +427,16 @@ def _fill_ltm_metrics_tab(
     for col in (1, 2, 3):
         ws.cell(row=total_row, column=col).border = _BORDER
 
+    # Derived: the overview total is the sum of the segments above, each of which
+    # carries its own filing record.
+    ledger.record(
+        "LTM Revenue by segment — Total",
+        value=sum(seg.ltm_revenue for seg in rows),
+        units=currency,
+        location=_ref(tv),
+        derivation=f"sum of the {len(rows)} segment rows above ({segmentation_basis})",
+    )
+
     # --- Bridges, each preceded by a blank spacer row ---
     next_row = total_row + 1
     if rev_components:
@@ -361,6 +447,7 @@ def _fill_ltm_metrics_tab(
             result_label="LTM Revenue",
             currency=currency,
             components=rev_components,
+            ledger=ledger,
         )
     if ebitda_components:
         next_row = _write_bridge(
@@ -370,6 +457,7 @@ def _fill_ltm_metrics_tab(
             result_label=ebitda_label,
             currency=currency,
             components=ebitda_components,
+            ledger=ledger,
         )
     for bridge in extra:
         if not bridge.components:
@@ -381,6 +469,7 @@ def _fill_ltm_metrics_tab(
             result_label=bridge.result_label,
             currency=currency,
             components=bridge.components,
+            ledger=ledger,
         )
 
     ws.column_dimensions["A"].width = 42

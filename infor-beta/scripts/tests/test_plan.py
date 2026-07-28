@@ -91,12 +91,14 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
     plan = Plan.model_validate(yaml.safe_load(plan_path.read_text(encoding="utf-8")))
 
     # ltm-metrics runs before captable so its LTM totals can feed cap table D47/D48.
+    # `deckcheck` is last (Phase G): it audits the assembled deck's figures.
     assert [stage.id for stage in plan.stages] == [
         "wireframe",
         "content",
         "ltm-metrics",
         "captable",
         "deck",
+        "deckcheck",
     ]
     assert [stage.skill for stage in plan.stages] == [
         "earningsupdate-wireframe",
@@ -104,6 +106,7 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "ltm-metrics",
         "captable",
         "deck-assembler",
+        "deckcheck",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     captable_stage = next(s for s in plan.stages if s.id == "captable")

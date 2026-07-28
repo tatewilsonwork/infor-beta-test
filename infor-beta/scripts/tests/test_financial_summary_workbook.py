@@ -7,6 +7,7 @@ from openpyxl import load_workbook
 
 from deal_workbook import TAB_FINANCIAL_SUMMARY, init_deal_workbook
 from financial_summary_workbook import MetricSeries, build_financial_summary_workbook
+from provenance import FigureSource, ProvenanceError, ProvenanceLedger
 
 _FISCAL = ["FY2021", "FY2022", "FY2023", "FY2024", "FY2025"]
 
@@ -176,7 +177,16 @@ def test_bare_text_metric_value_raises(tmp_path: Path):
     with pytest.raises(ValueError):
         _build(tmp_path, metrics=bad)
 
-# ─── In-artefact source citations (v0.5.34) ──────────────────────────────────
+# ─── Provenance records + the comments rendered from them (Phase G) ──────────
+#
+# v0.5.34 wrote the citation string straight onto the cell and that string WAS the
+# record. Phase G inverts it: a `FigureSource` goes in, a record comes out into the
+# run's ledger, and the comment is a view of the record. These tests assert both
+# halves — the comment text is unchanged, and a record now exists for it.
+
+
+def _fy_source(year: int) -> FigureSource:
+    return FigureSource(filing=f"FY{year} 10-K", statement="Consolidated Statements of Operations")
 
 
 def test_per_value_sources_written_as_cell_comments(tmp_path: Path):
@@ -185,11 +195,11 @@ def test_per_value_sources_written_as_cell_comments(tmp_path: Path):
         "Revenue", "US$MM", [3100.0, 3450.0, 3820.0, 4180.0, 4520.0],
         result_label="LTM Revenue",
         sources=[
-            "FY2022 10-K, Consolidated Statements of Operations",
+            _fy_source(2022),
             None,  # a value without a citation skips its comment
-            "FY2023 10-K, Consolidated Statements of Operations",
-            "FY2024 10-K, Consolidated Statements of Operations",
-            "FY2025 10-K, Consolidated Statements of Operations",
+            _fy_source(2023),
+            _fy_source(2024),
+            _fy_source(2025),
         ],
     )
     ws = _ws(_build(tmp_path, metrics=metrics))
@@ -205,7 +215,7 @@ def test_non_flow_ltm_source_written_on_ltm_cell(tmp_path: Path):
         "Combined Loan Balances", "US$MM",
         [9000.0, 10000.0, 11000.0, 12000.0, 12500.0],
         ltm_value=12500.0,
-        ltm_source="Q3 2026 10-Q, Consolidated Balance Sheets",
+        ltm_source=FigureSource(filing="Q3 2026 10-Q", statement="Consolidated Balance Sheets"),
     )
     ws = _ws(_build(tmp_path, metrics=metrics))
     assert ws["G9"].comment is not None
@@ -218,7 +228,7 @@ def test_non_flow_ltm_source_written_on_ltm_cell(tmp_path: Path):
 def test_sources_survive_dict_metrics(tmp_path: Path):
     metrics = [
         {"label": "Revenue", "units": "US$MM", "fiscal_values": [1, 2, 3, 4, 5],
-         "result_label": "LTM Revenue", "sources": ["FY 10-K"] * 5},
+         "result_label": "LTM Revenue", "sources": [FigureSource(filing="FY 10-K")] * 5},
         {"label": "Gross Profit", "units": "US$MM", "fiscal_values": [1, 2, 3, 4, 5],
          "result_label": "LTM Gross Profit"},
         {"label": "Adjusted EBITDA", "units": "US$MM", "fiscal_values": [1, 2, 3, 4, 5],
@@ -235,10 +245,71 @@ def test_source_count_mismatch_raises(tmp_path: Path):
     metrics = _metrics()
     metrics[0] = MetricSeries(
         "Revenue", "US$MM", [3100.0, 3450.0, 3820.0, 4180.0, 4520.0],
-        result_label="LTM Revenue", sources=["FY2025 10-K"],  # 1 source for 5 values
+        result_label="LTM Revenue", sources=[_fy_source(2025)],  # 1 source for 5 values
     )
     with pytest.raises(ValueError):
         _build(tmp_path, metrics=metrics)
+
+
+def test_a_citation_string_is_rejected(tmp_path: Path):
+    metrics = _metrics()
+    metrics[0] = MetricSeries(
+        "Revenue", "US$MM", [3100.0, 3450.0, 3820.0, 4180.0, 4520.0],
+        result_label="LTM Revenue",
+        sources=["FY2025 10-K, Consolidated Statements of Operations"] * 5,
+    )
+    with pytest.raises(ProvenanceError, match="FigureSource"):
+        _build(tmp_path, metrics=metrics)
+
+
+def test_page_number_reaches_the_comment(tmp_path: Path):
+    metrics = _metrics()
+    metrics[0] = MetricSeries(
+        "Revenue", "US$MM", [3100.0, 3450.0, 3820.0, 4180.0, 4520.0],
+        result_label="LTM Revenue",
+        sources=[FigureSource(filing="FY2025 10-K", statement="Consolidated Statements "
+                                                              "of Operations", page=61)] * 5,
+    )
+    ws = _ws(_build(tmp_path, metrics=metrics))
+    assert ws["B6"].comment.text == (
+        "Source: FY2025 10-K, Consolidated Statements of Operations, p. 61"
+    )
+
+
+def test_every_fiscal_value_lands_in_the_ledger(tmp_path: Path):
+    ledger = ProvenanceLedger(stage="financial-summary")
+    metrics = _metrics()
+    metrics[0] = MetricSeries(
+        "Revenue", "US$MM", [3100.0, 3450.0, 3820.0, 4180.0, 4520.0],
+        result_label="LTM Revenue",
+        sources=[_fy_source(y) for y in (2021, 2022, 2023, 2024, 2025)],
+    )
+    _build(tmp_path, metrics=metrics, provenance=ledger)
+    by_figure = {f.figure: f for f in ledger.figures}
+    assert by_figure["Revenue FY2021"].location == "financial-summary!B6"
+    assert by_figure["Revenue FY2021"].value == 3100.0
+    assert by_figure["Revenue FY2021"].units == "US$MM"
+    assert by_figure["Revenue FY2025"].sources == (_fy_source(2025),)
+    assert all(f.stage == "financial-summary" for f in ledger.figures)
+
+
+def test_flow_metric_ltm_cell_is_recorded_as_a_link_not_a_source(tmp_path: Path):
+    # The link's provenance is the bridge it points at, whose components carry the
+    # filing records — so the record names the chain rather than inventing a source.
+    ledger = ProvenanceLedger(stage="financial-summary")
+    _build(tmp_path, provenance=ledger)
+    ltm = next(f for f in ledger.figures if f.figure == "Revenue LTM")
+    assert ltm.sources == ()
+    assert "ltm-metrics" in ltm.derivation and "(=) LTM Revenue" in ltm.derivation
+    assert ltm.location == "financial-summary!G6"
+
+
+def test_suppressed_ltm_column_records_the_link_on_the_latest_fy_cell(tmp_path: Path):
+    ledger = ProvenanceLedger(stage="financial-summary")
+    _build(tmp_path, show_ltm=False, provenance=ledger)
+    entry = next(f for f in ledger.figures if f.figure.startswith("Revenue FY2025 (LTM =="))
+    assert entry.location == "financial-summary!F6"
+    assert "suppressed" in entry.derivation
 
 
 # ─── Configurable metric count (v0.5.26): 8 metrics = the two-slide deck ─────

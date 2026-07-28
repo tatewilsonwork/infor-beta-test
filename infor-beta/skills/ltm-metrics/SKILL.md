@@ -70,7 +70,7 @@ unchanged: only the Revenue and EBITDA bridges are built.
 4. Build the **revenue bridge** components: FY revenue (additive), current-year YTD revenue (additive), prior-year YTD revenue (subtractive). The workbook computes the LTM total via a formula.
 5. Build the **EBITDA bridge** the same way. Prefer **Adjusted EBITDA** if the company discloses it (pass `ebitda_label="LTM Adj. EBITDA"`); fall back to unadjusted EBITDA (`ebitda_label="LTM EBITDA"`) if no Adj. figure is available. If EBITDA is not directly disclosed, derive it from operating income + D&A (+ disclosed adjustments) for each period, and note the basis.
 6. Build the workbook with the shared helper. All arithmetic (% of total, totals, the bridge sums) lives in cell formulas — Excel does the math, not the LLM.
-   - **In-artefact citation — REQUIRED.** Every figure you extract must carry its source ON the cell, so the artefact is auditable without this chat transcript. Set `source=` on **every** `RevenueSegment` and `BridgeComponent`, naming the filing **and** the statement/note it came from (e.g. `"FY2025 10-K, Consolidated Statements of Operations"`, `"Q3 2026 10-Q, revenue disaggregation note"`, or the attached filename plus the section). The builder writes each as a `Source: <…>` cell comment on the amount cell (shared `comment_citations` helper) of the deal workbook's `ltm-metrics` tab. Never skip a source — a bridge figure with no citation is indistinguishable from an invented one.
+   - **Provenance — REQUIRED, and structured.** Set `source=` on **every** `RevenueSegment` and `BridgeComponent` to a `provenance.FigureSource` naming the **filing**, the **statement/note**, and the **page** you read it on — `FigureSource(filing="FY2025 10-K", statement="Consolidated Statements of Operations", page=61)`, `FigureSource(filing="Q3 2026 10-Q", statement="revenue disaggregation note", page=14)`, or the attached filename in place of the filing name. Each record goes into the stage's `ProvenanceLedger` (written as this stage's `provenance.json` fragment via `ledger.write(io.stage_dir)`, which the `deckcheck` stage audits against), and the amount cell's `Source: <…>` comment is **rendered from it** — so the artefact and the machine-readable record cannot disagree. A **citation string is rejected**: it would build a record with the whole sentence in `filing` and no statement or page, which reads like provenance and cannot be followed. Never skip a source — a bridge figure with no citation is indistinguishable from an invented one. Each bridge's **total** needs no source of its own; the builder records it as a *derived* figure naming its components, and that is the chain `deckcheck` walks from a deck tile back to a filing page.
    - **Units — millions, with an `"MM"` suffix (required).** Pass every bridge component in **millions** of the filing's reporting currency, and set `currency` to a label carrying an `"MM"` suffix (`US$MM`, `C$MM`) — never `US$` / full dollars. In the pitch plan the `financial-summary` tab links these bridge totals **value-for-value** (`=INDEX/MATCH` into the `(=) <result_label>` row), so the scale here must match its columns exactly; a mismatch (e.g. `US$` here vs. `US$MM` there) makes the linked LTM bar 10⁶× off.
 7. Write the `ltm-metrics` tab into the deal workbook (`io.inputs["deal_workbook"]` — it already exists; never create a standalone file), then write the structured handoff with `io.write(...)`:
 
@@ -102,16 +102,24 @@ sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
 
 from stage_io import stage_io
 from ltm_metrics import build_ltm_metrics_workbook, bridge_total, Bridge, RevenueSegment, BridgeComponent
+from provenance import FigureSource, ProvenanceLedger
 
 io = stage_io()
 deal_workbook = io.inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `ltm-metrics` tab
+ledger = ProvenanceLedger(stage="ltm-metrics")   # every figure's record; written at the end
 
 # FORMAT ILLUSTRATION ONLY — the segment names / values below are obviously-
 # synthetic placeholders showing the call shape; NEVER reuse them as data.
-# Every real value comes from the target's filings, with a source per figure.
-fy_src = "FY2025 10-K, Consolidated Statements of Operations"        # use the REAL filing + section
-ytd_src = "Q3 2026 10-Q, Consolidated Statements of Operations"
-prior_src = "Q3 2026 10-Q, comparative prior-year period"
+# Every real value comes from the target's filings, with a source RECORD per
+# figure — the filing, the statement, and the page you read it on.
+fy_src = FigureSource(filing="FY2025 10-K",
+                      statement="Consolidated Statements of Operations", page=99)
+ytd_src = FigureSource(filing="Q3 2026 10-Q",
+                       statement="Consolidated Statements of Operations", page=99)
+prior_src = FigureSource(filing="Q3 2026 10-Q",
+                         statement="comparative prior-year period", page=99)
+seg_src = FigureSource(filing="Q3 2026 10-Q",
+                       statement="revenue disaggregation note", page=99)
 revenue_bridge = [
     BridgeComponent("FY2025 Revenue", 9999.0, source=fy_src),
     BridgeComponent("Q3 2026 YTD Revenue", 999.0, source=ytd_src),
@@ -144,16 +152,21 @@ workbook_path = build_ltm_metrics_workbook(
     currency="US$MM",                              # match the deck currency footnote
     segmentation_basis="Service line",             # or "Geography" on fallback
     segments=[
-        RevenueSegment("[Segment A]", 999.0, source="Q3 2026 10-Q, revenue disaggregation note"),
-        RevenueSegment("[Segment B]", 888.0, source="Q3 2026 10-Q, revenue disaggregation note"),
-        RevenueSegment("[Segment C]", 77.7, source="Q3 2026 10-Q, revenue disaggregation note"),
+        RevenueSegment("[Segment A]", 999.0, source=seg_src),
+        RevenueSegment("[Segment B]", 888.0, source=seg_src),
+        RevenueSegment("[Segment C]", 77.7, source=seg_src),
     ],
     revenue_bridge=revenue_bridge,
     ebitda_bridge=ebitda_bridge,
     ebitda_label="LTM Adj. EBITDA",                # or "LTM EBITDA" if no Adj. disclosed
     extra_bridges=extra_bridges,                   # pitch only; [] for earnings update
     deal_workbook=deal_workbook,
+    provenance=ledger,                             # filled in place, one record per figure written
 )
+
+# The stage's provenance fragment, beside its inputs/outputs. `deckcheck` merges
+# every stage's fragment into the run's <run_dir>/provenance.json.
+ledger.write(io.stage_dir)
 
 # Mirror the workbook's bridge formulas for the typed handoff (filing-currency
 # millions). An absent bridge emits null — never omit the key, or the plans'

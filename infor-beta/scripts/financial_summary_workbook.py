@@ -49,8 +49,9 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
-from comment_citations import append_source_text_to_comment
+from comment_citations import cite_cell
 from deal_workbook import TAB_FINANCIAL_SUMMARY, TAB_LTM_METRICS, TabSpec, write_tab
+from provenance import FigureSource, ProvenanceError, ProvenanceLedger
 
 # No template_layout anchors here: this workbook is authored from scratch (no
 # shipped template to shift), and the chart step re-derives its geometry by
@@ -100,16 +101,18 @@ class MetricSeries:
       latest reported value used as the point-in-time "LTM" figure — a number,
       or a ``"="`` formula when that latest value is itself combined. Ignored
       when ``result_label`` is set.
-    - ``sources``: optional per-value source citations, aligned with
-      ``fiscal_values`` (same length; ``None`` entries skip that cell). Each
-      names the filing + statement the figure came from — e.g. ``"FY2023 10-K,
-      Consolidated Statements of Operations"`` — and is written as a
-      ``Source: …`` cell comment on the matching value cell, so every figure
-      stays auditable in the artefact itself.
-    - ``ltm_source``: optional source citation for the LTM cell — used when the
-      cell carries a literal ``ltm_value`` (non-flow metric). A flow metric's
-      LTM cell is a link into the `ltm-metrics` tab, whose bridge components
-      carry their own citations, so it normally needs no source here.
+    - ``sources``: per-value :class:`provenance.FigureSource` records, aligned
+      with ``fiscal_values`` (same length; ``None`` entries skip that cell). Each
+      names the filing, the statement and — where known — the page the figure came
+      from, e.g. ``FigureSource(filing="FY2023 10-K", statement="Consolidated
+      Statements of Operations", page=42)``. The record goes in the run's
+      provenance ledger and the ``Source: …`` cell comment is *rendered from* it,
+      so the artefact and the machine-readable record cannot disagree. A bare
+      string is rejected — see `provenance.py`.
+    - ``ltm_source``: source record for the LTM cell — used when the cell carries
+      a literal ``ltm_value`` (non-flow metric). A flow metric's LTM cell is a
+      link into the `ltm-metrics` tab, whose bridge components carry their own
+      records, so it normally needs no source here.
     """
 
     label: str
@@ -117,8 +120,8 @@ class MetricSeries:
     fiscal_values: list[float | str] = field(default_factory=list)
     result_label: str | None = None
     ltm_value: float | str | None = None
-    sources: "list[str | None] | None" = None
-    ltm_source: str | None = None
+    sources: "list[FigureSource | None] | None" = None
+    ltm_source: FigureSource | None = None
 
 
 def _coerce_value(value: "float | int | str") -> float | str:
@@ -138,6 +141,29 @@ def _coerce_value(value: "float | int | str") -> float | str:
     return float(value)
 
 
+def _coerce_sources(label: str, sources) -> "list[FigureSource | None] | None":
+    """Validate a metric's per-value source records.
+
+    A citation string used to BE the record; since Phase G it is rendered from
+    one, so a string here would silently produce a record with the whole citation
+    stuffed into ``filing`` and no statement or page — provenance that looks fine
+    and cannot be followed. Reject it, naming the fix.
+    """
+    if sources is None:
+        return None
+    out: list[FigureSource | None] = []
+    for source in sources:
+        if source is None or isinstance(source, FigureSource):
+            out.append(source)
+            continue
+        raise ProvenanceError(
+            f"metric {label!r} has a source of type {type(source).__name__} "
+            f"({source!r}); pass FigureSource(filing=…, statement=…, page=…) — a "
+            f"citation string is no longer a source record."
+        )
+    return out
+
+
 def _normalize_metric(metric: "MetricSeries | dict") -> MetricSeries:
     if isinstance(metric, MetricSeries):
         # Re-validate formula strings even on a pre-built instance.
@@ -147,8 +173,10 @@ def _normalize_metric(metric: "MetricSeries | dict") -> MetricSeries:
             fiscal_values=[_coerce_value(v) for v in metric.fiscal_values],
             result_label=metric.result_label,
             ltm_value=(None if metric.ltm_value is None else _coerce_value(metric.ltm_value)),
-            sources=metric.sources,
-            ltm_source=metric.ltm_source,
+            sources=_coerce_sources(metric.label, metric.sources),
+            ltm_source=_coerce_sources(metric.label, [metric.ltm_source])[0]
+            if metric.ltm_source is not None
+            else None,
         )
     return MetricSeries(
         label=metric["label"],
@@ -156,9 +184,16 @@ def _normalize_metric(metric: "MetricSeries | dict") -> MetricSeries:
         fiscal_values=[_coerce_value(v) for v in metric.get("fiscal_values", [])],
         result_label=metric.get("result_label"),
         ltm_value=(None if metric.get("ltm_value") is None else _coerce_value(metric["ltm_value"])),
-        sources=metric.get("sources"),
-        ltm_source=metric.get("ltm_source"),
+        sources=_coerce_sources(metric["label"], metric.get("sources")),
+        ltm_source=_coerce_sources(metric["label"], [metric.get("ltm_source")])[0]
+        if metric.get("ltm_source") is not None
+        else None,
     )
+
+
+def _ref(cell) -> str:
+    """`"financial-summary!B6"` — a provenance record's location for a written cell."""
+    return f"{TAB_FINANCIAL_SUMMARY}!{cell.coordinate}"
 
 
 def _quote_sheet(name: str) -> str:
@@ -191,8 +226,15 @@ def build_financial_summary_workbook(
     show_ltm: bool = True,
     ltm_sheet_name: str = _DEFAULT_LTM_SHEET,
     deal_workbook: Path | str,
+    provenance: ProvenanceLedger | None = None,
 ) -> Path:
     """Write the chart-ready `financial-summary` tab into the deal workbook.
+
+    ``provenance`` is filled **in place** with one record per figure written —
+    every fiscal value, plus each LTM cell — and each cell's ``Source: …`` comment
+    is rendered from its record. Pass the stage's ledger and write it afterwards
+    (`ledger.write(io.stage_dir)`); pass nothing and the records are still built
+    (the comments come from them either way), just not kept.
 
     Returns the deal workbook's path. Since Phase D each flow metric's
     `=INDEX('ltm-metrics'!…)` LTM link resolves as soon as the `ltm-metrics` tab
@@ -246,6 +288,8 @@ def build_financial_summary_workbook(
                 f"result_label to link to the ltm-metrics tab)"
             )
 
+    ledger = provenance if provenance is not None else ProvenanceLedger(stage="financial-summary")
+
     def _write(_wb, ws) -> None:
         _fill_financial_summary_tab(
             ws,
@@ -257,6 +301,7 @@ def build_financial_summary_workbook(
             n_fy=n_fy,
             show_ltm=show_ltm,
             ltm_sheet_name=ltm_sheet_name,
+            ledger=ledger,
         )
 
     write_tab(deal_workbook, TAB_FINANCIAL_SUMMARY, TabSpec(create=True, write=_write))
@@ -274,6 +319,7 @@ def _fill_financial_summary_tab(
     n_fy: int,
     show_ltm: bool,
     ltm_sheet_name: str,
+    ledger: ProvenanceLedger,
 ) -> None:
     """Write the chart-ready tab. Layout unchanged from the standalone workbook."""
     ws.sheet_view.showGridLines = False
@@ -317,8 +363,20 @@ def _fill_financial_summary_tab(
             cell.number_format = _VALUE_FORMAT
             cell.border = _BORDER
             cell.alignment = Alignment(horizontal="center")
-            if m.sources is not None and m.sources[j]:
-                append_source_text_to_comment(cell, m.sources[j])
+            source = m.sources[j] if m.sources is not None else None
+            if source is None:
+                continue
+            # The record first, the comment rendered from it — never the reverse.
+            cite_cell(
+                cell,
+                ledger.record(
+                    f"{m.label} {fiscal_labels[j]}",
+                    sources=source,
+                    value=value,
+                    units=m.units,
+                    location=_ref(cell),
+                ),
+            )
 
         if show_ltm:
             cell = ws.cell(row=r, column=ltm_col)
@@ -330,8 +388,31 @@ def _fill_financial_summary_tab(
             cell.number_format = _VALUE_FORMAT
             cell.border = _BORDER
             cell.alignment = Alignment(horizontal="center")
-            if m.ltm_source:
-                append_source_text_to_comment(cell, m.ltm_source)
+            if m.result_label is not None:
+                # A flow metric's LTM cell is a link: its provenance is the
+                # `ltm-metrics` bridge it points at, whose components carry the
+                # filing records. Record the chain, not a source it does not have.
+                ledger.record(
+                    f"{m.label} LTM",
+                    value=cell.value,
+                    units=m.units,
+                    location=_ref(cell),
+                    derivation=(
+                        f"link to the {ltm_sheet_name} tab's "
+                        f"'(=) {m.result_label}' bridge total"
+                    ),
+                )
+            elif m.ltm_source is not None:
+                cite_cell(
+                    cell,
+                    ledger.record(
+                        f"{m.label} LTM",
+                        sources=m.ltm_source,
+                        value=m.ltm_value,
+                        units=m.units,
+                        location=_ref(cell),
+                    ),
+                )
         elif m.result_label is not None:
             # Suppression: LTM == latest FY, so the most-recent FY cell carries
             # the link to the LTM tab instead of the literal value (req 5).
@@ -341,6 +422,17 @@ def _fill_financial_summary_tab(
             cell = ws.cell(row=r, column=last_fy_col)
             cell.value = _ltm_link(ltm_sheet_name, m.result_label)
             cell.number_format = _VALUE_FORMAT
+            ledger.record(
+                f"{m.label} {fiscal_labels[-1]} (LTM == latest FY)",
+                value=cell.value,
+                units=m.units,
+                location=_ref(cell),
+                derivation=(
+                    f"link to the {ltm_sheet_name} tab's '(=) {m.result_label}' bridge "
+                    f"total; the LTM column is suppressed because LTM equals the latest "
+                    f"fiscal year"
+                ),
+            )
 
         units_cell = ws.cell(row=r, column=units_col, value=m.units)
         units_cell.font = _META_FONT
