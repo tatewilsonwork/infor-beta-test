@@ -129,7 +129,11 @@ from earnings_update_wireframe import build_earnings_update_slide_plan, write_sl
 from earnings_update_assembler import assemble_earnings_update_deck
 from pitch_deck_wireframe import build_pitch_deck_slide_plan
 from pitch_deck_assembler import assemble_pitch_deck
-from workbook_aggregator import combine_workbooks
+from deal_workbook import (  # the deal's ONE workbook — never write a standalone .xlsx
+    init_deal_workbook, write_tab, TabSpec, deal_workbook_path, workbook_filename,
+    TAB_CAPTABLE, TAB_COMPS, TAB_PRECEDENTS, TAB_OWNERSHIP, TAB_BLOOMBERG_OUTPUT,
+    TAB_LTM_METRICS, TAB_FINANCIAL_SUMMARY,
+)
 from slide_library_registry import load_slide_library_registry
 from codename import resolve, find_existing, disambiguate, codename_from_company
 from deal_init import render_init_dialogs, render_init_filings_note, render_init_prompt, load_or_locate_deal, save_deal_context, load_deal_context
