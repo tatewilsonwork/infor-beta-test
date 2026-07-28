@@ -667,7 +667,7 @@ inventing options. What is unpleasant is that a pitch start is **four sequential
 defaults echo, documents note) interleaved down the chat. The analyst never sees
 the whole intake at once and answers it in four bites.
 
-### H1 — One declarative spec behind every rendering
+### H1 — One declarative spec behind every rendering ✅ shipped 2026-07-28 (v0.5.44)
 
 **Prerequisite, and valuable on its own.** The current "cannot drift" guarantee
 is narrower than it looks: `_dialog_item_plan_inputs` derives the numbered-item →
@@ -683,6 +683,39 @@ plan-input target, required/optional) with the dialogs and the text prompt both
 *generated* from it. Ship this whether or not H2 ever happens — it removes an
 existing drift surface and makes the locked-questionnaire principle structural
 rather than conventional.
+
+**Shipped as specified.** `scripts/intake_spec.py` holds the model
+(`IntakeField` / `IntakeOption` / `IntakeDefault` / `IntakeNote` / `IntakeSpec`)
+and the four generators; the three questionnaires are declared as
+`deal_init.INIT_INTAKE` and `deck_spec.PITCH_INTAKE` /
+`EARNINGS_UPDATE_INTAKE`, so deal-init's Listing / Sector / Filings questions
+are covered alongside the deck spec. Every public renderer is a generator call,
+and `PITCH_DIALOG_PLAN_INPUTS`, `PITCH_ITEM_PLAN_INPUTS`,
+`PITCH_DOCUMENTS_DIALOG_TARGETS`, `INIT_DIALOG_FIELDS`, `INIT_FILINGS_NOTE` and
+the four `*_DEFAULT_*_INPUTS` tables are derived from the specs. Analyst-facing
+output is unchanged apart from two reconciliations that were the point of the
+exercise: the defaults echo's quarter line has one label for both deliverables,
+and each default's prompt wording and developer-table wording are now the same
+sentence.
+
+Three smaller drift pairs went with the big one — the pitch documents note
+re-described the SEDI PDF and the Bloomberg export in prose beside the dialogs
+that asked for them (each attachment gate now contributes its own checklist
+bullet), the four default rules were written in three wordings, and
+`render_deck_spec_defaults` hardcoded which four computed values a deliverable
+needs (now derived from the echo templates).
+
+`tests/test_intake_spec.py` is the guarantee, in two layers: each renderer
+returns *exactly* what the generator produces from its spec (so a
+reintroduced literal fails in the change that reintroduces it), and the two
+renderings describe the same items in the same order with the same question
+wording, option labels and option descriptions. The spec model rejects a
+questionnaire that could not render consistently — and writing those rejection
+tests found the asked-and-defaulted check comparing default names against
+dialog *headers* rather than targets, so it could never have fired. Suite:
+**668 passed, 0 skipped** (630 before).
+
+H2 is untouched: its `visualize`-on-Cowork question below is still open.
 
 ### H2 — Inline interactive form
 
