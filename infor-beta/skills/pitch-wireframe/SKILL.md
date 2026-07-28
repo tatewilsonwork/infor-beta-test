@@ -67,7 +67,7 @@ Rules:
 - Pass `include_investment_highlights` when supplied; omitted → the slide is
   **included**. The assembler follows the plan here too — no
   `key-investment-highlights` entry means no slide in the deck.
-- Write `slide_plan_path` to `$STAGE_OUTPUTS` when running under the conductor.
+- Under the conductor, hand back `slide_plan_path` in `outputs.json` — `io.write({"slide_plan_path": ...})`, with the three handoff paths taken from your dispatch envelope as command-line arguments (never environment variables).
 
 Implementation helper:
 

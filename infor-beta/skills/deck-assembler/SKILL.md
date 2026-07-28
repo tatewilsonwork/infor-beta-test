@@ -28,23 +28,21 @@ This stage assembles typed slide/content handoffs into PowerPoint decks.
 
 ## Conductor mode
 
-When invoked by the conductor, read:
+Your dispatch envelope carries three paths — plugin root, `inputs.json`, `outputs.json` — and every command below takes them **as arguments** (`python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"`). Nothing is exported; nothing is read from the environment. `stage_io()` reads them back and derives the deal directory.
 
-- `$STAGE_INPUTS` — JSON with `slide_plan_path`, `content_bundle_path`, `template_name`, and `output_dir`; may also include `captable_workbook_path`, `ownership_workbook_path`, and `financial_metric_labels` (the Financial Summary tile names, selected by the `financial-summary` stage — four per FS slide in the plan, so 4 or 8)
-- `$STAGE_OUTPUTS` — path where this stage must write its structured handoff
-- `$DEAL_DIR` — deal directory root
+Your resolved inputs carry `slide_plan_path`, `content_bundle_path`, `template_name`, and `output_dir`; they may also carry `captable_workbook_path`, `ownership_workbook_path`, and `financial_metric_labels` (the Financial Summary tile names, selected by the `financial-summary` stage — four per FS slide in the plan, so 4 or 8).
 
 ## Workflow
 
-1. Read `$STAGE_INPUTS`.
-2. Resolve `template_name` under `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/templates/`. Both deliverables now resolve to `INFOR Slide Library.pptx`.
+1. Read your resolved inputs (`io.inputs`; also reproduced in the envelope).
+2. Resolve `template_name` under `<plugin_root>/templates/`. Both deliverables now resolve to `INFOR Slide Library.pptx`.
 3. Inspect the `SlidePlan.deliverable_type`.
 4. If `earnings-update`, call `assemble_earnings_update_deck(...)` and pass `captable_workbook_path` when supplied so slide 2's cap-table placeholder is replaced.
 5. If `pitch`, call `assemble_pitch_deck(...)`.
    Both assemblers verify the library and workbook layouts before touching hardcoded indices/ranges (shared `template_layout` map): every library slide about to be kept, cloned, deleted, or filled is checked against its marker shape (extending the `Rectangle 17` FS self-discovery pattern), and each Excel picture range's sentinel anchors (`B15`/`B40` on the cap table; `B4`/`B17`, `B19`/`B35` on ownership) are checked before pasting. A re-ordered library or re-saved workbook raises `TemplateLayoutError` naming what moved — report it to the analyst; do not work around it.
-6. Write the deck under `$DEAL_DIR/artefacts/` when `$DEAL_DIR` is set; otherwise use the supplied `output_dir`.
+6. Write the deck under `io.artefacts_dir` (the deal directory's `artefacts/`, derived from the inputs path); on direct invocation, use the supplied `output_dir`.
 7. **Geometry QA runs inside the assembler — do not re-do it by hand.** Both assemblers call `deck_repair.converge_deck` (write → verify → repair → re-verify against `deck_contract`) and raise `DeckNotConvergedError` if the deck still breaks the contract. If that raises, **report it — do not hand-patch the deck**: the message names the shape, the measured overflow, and every shrink that was tried, and the remedy is editorial (shorter copy from the content stage). What remains for you is the **visual review** below, which is judgement a measurement cannot make.
-8. Write `$STAGE_OUTPUTS` as:
+8. Write the structured handoff — `io.write({"deck_path": str(deck_path)})`, i.e. `outputs.json` holding:
 
 ```json
 {
@@ -118,8 +116,9 @@ say that QA could not run.
   placeholder otherwise.
 
 ```python
-import sys, os
-sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1 of your envelope
 from slide_render import render_deck_to_png
 
 pngs = render_deck_to_png(deck_path, output_dir, slide_indices=[1, 2])  # zero-based
@@ -138,21 +137,25 @@ not run rather than claiming the deck is clean.
 
 ## Reference command
 
+Run as `python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"` — the three paths
+your dispatch envelope prints.
+
 ```python
-import json, os, sys
+import sys
 from pathlib import Path
 
-plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
-sys.path.insert(0, str(plugin_root / "scripts"))
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
 
+from stage_io import stage_io
 from schemas import SlidePlan
 from earnings_update_assembler import assemble_earnings_update_deck
 from pitch_deck_assembler import assemble_pitch_deck
 
-inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())
+io = stage_io()
+inputs = io.inputs
 slide_plan = SlidePlan.model_validate_json(Path(inputs["slide_plan_path"]).read_text())
-template_path = plugin_root / "templates" / inputs["template_name"]
-output_dir = Path(os.environ.get("DEAL_DIR", inputs["output_dir"])) / "artefacts"
+template_path = io.plugin_root / "templates" / inputs["template_name"]
+output_dir = io.artefacts_dir
 
 if slide_plan.deliverable_type == "earnings-update":
     deck_path = assemble_earnings_update_deck(
@@ -175,5 +178,5 @@ elif slide_plan.deliverable_type == "pitch":
 else:
     raise ValueError(f"unsupported deliverable_type: {slide_plan.deliverable_type}")
 
-Path(os.environ["STAGE_OUTPUTS"]).write_text(json.dumps({"deck_path": str(deck_path)}, indent=2) + "\n")
+io.write({"deck_path": str(deck_path)})
 ```

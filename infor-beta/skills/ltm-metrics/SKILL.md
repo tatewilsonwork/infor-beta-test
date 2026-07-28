@@ -36,14 +36,14 @@ If any of these three are missing from the provided sources, **ask the analyst f
 
 ## Conductor mode
 
-When invoked by the conductor, the environment carries:
+Your dispatch envelope carries three paths — plugin root, `inputs.json`, `outputs.json` — passed
+**as arguments** to every command (`python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"`,
+read back by `stage_io()`). Nothing is exported; nothing is read from the environment.
 
-- `$STAGE_INPUTS` — JSON with `company`, `ticker`, `reporting_quarter`, `comparison_quarter`, and
-  (pitch only) an optional `ltm_bridge_specs` list (see "Extra bridges" below)
-- `$STAGE_OUTPUTS` — path where this stage must write its structured handoff
-- `$DEAL_DIR` — deal directory root
+Your resolved inputs carry `company`, `ticker`, `reporting_quarter`, `comparison_quarter`,
+`deal_workbook`, and (pitch only) an optional `ltm_bridge_specs` list (see "Extra bridges" below).
 
-If `$STAGE_INPUTS` is missing a field you need, write `{"error": "missing input: <field>"}` to `$STAGE_OUTPUTS` and stop.
+If an input you need is missing, `io.fail("missing input: <field>")` and stop.
 
 ### Extra bridges (pitch only)
 
@@ -62,9 +62,9 @@ unchanged: only the Revenue and EBITDA bridges are built.
 
 ## Workflow
 
-1. Read `$STAGE_INPUTS`.
+1. Read your resolved inputs (`io.inputs`; also reproduced in the envelope).
 2. Confirm you have the three input sets above (FY base + current YTD stub + prior-year YTD stub). If not, surface the gap (see "Inputs you must have").
-3. From the attached filings (annual / interim financial statements, 10-K / 10-Q, MD&A, annual report), find the revenue disaggregation note for the **revenue overview**. If a filing's text comes through garbled (CID-font scramble, U+FFFD characters, or blank pages), read it via the shared `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/pdf_extract.py` helper (`from pdf_extract import extract_pdf_text`), which detects garble and falls back to rendering + tesseract OCR — never transcribe scrambled glyphs.
+3. From the attached filings (annual / interim financial statements, 10-K / 10-Q, MD&A, annual report), find the revenue disaggregation note for the **revenue overview**. If a filing's text comes through garbled (CID-font scramble, U+FFFD characters, or blank pages), read it via the shared `<plugin_root>/scripts/pdf_extract.py` helper (`from pdf_extract import extract_pdf_text`), which detects garble and falls back to rendering + tesseract OCR — never transcribe scrambled glyphs.
    - **Preferred basis:** service / product line (e.g. Cloud Services & Subscriptions, Customer Support, License, Professional Service). Usually in the MD&A revenue discussion or the revenue-recognition footnote.
    - **Fallback basis:** geography (Americas / EMEA / Asia-Pacific) or any other disclosed segmentation, in that order of preference.
 4. Build the **revenue bridge** components: FY revenue (additive), current-year YTD revenue (additive), prior-year YTD revenue (subtractive). The workbook computes the LTM total via a formula.
@@ -72,7 +72,7 @@ unchanged: only the Revenue and EBITDA bridges are built.
 6. Build the workbook with the shared helper. All arithmetic (% of total, totals, the bridge sums) lives in cell formulas — Excel does the math, not the LLM.
    - **In-artefact citation — REQUIRED.** Every figure you extract must carry its source ON the cell, so the artefact is auditable without this chat transcript. Set `source=` on **every** `RevenueSegment` and `BridgeComponent`, naming the filing **and** the statement/note it came from (e.g. `"FY2025 10-K, Consolidated Statements of Operations"`, `"Q3 2026 10-Q, revenue disaggregation note"`, or the attached filename plus the section). The builder writes each as a `Source: <…>` cell comment on the amount cell (shared `comment_citations` helper) of the deal workbook's `ltm-metrics` tab. Never skip a source — a bridge figure with no citation is indistinguishable from an invented one.
    - **Units — millions, with an `"MM"` suffix (required).** Pass every bridge component in **millions** of the filing's reporting currency, and set `currency` to a label carrying an `"MM"` suffix (`US$MM`, `C$MM`) — never `US$` / full dollars. In the pitch plan the `financial-summary` tab links these bridge totals **value-for-value** (`=INDEX/MATCH` into the `(=) <result_label>` row), so the scale here must match its columns exactly; a mismatch (e.g. `US$` here vs. `US$MM` there) makes the linked LTM bar 10⁶× off.
-7. Write the `ltm-metrics` tab into the deal workbook (`$STAGE_INPUTS["deal_workbook"]` — it already exists; never create a standalone file), then write `$STAGE_OUTPUTS`:
+7. Write the `ltm-metrics` tab into the deal workbook (`io.inputs["deal_workbook"]` — it already exists; never create a standalone file), then write the structured handoff with `io.write(...)`:
 
 ```json
 {
@@ -86,21 +86,25 @@ unchanged: only the Revenue and EBITDA bridges are built.
 
 `ltm_revenue` and `ltm_adj_ebitda` are the bridge totals **in millions, in the filing's reporting currency** — the same currency as the bridge components. The downstream `captable` stage reads them and writes them to the cap table's LTM column (D47 / D48), applying the cap table's FX rate F7 to convert into the output currency, so emit them unconverted here. Use `bridge_total(...)` to compute each from the same component list you pass to the workbook. When a bridge is absent, emit the key as **`null` — never omit it**: the plans reference `$stages.ltm-metrics.ltm_revenue` / `.ltm_adj_ebitda`, and a missing key halts the conductor's reference resolution, whereas a `null` flows through to captable's CapIQ-formula fallback.
 
-When `$STAGE_OUTPUTS` is unset (direct invocation), write the workbook to cwd and skip the JSON handoff.
+On **direct invocation** there is no envelope and no handoff: the analyst supplies the deal
+workbook path.
 
 ## Reference command
 
+Run as `python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"` — the three paths
+your dispatch envelope prints.
+
 ```python
-import json, os, sys
+import sys
 from pathlib import Path
 
-plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
-sys.path.insert(0, str(plugin_root / "scripts"))
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
+
+from stage_io import stage_io
 from ltm_metrics import build_ltm_metrics_workbook, bridge_total, Bridge, RevenueSegment, BridgeComponent
 
-inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())
-deal_dir = Path(os.environ.get("DEAL_DIR", "."))
-deal_workbook = inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `ltm-metrics` tab
+io = stage_io()
+deal_workbook = io.inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `ltm-metrics` tab
 
 # FORMAT ILLUSTRATION ONLY — the segment names / values below are obviously-
 # synthetic placeholders showing the call shape; NEVER reuse them as data.
@@ -160,7 +164,7 @@ handoff = {
     "ltm_revenue": bridge_total(revenue_bridge),
     "ltm_adj_ebitda": bridge_total(ebitda_bridge),
 }
-Path(os.environ["STAGE_OUTPUTS"]).write_text(json.dumps(handoff, indent=2) + "\n")
+io.write(handoff)
 ```
 
 ## Boundary

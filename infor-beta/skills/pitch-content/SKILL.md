@@ -65,4 +65,4 @@ Optional sources:
 - S&P Capital IQ snippets
 - analyst risk notes
 
-Do not write PowerPoint. Write `content_bundle_path` to `$STAGE_OUTPUTS`.
+Do not write PowerPoint. Write the bundle to the stage directory and hand back `content_bundle_path` in `outputs.json` — `io.write({"content_bundle_path": ...})`, with the three handoff paths taken from your dispatch envelope as command-line arguments (never environment variables).

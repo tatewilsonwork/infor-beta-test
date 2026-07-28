@@ -254,7 +254,7 @@ def validate_plan_references(plan: Any) -> None:
     Deliberately NOT a pydantic validator on `Plan`: the wave scheduler keeps
     its lenient ignore-unknown-stage-refs behaviour on hand-built plans as
     defense-in-depth, and callers opt into strictness on the load paths
-    (`conductor_cli.load_plan` and the conductor's Step 3).
+    (`conductor.load_plan` and the conductor's Step 3).
     """
     stage_ids = {s.id for s in plan.stages}
     declared_outputs = {s.id: {o.name for o in s.outputs} for s in plan.stages}

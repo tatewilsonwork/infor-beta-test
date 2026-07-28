@@ -12,7 +12,11 @@ import slide_render
 from excel_to_powerpoint import find_soffice
 from slide_render import BACKEND_ENV_VAR, BACKEND_LIBREOFFICE, render_deck_to_png
 
-_LIBRARY = Path("infor-beta/templates/INFOR Slide Library.pptx")
+# Anchored on this file, not on cwd. As a cwd-relative path it silently vanished
+# whenever pytest ran from anywhere but the repo root, and the render test below
+# answered that by SKIPPING — so "someone ran pytest from infor-beta/" and "the
+# shipped slide library was deleted" produced the same green run.
+_LIBRARY = Path(__file__).resolve().parents[2] / "templates" / "INFOR Slide Library.pptx"
 
 
 def _libreoffice_available() -> bool:
@@ -100,10 +104,6 @@ def test_render_missing_deck_raises(tmp_path: Path):
 
 @pytest.mark.skipif(not _libreoffice_available(), reason="LibreOffice not installed")
 def test_render_selected_slides_returns_png_paths(tmp_path: Path):
-    if not _LIBRARY.exists():
-        pytest.skip("slide library template not present")
-    pytest.importorskip("pypdfium2", reason="LibreOffice backend needs pypdfium2")
-
     out_dir = tmp_path / "png"
     paths = render_deck_to_png(_LIBRARY, out_dir, slide_indices=[0, 6])
 
@@ -170,7 +170,6 @@ def test_digest_ignores_zip_timestamps_but_not_content(tmp_path: Path):
 
 @pytest.mark.skipif(not _libreoffice_available(), reason="LibreOffice not installed")
 def test_identical_content_is_converted_once(tmp_path: Path, private_cache):
-    pytest.importorskip("pypdfium2", reason="LibreOffice backend needs pypdfium2")
     conversions: list[Path] = []
     real = slide_render._convert_to_pdf
 
@@ -198,7 +197,6 @@ def test_identical_content_is_converted_once(tmp_path: Path, private_cache):
 
 @pytest.mark.skipif(not _libreoffice_available(), reason="LibreOffice not installed")
 def test_cache_can_be_switched_off(tmp_path: Path, monkeypatch, private_cache):
-    pytest.importorskip("pypdfium2", reason="LibreOffice backend needs pypdfium2")
     monkeypatch.setenv(slide_render.CACHE_ENV_VAR, "0")
     conversions: list[Path] = []
     real = slide_render._convert_to_pdf

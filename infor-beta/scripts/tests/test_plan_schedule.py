@@ -146,7 +146,7 @@ def test_unknown_stage_reference_is_ignored():
     """The scheduler drops the edge rather than crashing on a typo'd `$stages.<id>`.
 
     This leniency is defense-in-depth only: since v0.5.30 the load-time pre-flight
-    (`plan_refs.validate_plan_references`, run by `conductor_cli.load_plan` and the
+    (`plan_refs.validate_plan_references`, run by `conductor.load_plan` and the
     conductor's Step 3) rejects such plans before they ever reach the scheduler.
     A hand-built plan that skipped the pre-flight still schedules; the bad ref is
     then rejected by `plan_refs.resolve_refs` at dispatch time."""
@@ -216,3 +216,34 @@ def test_cycle_raises():
 def test_single_stage_plan_is_one_wave():
     plan = Plan(deliverable_type="pitch", description="x", stages=[_stage("only")])
     assert compute_waves(plan) == [["only"]]
+
+
+# --- doc drift lock (Phase E) ------------------------------------------------
+
+
+def test_readme_wave_counts_match_the_scheduler():
+    """Every "N stages … M dependency waves" claim in the README is checked.
+
+    Phase D changed both plans' shapes (pitch 11/7 -> 10/6, earnings update 6/4 ->
+    5/3) by deleting a stage, and the numbers live in prose that nothing verified.
+    The conductor SKILL.md used to carry a hardcoded wave list too; it now posts
+    `conductor.plan_overview(run_dir).narration()` instead, so there is no second
+    copy left to check.
+    """
+    import re
+
+    readme = (Path(__file__).resolve().parents[3] / "README.md").read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"`(?P<plan>[a-z-]+\.yaml)`\*\*[^\n]*?(?P<stages>\d+) stages?"
+        r"[^\n]*?(?P<waves>\d+) dependency waves"
+    )
+    claims = {m.group("plan"): (int(m.group("stages")), int(m.group("waves"))) for m in pattern.finditer(readme)}
+    assert set(claims) == {"pitch.yaml", "earnings-update.yaml"}, (
+        f"expected a wave claim for each shipped plan, found {sorted(claims)}"
+    )
+    for name, (stages, waves) in claims.items():
+        plan = _load_plan(name)
+        assert (len(plan.stages), len(compute_waves(plan))) == (stages, waves), (
+            f"README says {name} is {stages} stages / {waves} waves; the scheduler "
+            f"returns {len(plan.stages)} / {len(compute_waves(plan))}"
+        )

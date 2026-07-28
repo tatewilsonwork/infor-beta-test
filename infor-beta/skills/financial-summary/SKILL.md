@@ -36,21 +36,22 @@ Today's date is available from the system context (`currentDate`) — do not she
 
 ## Conductor-mode handoff (read first when running under the conductor)
 
-When invoked as a stage of a conductor plan, the environment carries `$STAGE_INPUTS`,
-`$STAGE_OUTPUTS`, and `$DEAL_DIR`:
+Your dispatch envelope carries three paths — plugin root, `inputs.json`, `outputs.json` — and
+every command below takes them **as arguments**
+(`python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"`, read back by
+`stage_io()`). Nothing is exported; nothing is read from the environment.
 
-- Read inputs from `$STAGE_INPUTS`: `company` (the subject-company facts), `ticker` (used only to
-  name the file), `reporting_quarter` / `comparison_quarter` (the latest reported period and
-  its prior-year comparison — used to decide the LTM-suppression rule below), and
+- Read inputs from `io.inputs`: `company` (the subject-company facts), `ticker`,
+  `reporting_quarter` / `comparison_quarter` (the latest reported period and
+  its prior-year comparison — used to decide the LTM-suppression rule below),
   `financial_metric_count` (4 or 8; `null`/absent → 4 — sets how many metrics you select and pass
-  to the builder's `metric_count`).
-- Write the workbook to `$DEAL_DIR/artefacts/<SANITIZED_NAME> - Financial Summary.xlsx` (bootstrap
-  `artefacts/` if absent). At the end, write the structured handoff (see **Outputs**).
-- If `$STAGE_INPUTS` is missing a field you need, write `{"error": "missing input: <field>"}` to
-  `$STAGE_OUTPUTS` and stop.
+  to the builder's `metric_count`), and `deal_workbook` (the deal's ONE workbook, whose
+  `financial-summary` tab you write — do NOT create a standalone file).
+- At the end, write the structured handoff (see **Outputs**).
+- If an input you need is missing, `io.fail("missing input: <field>")` and stop.
 
-When `$STAGE_OUTPUTS` is **unset** (direct `/financial-summary` invocation), follow the workflow
-as-is — output lands in cwd, no JSON handoff needed.
+On **direct `/financial-summary` invocation** there is no envelope and no handoff: the analyst
+supplies the deal workbook path.
 
 ---
 
@@ -157,12 +158,12 @@ non-Revenue/EBITDA **flow** metric you link.
 ### Step 6 — Summary
 
 Report: the output path; the selected metrics with their family and the five fiscal years used; whether
-the LTM column is shown or suppressed; and a reminder that the LTM cells resolve once the workbook
-aggregator folds this tab and the `ltm-metrics` tab into the combined `pitch-<codename>.xlsx`.
+the LTM column is shown or suppressed; and a reminder that the LTM cells resolve against the
+`ltm-metrics` tab of the same deal workbook, which the `ltm-metrics` stage writes after this one.
 
 ---
 
-## Outputs (`$STAGE_OUTPUTS`)
+## Outputs (`outputs.json`)
 
 ```json
 {
@@ -202,17 +203,21 @@ metric row and charts it directly.
 
 ## Reference command
 
+Run as `python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"` — the three paths
+your dispatch envelope prints.
+
 ```python
-import json, os, sys
+import sys
 from pathlib import Path
 
-plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
-sys.path.insert(0, str(plugin_root / "scripts"))
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
+
+from stage_io import stage_io
 from financial_summary_workbook import build_financial_summary_workbook, MetricSeries
 
-inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())   # conductor mode
-company_name = inputs["company"]["legal_name"]
-deal_workbook = inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `financial-summary` tab
+io = stage_io()
+company_name = io.inputs["company"]["legal_name"]
+deal_workbook = io.inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `financial-summary` tab
 
 # FORMAT ILLUSTRATION ONLY — the labels/values below are obviously-synthetic
 # placeholders showing the call shape; NEVER reuse them as data. Every real
@@ -254,7 +259,7 @@ handoff = {
         {"tile_label": "Net Income", "result_label": "LTM Net Income"},
     ],
 }
-Path(os.environ["STAGE_OUTPUTS"]).write_text(json.dumps(handoff, indent=2) + "\n")
+io.write(handoff)
 ```
 
 ## Boundary

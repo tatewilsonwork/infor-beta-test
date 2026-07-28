@@ -2,6 +2,64 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
+## [0.5.42] — 2026-07-28
+
+**Migration Phase E — the conductor as code. Phase E is complete.** The conductor SKILL.md drops **216 lines → 118** and stops describing mechanics it no longer performs. Everything that used to be prose the model re-executed by hand each wave is now a function with a return value in `scripts/conductor.py`, and the sub-agent handoff stops depending on shell state.
+
+### `conductor_cli.py` → `conductor.py`, and `run_wave`
+
+`prep_wave` / `collect_wave` finished half the trip: they resolved and collected, but the model still owned the wave narration, the checkpoint payloads, and the summary. The module is renamed (no shim — this repo takes no back-compat shims) and completed:
+
+- **`plan_overview(run_dir)`** — the plan summary *and* the wave schedule the conductor used to recite from a hardcoded example in its SKILL.md. `narration()` renders both.
+- **`prepare_wave(run_dir, n)`** → a typed `WaveDispatch`: one `PreparedStage` per stage, each carrying its resolved inputs, its two absolute paths, and a rendered `prompt` to hand straight to `Task`.
+- **`complete_wave(run_dir, n)`** → a typed `WaveOutcome`: per-stage `StageResult`s, the `ok` / `halt` / `is_final` facts, and a `Checkpoint` per stage built from its mode — an `informational` one-liner, or a `required` gate carrying the **code-owned `AskUserQuestion` payload** ("Approve — continue the run" / "Halt the run") and a plain-text `fallback_prompt`. `outcome.gate` is the one the model must put to the analyst.
+- **`run_wave(run_dir, n, dispatch)`** — the composed round trip. The conductor skill cannot pass a callback (its dispatch is a set of `Task` calls, which no Python function can issue), so it calls the two halves with itself standing in for the callback; the callback form is for the tests here and for Phase F's in-process transforms.
+- **`render_run_summary` / `write_run_summary`** — every stage across every wave, its status, its outputs, and the artefact paths, with the model's `notes=` appended under "Manual next steps".
+
+CLI: `plan` / `prepare-wave` / `complete-wave` / `summary`.
+
+**A `silent` stage that FAILED now surfaces anyway.** `silent` suppresses a routine summary; it was never meant to hide the reason a run stopped. Previously nothing in the code distinguished the two, because the checkpoint behaviour lived in prose.
+
+### The env-var handoff is gone
+
+`stage-envelope.md`'s first instruction was an `export STAGE_INPUTS / STAGE_OUTPUTS / DEAL_DIR / CLAUDE_PLUGIN_ROOT` block the sub-agent had to run before anything else, because the `Task` tool has no parameter for environment variables. That made the whole handoff depend on the exports surviving every later tool call in the sub-agent's session — the most fragile contract in the system, and one that fails *silently*: an unset `DEAL_DIR` writes a client deliverable to whatever cwd the shell happened to have, and `os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta")`'s **cwd-relative** fallback resolves the plugin to a directory that does not exist.
+
+Replaced with **three command-line arguments** — plugin root, `inputs.json`, `outputs.json` — rendered into the prompt body as the exact invocation, and read back by the new **`scripts/stage_io.py`**:
+
+```python
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
+from stage_io import stage_io
+io = stage_io()                      # io.inputs, io.stage_dir, io.artefacts_dir
+io.write({"workbook_path": str(p)})  # or io.fail("missing input: ticker")
+```
+
+`deal_dir` is **derived, not passed**: `deal_dir_for` walks up from the inputs path to the directory holding `deal.json`, so finding it is also the proof the stage landed somewhere real — which a fixed "four levels up" would not be. That is one fewer argument and one fewer thing to get wrong.
+
+All twelve dispatched skills are converted. The envelope additionally **inlines the resolved inputs** as JSON in the prompt body (up to `INLINE_INPUTS_MAX_CHARS`, past which it names the keys and points at the file, which is written either way), so a stage can see what it was given without a read.
+
+Two drift locks in `test_stage_io.py` scan every dispatched skill doc: one for a reappearing `export` / `os.environ[...]` / `$STAGE_INPUTS` handoff, one for any read of `CLAUDE_PLUGIN_ROOT`. The conductor's own docs are exempt — it is the top-level skill the harness invokes, not a dispatched sub-agent, and `stage-envelope.md` has to be able to name the four variables to record that they are gone — so the *fenced template* a sub-agent actually receives is checked separately, through `conductor._extract_template`.
+
+### Phase D's scheduler cleanup, confirmed
+
+The hardcoded aggregator barrier is gone from `plan_schedule.py`: `stage_dependencies` is a pure read of the `$stages.*` references, and `test_no_stage_gets_a_dependency_it_does_not_reference` pins it. `compute_waves` returns **pitch 10 stages / 6 waves** and **earnings update 5 / 3**, matching both plan-wave tests and the README.
+
+The conductor SKILL.md's stale 7-wave pitch example is not corrected — it is **deleted**. The skill now posts `plan_overview(run_dir).narration()`, so there is no second copy of the number to go stale. The README's two claims are the only remaining prose copy, and a new `test_readme_wave_counts_match_the_scheduler` parses them and checks both against the scheduler.
+
+### Skip-guard audit (the standing check after the v0.5.40 incident)
+
+`skipif` / `pytest.skip` / `importorskip` across the suite, each condition checked against whether the difference it was written for still exists. **Nine `find_soffice() is None` guards are genuine and kept** — LibreOffice is the one render backend, and a box without it truly cannot run those. Five were stale and are deleted:
+
+- **Four `pytest.importorskip("pypdfium2")`** (`test_slide_render` ×3, `test_earnings_update_assembler` ×1). Phase A made `pypdfium2` an unconditional declared dependency; if it is missing the install is broken and the test must fail loudly. Coverage is unchanged — each of those tests keeps its LibreOffice guard, which is the condition that was ever real.
+- **`test_slide_render`'s `if not _LIBRARY.exists(): pytest.skip(...)`.** The path was **cwd-relative**, so "someone ran pytest from `infor-beta/`" and "the shipped slide library was deleted" produced the same green run. The path is now anchored on `__file__` and the skip is gone; the render assertions that follow are the coverage.
+
+Two more were not stale but were *too broad*, which is the same failure with a different cause: `test_slide_library_poc`'s two ownership-slide tests wrapped the assembly in `except RuntimeError: pytest.skip("range render backend unavailable")`. `_render_range_to_png` raises `RuntimeError` for a missing LibreOffice **and** for a conversion that failed or produced no PDF, so a genuine render defect read as a green skip. Both now carry an explicit `find_soffice()` skipif and let every other `RuntimeError` fail — the two ownership picture-insertion paths (insider-only, and insider + Bloomberg institutions) are the coverage that was at risk.
+
+**Suite: 625 passed, 0 skipped** (595 before this release: +15 conductor, +14 stage_io, +1 wave-count lock).
+
+### Accounting
+
+**+536 lines of runtime code** (`conductor.py` 374 → 766, `stage_io.py` 144 new), **+453 lines of tests**, **−85 lines of skill docs** — against the migration plan's −150 estimate. The estimate assumed the SKILL.md shrink would dominate; it could not. The 98 lines that left the conductor SKILL.md were instructions the model re-executed by hand on every wave, and replacing them with something that *cannot* be skipped means code plus the tests that lock it. The same goes for the handoff: a one-line `export` block became a 144-line module because "read three paths, derive the deal directory, prove it exists, write the answer" is what the export block was silently not doing. Phase D's −2,685 came from deleting a subsystem; this comes from moving behaviour out of prose.
+
 ## [0.5.41] — 2026-07-28
 
 **Migration Phase D — one workbook, one backend. Phase D is complete.** The largest phase in the plan, and a net **−2,685 lines** (2,324 added, 5,009 deleted). The deal owns a single `pitch-<codename>.xlsx` from stage one; every producing stage writes one tab of it. There is no merge, so the entire tail of merge defects is deleted rather than fixed, and with the merge gone most of the COM surface goes too.

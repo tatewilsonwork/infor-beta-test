@@ -13,15 +13,13 @@ This conductor-stage skill fills the typed content handoff for the earnings-upda
 
 ## Conductor mode
 
-When invoked by the conductor, read:
+Your dispatch envelope carries three paths — plugin root, `inputs.json`, `outputs.json` — passed **as arguments** to every command (`python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"`, read back by `stage_io()`). Nothing is exported; nothing is read from the environment.
 
-- `$STAGE_INPUTS` — JSON with `company`, `ticker`, `reporting_quarter`, `comparison_quarter`, `eeo_snip_path`, and `slide_plan_path`
-- `$STAGE_OUTPUTS` — path where this stage must write its structured handoff
-- `$DEAL_DIR` — deal directory root
+Your resolved inputs carry `company`, `ticker`, `reporting_quarter`, `comparison_quarter`, `eeo_snip_path`, and `slide_plan_path`.
 
 ## Required output
 
-Write a full `EarningsUpdateContent` JSON artefact to `content_bundle.json` in the stage directory, then write `$STAGE_OUTPUTS` as:
+Write a full `EarningsUpdateContent` JSON artefact to `content_bundle.json` in the stage directory (`io.stage_dir`), then `io.write({"content_bundle_path": ...})` — i.e. `outputs.json` holding:
 
 ```json
 {

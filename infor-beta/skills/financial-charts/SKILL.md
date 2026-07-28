@@ -82,16 +82,19 @@ on the tab for the analyst; the rendered copies go into the assembled deck.
 
 ## Conductor-mode handoff
 
-When invoked as a stage, the environment carries `$STAGE_INPUTS`, `$STAGE_OUTPUTS`, `$DEAL_DIR`:
+Your dispatch envelope carries three paths — plugin root, `inputs.json`, `outputs.json` — and
+every command below takes them **as arguments**
+(`python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"`, read back by
+`stage_io()`). Nothing is exported; nothing is read from the environment.
 
-- Read inputs from `$STAGE_INPUTS`:
+- Read inputs from `io.inputs`:
   - `deal_workbook` — the deal's single workbook, `pitch-<codename>.xlsx`.
   - `deck_path` — the assembled pitch deck from `deck`.
-  - `deal_dir` — deal directory root (used for the QA render output).
+  - `deal_dir` — deal directory root (used for the QA render output; `io.deal_dir` derives the
+    same path from the inputs path when the input is absent).
 - If `deal_workbook` has no `financial-summary` tab (the financial-summary stage produced
   nothing), the slide is left with its placeholders — write the handoff and report the skip.
-- If a required field is missing, write `{"error": "missing input: <field>"}` to `$STAGE_OUTPUTS`
-  and stop.
+- If a required field is missing, `io.fail("missing input: <field>")` and stop.
 
 ## What the charts look like (the only formatting that matters)
 
@@ -166,7 +169,7 @@ skipped and the placeholder is left in place (the null path).
 
 ## Workflow
 
-1. Read `$STAGE_INPUTS`.
+1. Read your resolved inputs (`io.inputs`; also reproduced in the envelope).
 2. Call `render_financial_summary_charts_into_deck(...)` (see the reference command). It builds one
    chart per metric row on the deal workbook's `financial-summary` tab and inserts them into
    every FS slide in the deck (four per slide, discovered by scanning).
@@ -189,29 +192,33 @@ skipped and the placeholder is left in place (the null path).
      mismatch — a symptom of a units mismatch between the `financial-summary` and `ltm-metrics`
      tabs; both must be in millions with an `"MM"` suffix).
    If the renderer is unavailable, say so explicitly rather than skipping silently.
-5. Write `$STAGE_OUTPUTS`.
+5. Write the structured handoff with `io.write(...)`.
 
-When `$STAGE_OUTPUTS` is **unset** (direct invocation), run the same flow against the supplied
-paths and skip the JSON handoff.
+On **direct invocation** there is no envelope and no handoff: run the same flow against the
+supplied paths.
 
 ## Reference command
 
+Run as `python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"` — the three paths
+your dispatch envelope prints.
+
 ```python
-import json, os, sys
+import sys
 from pathlib import Path
 
-plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
-sys.path.insert(0, str(plugin_root / "scripts"))
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
+
+from stage_io import stage_io
 from financial_charts import (
     render_financial_summary_charts_into_deck,
     render_ltm_revenue_pie_into_deck,
 )
 from slide_render import render_deck_to_png
 
-inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())
-deal_dir = Path(os.environ.get("DEAL_DIR", "."))
-deck_path = inputs["deck_path"]
-deal_workbook = inputs["deal_workbook"]
+io = stage_io()
+deal_dir = Path(io.inputs.get("deal_dir") or io.deal_dir)
+deck_path = io.inputs["deck_path"]
+deal_workbook = io.inputs["deal_workbook"]
 
 # 1) Financial Summary charts — one per metric row, inserted into every FS
 #    slide (discovered by scanning the deck); modifies the deck in place.
@@ -237,18 +244,16 @@ render_deck_to_png(deck_path, qa_dir, slide_indices=[6, 7])
 # → read qa_dir/slide_7.png (overview pie) and slide_8.png (FS charts) and confirm
 #   the formatting described in the Workflow QA step.
 
-result = {
-    "deck_path": deck_path,
-    "charts_inserted": fs_inserted,
-    "pie_inserted": pie_inserted,
-}
-
-stage_outputs = os.environ.get("STAGE_OUTPUTS")
-if stage_outputs:
-    Path(stage_outputs).write_text(json.dumps(result, indent=2))
+io.write(
+    {
+        "deck_path": deck_path,
+        "charts_inserted": fs_inserted,
+        "pie_inserted": pie_inserted,
+    }
+)
 ```
 
-## Outputs (`$STAGE_OUTPUTS`)
+## Outputs (`outputs.json`)
 
 ```json
 {

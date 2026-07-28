@@ -812,6 +812,9 @@ def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
     assert "US$MM" in note_hl and "[x]" not in note_hl, "highlights-slide footnote currency derived from the cap table"
 
 
+@pytest.mark.skipif(
+    find_soffice() is None, reason="the range renderer needs LibreOffice (see excel_to_powerpoint)"
+)
 def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
     from deal_workbook import init_deal_workbook
     from ownership_workbook import build_ownership_workbook, InsiderHolding
@@ -826,10 +829,12 @@ def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
         ],
         total_shares_outstanding=261_000_000,
     )
-    try:
-        deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
-    except RuntimeError as exc:  # LibreOffice unavailable here
-        pytest.skip(f"range render backend unavailable in this environment: {exc}")
+    # No `except RuntimeError: pytest.skip` here any more. `_render_range_to_png`
+    # raises RuntimeError for a MISSING LibreOffice *and* for a conversion that
+    # failed or produced no PDF, so catching it turned a genuine render defect
+    # into a green skip. The skipif above states the one condition that is really
+    # environmental; everything else must fail.
+    deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
 
     prs = Presentation(deck_path)
     own_slide = prs.slides[8]  # ownership follows Financial Summary (fixed index 8)
@@ -843,6 +848,9 @@ def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
     assert "[Placeholder for Insider Ownership]" not in text, "insider placeholder replaced"
     # No Bloomberg export was ingested, so the institutional side stays a placeholder.
     assert "[Placeholder for Institutional Ownership]" in text
+@pytest.mark.skipif(
+    find_soffice() is None, reason="the range renderer needs LibreOffice (see excel_to_powerpoint)"
+)
 def test_pitch_deck_inserts_institutions_with_bloomberg(tmp_path: Path):
     """With a Bloomberg export ingested, the ownership slide's right
     "Institutions" placeholder (Rectangle 3) is replaced by the
@@ -881,10 +889,7 @@ def test_pitch_deck_inserts_institutions_with_bloomberg(tmp_path: Path):
         total_shares_outstanding=261_000_000,
         bloomberg_export_path=bbg_path,
     )
-    try:
-        deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
-    except RuntimeError as exc:  # LibreOffice unavailable here
-        pytest.skip(f"range render backend unavailable in this environment: {exc}")
+    deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
 
     prs = Presentation(deck_path)
     own_slide = prs.slides[8]

@@ -362,7 +362,6 @@ def test_assemble_earnings_update_deck_inserts_cap_table_via_libreoffice(tmp_pat
     """
     if find_soffice() is None:
         pytest.skip("LibreOffice not installed; it is the only range renderer")
-    pytest.importorskip("pypdfium2", reason="pypdfium2 required for the LibreOffice fallback")
 
     workbook_path = _write_sample_cap_table(tmp_path / "cap-table.xlsx")
     deck_path = _assemble_sample_deck(tmp_path, captable_workbook_path=workbook_path)
