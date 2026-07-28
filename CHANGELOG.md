@@ -2,6 +2,67 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
+## [0.5.46] — 2026-07-28
+
+**Migration Phase G — falsification.** Two changes, one dependent on the other: a figure's source becomes a **structured record** rather than a sentence in a cell comment, and a new `deckcheck` stage uses those records to try to **disprove** every figure on the finished deck. Analyst-facing citation text is unchanged, byte for byte.
+
+### 1. The citation was the record; now the record renders the citation
+
+v0.5.31 and v0.5.34 gave every headline figure an in-artefact citation, and the *mechanism* was the record: a skill composed the string `"FY2025 10-K, Consolidated Statements of Operations"` and `comment_citations` glued `"Source: "` on the front. Nothing else in the system ever knew what a figure's source was, because the only copy of it was prose inside an openpyxl `Comment`, on a cell, in one tab of the deal workbook. Three consequences:
+
+- **A figure on the deck could not be traced.** The slide shows `US$589.8MM`; the citation is a comment on a cell in a different file. Nothing could join them — which is exactly the question `deckcheck` has to ask.
+- **The fields were not fields.** "Filing", "statement" and "page" were a comma-joined string, so "cite the page" was a convention a skill either followed or didn't, unenforceably. Most didn't.
+- **There were two wordings for one thing** — `source_line` rendered the URL form and every skill hand-wrote the filing form. The same drift pair H1 collapsed on the intake side.
+
+**New `scripts/provenance.py`.** `FigureSource` (filing → statement → page, or url → retrieved) is validated on construction and owns `render()`, the one place a citation's wording is decided. Both established forms fall out of one rule, so the artefact an analyst opens does not change:
+
+```
+FY2025 10-K, Consolidated Statements of Operations, p. 61
+https://example.com/fx — retrieved 2026-07-15
+```
+
+`FigureProvenance` is the figure — its name, value, units, the `<tab>!<cell>` it was written to, and its sources. `ProvenanceLedger` collects them and writes the stage's fragment.
+
+**A half-citation can no longer be constructed.** A `statement` or `page` with no `filing`, a `url` with no `retrieved`, a figure with neither a source nor a `derivation` — each reads as provenance and cannot be followed, which is worse than none. All three raise. "Sources are REQUIRED" was a SKILL.md sentence; it is structural now.
+
+**A derived figure carries a `derivation` instead of a source.** An LTM bridge total's provenance *is* its components' records, and pretending it has a filing of its own would be the invention the citation exists to prevent. So `ltm_metrics` records each bridge total as `LTM Revenue` ← `FY2025 Revenue + Q3 2026 YTD Revenue − Q3 2025 YTD Revenue`, and `financial_summary_workbook` records each flow metric's LTM cell as a link to that row. That chain — deck tile → workbook cell → bridge → component → filing page — is what `deckcheck` walks.
+
+**`comment_citations` is now the *view*.** `append_source_to_comment(cell, FigureSource)` and `cite_cell(cell, FigureProvenance)`; the append-never-replace semantics that keep the cap table's CapIQ refresh formula on F7/F16 are unchanged. `source_line` and `append_source_text_to_comment` are deleted, and passing a string raises a `TypeError` naming the fix — because a string citation is a citation nothing else can read. Same for the pre-Phase-G three-argument `append_source_to_comment(cell, url, retrieved)`: it now fails loudly rather than citing the wrong thing.
+
+**Fragment per stage, merged per run.** Each stage writes `<run_dir>/stages/<id>/provenance.json` beside its `outputs.json`; the per-run record at `<run_dir>/provenance.json` is the merge, written by `deckcheck`. Not bookkeeping taste — **wave-mates run concurrently**, so one shared ledger would be a read-modify-write race between sub-agents. Owning your own file makes that impossible, and needs nothing from the conductor.
+
+Wired through the four existing call sites: `MetricSeries.sources` / `.ltm_source`, `RevenueSegment.source`, `BridgeComponent.source`, and captable's F7/F16 URL citations. Both builders take a `provenance=` ledger they fill in place; pass nothing and the records are still built (the comments come from them either way), just not kept.
+
+### 2. `deckcheck` — the stage that tries to disprove the deck
+
+New skill (`skills/deckcheck/SKILL.md`) and `scripts/deckcheck.py`, scheduled after the deck in both plans: **earnings-update 5 stages / 3 waves → 6 / 4**, **pitch 10 / 6 → 11 / 7**.
+
+`deck_contract` (already run, inside the assembler) asks whether the deck *looks* right. This asks whether its **numbers are true**. The split of labour is Phase B's, for Phase B's reason:
+
+- **Mechanical.** `extract_deck_figures` pulls every figure out of the deck's text shapes and table cells — currency, magnitude suffix, percent, multiple, or a decimal/thousands-separated number — normalises currency to millions (the scale the workbook is locked to, so a deck rendering `$1.2B` and a record holding `1200.0` compare directly), and `audit_deck` joins each to the ledger within the tolerance the figure's own rounding implies. No renderer, no model.
+- **Judgement.** Whether p. 61 actually says 589.8, whether the period label matches the statement, whether a bridge used the right three quarters. The SKILL.md workflow: read every slide PNG and every picture crop, locate the cited statement in the cited filing under `<deal_dir>/filings/`, and return one of `confirmed` / `contradicted` / `unsupported` / `unverifiable`. A **traced** figure only proves the deck copied the workbook faithfully — the record still has to be checked against the filing, and the agenda says so.
+
+**Advisory, structurally.** `CheckFinding` refuses to be constructed with any severity but `advisory`, and both plans keep the stage `informational`. The plugin's one gate stays on `deck`. A falsification pass that could halt a run would have to be right about a target's financial statements, and nothing here is that confident.
+
+**Expected CapIQ error values are not findings, and the code says so.** `EXPECTED_ERROR_CONTEXTS` lists them — the cap table's forward-estimate columns, the comps and precedents array formulas, the pre-resolution `financial-summary` LTM link, the deliberately deferred placeholders — and `render_agenda` prints the list into the generated agenda. The reviewer is about to read a rasterised cap-table picture full of `#VALUE!`, so the rule has to be in front of them at that moment, not only in prose. Re-flagging them is how a review gets ignored within a week.
+
+**The blank library is the baseline for "whose figure is this?"** — the same self-maintaining trick `deck_contract` uses for geometry, applied to text. A figure (or a picture) that already appears in the library on a shape of the same name came with the library, not from this run. Measured on the pitch fixture: **70 figures → 48** (the three static credential slides' 22 tombstone values drop out) and **49 pictures → 5** (44 library logos and graphics drop out, leaving the cap-table paste, the two Financial Summary charts and the two ownership blocks). A filled slide's figures cannot match, because what the library holds there is a `[x]` token — and there is no slide list to migrate when the library gains an entry.
+
+**Bare integers are excluded, and that exclusion is load-bearing.** A deck is full of them — slide numbers, `Q3 2026`, `2024 Annual Report`, years founded, `10-K` — and not one is a claim about the target's financials. The cost is a bare share count in a tile whose scale lives in the label; the SKILL.md names that as the known gap and tells the reviewer to catch it off the render. The benefit is an agenda a human will read.
+
+Also in `deckcheck.py`: `write_evidence` renders every slide and extracts every picture at native resolution (`deck_contract._write_picture_crops` promoted to public `write_picture_crops` — one extractor, two readers), and `render_agenda` / `render_report` / `write_report` produce the analyst-facing markdown, verdicts first.
+
+### Also
+
+- **`stage_io.StageIO.run_dir`** — derived like `deal_dir`, so `deckcheck` asks for the run directory instead of doing `.parent.parent` in a SKILL.md snippet, where it would rot the next time the layout moved.
+- **`test_contributor_brief_wave_counts_match_the_scheduler`** — CLAUDE.md carried its own copy of both plans' "(N stages / M waves)" and nothing checked it; found while adding a stage, which is the exact shape of drift the README lock was written for. One more parser beats a second stale copy of a number the scheduler already knows.
+- `test_required_deck_gate_precedes_final_artefact_waves` becomes `..._precedes_every_later_wave`: it asserted the earnings-update plan *ends* at `deck`, which was true only while nothing followed it. It now pins what the gate is actually for — `deck` alone in its wave, everything after it held — and that `deckcheck` is in that downstream set and is not a second gate.
+- No test was deleted or gated. The three stage-order assertions that broke (`test_plan.py`, `test_slide_library_poc.py` ×2) were extended with the new stage and given the reason it is last; the v0.5.34 citation tests were rewritten against the record-based appender, making every assertion they made before — preserve the existing comment and author, create one on a bare cell, survive a save, both citation forms — plus new ones for the record → string rendering, the page field, and the string rejection.
+- CLAUDE.md gains four standing rules (the record renders the citation and not the reverse; a stage writes its own fragment because wave-mates are concurrent; `deckcheck` can never gate; expected CapIQ error values are not defects) and no phase bullet.
+
+**Suite: 747 passed, 0 skipped** (677 before).
+
+Merged over the cap-table hotfix, which had already taken `0.5.45`; this is `0.5.46`. No source overlap — the hotfix is the two deck assemblers, `template_layout`, `financial_charts` and `ownership_workbook`; this is `provenance` / `comment_citations` / the two workbook builders / `deckcheck`. Two files were touched by both and merged cleanly on disjoint regions: `captable/SKILL.md` (their source-sheet-vs-deal-tab note in Step 3, this release's provenance record in Step 3b) and `test_slide_library_poc.py` (their `init_deal_workbook` fixtures, this release's plan stage-order lists).
 ## [0.5.45] — 2026-07-28
 
 **Hotfix: both deck assemblers addressed the cap table by the source template's sheet name, so every build supplying a cap table failed its deck stage.** Filed at the end of v0.5.43 as found-but-not-fixed; this closes it, and closes the **test mechanism** that hid it — which is the larger half of the release.

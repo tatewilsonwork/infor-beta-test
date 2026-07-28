@@ -82,6 +82,18 @@ class StageIO:
         return self.inputs_path.parent
 
     @property
+    def run_dir(self) -> Path:
+        """`<run_dir>` — this run's directory, two levels up from the stage dir.
+
+        Derived like `deal_dir` rather than passed: the layout is fixed
+        (`<deal_dir>/runs/<run-id>/stages/<stage-id>/`), so a stage that needs the
+        whole run — `deckcheck` consolidating every stage's provenance fragment —
+        asks for it here instead of doing path arithmetic in a SKILL.md snippet,
+        where it would rot the next time the layout moved.
+        """
+        return self.stage_dir.parent.parent
+
+    @property
     def deal_dir(self) -> Path:
         """`<deal_dir>` — derived from the inputs path, never passed in."""
         return deal_dir_for(self.inputs_path)

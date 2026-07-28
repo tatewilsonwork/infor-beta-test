@@ -29,12 +29,13 @@ def _stage(id, skill=None, inputs=None):
 
 
 def test_pitch_plan_waves():
-    """The pitch plan schedules 10 stages into 6 dependency waves.
+    """The pitch plan schedules 11 stages into 7 dependency waves.
 
     Wave 0 overlaps the research-heavy roots (financial-summary / comps /
     precedents / wireframe). financial-summary precedes ltm-metrics because it
     selects the deck's metrics and tells ltm-metrics which extra ones to bridge.
-    `financial-charts` runs strictly last: it edits the assembled deck.
+    `financial-charts` edits the assembled deck, and Phase G's `deckcheck` audits
+    what `financial-charts` produced — so the two tail waves are strictly ordered.
 
     Phase D removed the `workbook-aggregation` wave that used to sit between
     `deck` and `financial-charts`. The deal owns one workbook from stage one, so
@@ -49,6 +50,7 @@ def test_pitch_plan_waves():
         ["ownership"],
         ["deck"],
         ["financial-charts"],
+        ["deckcheck"],
     ]
 
 
@@ -58,7 +60,22 @@ def test_earnings_update_plan_waves():
         ["wireframe", "ltm-metrics"],
         ["content", "captable"],
         ["deck"],
+        ["deckcheck"],
     ]
+
+
+def test_deckcheck_audits_the_final_artefact_not_the_assembled_one():
+    """In the pitch plan `deckcheck` must depend on `financial-charts`, not `deck`.
+
+    Two reasons, and both are load-bearing. The charts land *after* assembly, so a
+    review of `deck`'s output would miss every figure they carry. And
+    `financial-charts` edits the deck in place — a render running alongside it would
+    race the file it is reading. The earnings-update plan has no chart stage, so
+    there `deck` is the final artefact.
+    """
+    pitch = stage_dependencies(_load_plan("pitch.yaml"))
+    assert pitch["deckcheck"] == {"financial-charts"}
+    assert stage_dependencies(_load_plan("earnings-update.yaml"))["deckcheck"] == {"deck"}
 
 
 def test_financial_charts_depends_on_deck():
@@ -73,25 +90,29 @@ def test_financial_charts_depends_on_deck():
     assert "deck" in deps["financial-charts"]
 
 
-def test_required_deck_gate_precedes_final_artefact_waves():
+def test_required_deck_gate_precedes_every_later_wave():
     """Both shipped plans mark `deck` as the `required` pre-delivery checkpoint
-    (v0.5.31). Checkpoints are evaluated at the wave boundary and only stop
-    DOWNSTREAM waves, so the gate is only real if `deck` is scheduled in an
-    earlier wave than the final-artefact stages — lock that here so a plan edit
-    can't silently move charts alongside (or ahead of) the gate."""
+    (v0.5.31), and nothing else is a gate. Checkpoints are evaluated at the wave
+    boundary and only stop DOWNSTREAM waves, so the gate is only real if `deck`
+    sits alone in its wave with everything else after it — lock that here so a plan
+    edit can't silently move a later stage alongside (or ahead of) the gate.
+
+    Phase G's `deckcheck` is deliberately in that downstream set and deliberately
+    `informational`: a falsification pass reports on the artefact the analyst has
+    already approved. Making it a second gate would mean halting a run on a claim
+    about the target's financial statements.
+    """
     for name in ("pitch.yaml", "earnings-update.yaml"):
         plan = _load_plan(name)
         checkpoints = {s.id: s.checkpoint for s in plan.stages}
         assert checkpoints["deck"] == "required", name
         assert all(m == "informational" for sid, m in checkpoints.items() if sid != "deck"), name
+
         waves = compute_waves(plan)
         wave_index = {sid: i for i, wave in enumerate(waves) for sid in wave}
-        if "financial-charts" in wave_index:
-            assert wave_index["deck"] < wave_index["financial-charts"], name
-        else:
-            # Since Phase D the earnings-update plan ENDS at `deck`, so its gate
-            # has no downstream wave to hold; it still fires before delivery.
-            assert wave_index["deck"] == len(waves) - 1, name
+        assert waves[wave_index["deck"]] == ["deck"], f"{name}: the gate has wave-mates"
+        held = [sid for sid, i in wave_index.items() if i > wave_index["deck"]]
+        assert "deckcheck" in held, f"{name}: the review is not behind the gate"
 
 
 def test_every_stage_scheduled_exactly_once():
@@ -221,11 +242,24 @@ def test_single_stage_plan_is_one_wave():
 # --- doc drift lock (Phase E) ------------------------------------------------
 
 
+def _assert_claims_match(claims: dict[str, tuple[int, int]], where: str) -> None:
+    assert set(claims) == {"pitch.yaml", "earnings-update.yaml"}, (
+        f"{where}: expected a wave claim for each shipped plan, found {sorted(claims)}"
+    )
+    for name, (stages, waves) in claims.items():
+        plan = _load_plan(name)
+        assert (len(plan.stages), len(compute_waves(plan))) == (stages, waves), (
+            f"{where} says {name} is {stages} stages / {waves} waves; the scheduler "
+            f"returns {len(plan.stages)} / {len(compute_waves(plan))}"
+        )
+
+
 def test_readme_wave_counts_match_the_scheduler():
     """Every "N stages … M dependency waves" claim in the README is checked.
 
     Phase D changed both plans' shapes (pitch 11/7 -> 10/6, earnings update 6/4 ->
     5/3) by deleting a stage, and the numbers live in prose that nothing verified.
+    (Phase G added `deckcheck` and put both back: pitch 11/7, earnings update 6/4.)
     The conductor SKILL.md used to carry a hardcoded wave list too; it now posts
     `conductor.plan_overview(run_dir).narration()` instead, so there is no second
     copy left to check.
@@ -238,12 +272,23 @@ def test_readme_wave_counts_match_the_scheduler():
         r"[^\n]*?(?P<waves>\d+) dependency waves"
     )
     claims = {m.group("plan"): (int(m.group("stages")), int(m.group("waves"))) for m in pattern.finditer(readme)}
-    assert set(claims) == {"pitch.yaml", "earnings-update.yaml"}, (
-        f"expected a wave claim for each shipped plan, found {sorted(claims)}"
+    _assert_claims_match(claims, "README.md")
+
+
+def test_contributor_brief_wave_counts_match_the_scheduler():
+    """CLAUDE.md carries the same two numbers, in its own wording.
+
+    Found while adding `deckcheck`: the brief's "Conductor plans" line said
+    "earnings-update.yaml (5 stages / 3 waves)" and nothing checked it, which is the
+    exact shape of the drift the README lock was written for. One more parser is
+    cheaper than a second stale copy of a number the scheduler already knows.
+    """
+    import re
+
+    brief = (Path(__file__).resolve().parents[3] / "CLAUDE.md").read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"`(?P<plan>[a-z-]+\.yaml)`[^\n]*?\((?:[^()\n]*?, )?(?P<stages>\d+) stages? / "
+        r"(?P<waves>\d+) waves\)"
     )
-    for name, (stages, waves) in claims.items():
-        plan = _load_plan(name)
-        assert (len(plan.stages), len(compute_waves(plan))) == (stages, waves), (
-            f"README says {name} is {stages} stages / {waves} waves; the scheduler "
-            f"returns {len(plan.stages)} / {len(compute_waves(plan))}"
-        )
+    claims = {m.group("plan"): (int(m.group("stages")), int(m.group("waves"))) for m in pattern.finditer(brief)}
+    _assert_claims_match(claims, "CLAUDE.md")

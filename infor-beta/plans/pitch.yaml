@@ -275,3 +275,32 @@ stages:
         type: Path
         description: The final pitch deck, with the Financial Summary charts inserted (same file, modified in place).
     checkpoint: informational
+
+  # Falsification pass (Phase G). Reads the rendered slide PNGs, the run's merged
+  # provenance record (every stage's `provenance.json` fragment, figure -> filing
+  # -> statement -> page) and the attached filings, and attempts to DISPROVE every
+  # figure on the deck. Advisory: it surfaces a review at the wave boundary and
+  # never gates — the plan's one `required` approval stays on `deck`.
+  #
+  # It reads `financial-charts`'s deck_path, not `deck`'s, so it audits the FINAL
+  # artefact — the charts land after assembly, and reviewing the deck before them
+  # would miss every figure they carry. That reference is also what serialises the
+  # two stages: `financial-charts` edits the deck in place, so a render running
+  # concurrently would race it.
+  - id: deckcheck
+    skill: deckcheck
+    inputs:
+      company: $deal.subject_company
+      deck_path: $stages.financial-charts.deck_path
+      deal_dir: $deal.deal_dir
+    outputs:
+      - name: report_path
+        type: Path
+        description: The advisory deck-check report (markdown) under the deal's artefacts/.
+      - name: provenance_path
+        type: Path
+        description: The run's consolidated provenance record, <run_dir>/provenance.json.
+      - name: finding_count
+        type: int
+        description: Figures the pass could not confirm (contradicted + unsupported + unverifiable); 0 when every figure checked out.
+    checkpoint: informational
