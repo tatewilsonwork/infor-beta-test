@@ -77,6 +77,32 @@ H2 is neither shipped nor formally dropped; it is unscheduled, driven by analyst
 
 Suite: **780 passed, 0 skipped** (747 before). Both golden fixtures and all three regression fixtures behave exactly as pinned — this phase touched no assembler and no scheduler, and `deck_contract` only to make `VISION_CHECKLIST` public so the vision review renders the same sentence rather than a second copy of it.
 
+## [0.5.48] — 2026-07-28
+
+**Migration wrap-up — hygiene.** No behaviour change: no runtime code was touched, no stage moved, no template or plan was edited. The migration ended at 0.5.47; this audits what the eight phases left behind in the documentation and turns three of the brief's standing claims into tests. Suite **783 passed, 0 skipped** (780 before).
+
+### The brief said three true-sounding things that nothing checked
+
+`CLAUDE.md` is read *instead of* looking, so a stale claim in it is worse than no claim — the same argument the v0.5.43 import-block lock was written from, one level up. Three more claims now execute, all in `test_contributor_brief.py`:
+
+- **The stage portfolio is a checked list, not a described one** (`test_contributor_brief_stage_lists_match_the_repo`). Phase F updated the section for the four stages that *became* transforms, and left the judgment list beside it wrong in both directions: it named `buyerslist`, `lbo-model`, `deck-writing` and `brand-guidelines` among skills "refactored from the old repo" — none of which has ever had a `SKILL.md` — and omitted `earningsupdate-content` and `pitch-content`, which do. A reader would have hunted for four files that do not exist and never learned about two that do. The lists are now exhaustive and pinned to `skills/*/SKILL.md` and `stage_transforms.TRANSFORMS`, with the roadmap split out where it cannot be mistaken for shipped work, and `conductor` named as the tenth directory that is not a stage.
+- **The COM boundary is asserted in both directions** (`test_the_shipped_plugin_holds_no_excel_com`). Phase D's deletion and `tools/`'s exemption from it were both prose. A COM path reappearing under `infor-beta/` cannot run on Cowork and would go *green* on this Windows box — the dev/prod inversion Phase A existed to end — and a later sweep "finishing the job" in `tools/` would take working prep tooling with it. `tools/add_template_named_ranges.py`'s docstring contradicted itself on this: it claimed the exemption and then "it does not use COM at all", 52 lines above the paragraph explaining that `--verify-excel` does. Corrected — the *stamping* path is COM-free XML surgery, the oracle is not.
+- **The bump checklist executes** (`test_the_three_version_files_agree`). Three files carry the one version and 47 releases checked it by hand.
+
+### Verified clean, no change needed
+
+- **The shared-helpers import block resolves, symbol by symbol** — all 140 names, each `(module, symbol)` pair resolved independently rather than trusting the block's first failure. Zero stale entries: D, E, F, G and H1 all moved code and all kept it current. Two *omissions* fixed: `naming.safe_filename` (the block's own prose promises "filename sanitization" and offered only the bash helper, so three modules import a Python helper the brief never mentions), and `NAME_FX_RATE` / `MARKER_CONTACT` — the brief's "never address a template by a hardcoded position" rule demonstrates both and told nobody where they come from.
+- **`python -m schemas.export` is idempotent and produced no diff.** The exporter's seven models are still exactly the top-level Pydantic contracts in `schemas`; Phase G's provenance records and Phase H1's `IntakeSpec` are stdlib dataclasses, in-process only, and correctly outside a JSON-Schema view of the stage boundary.
+- **No fixture or helper survives that only served a deleted subsystem.** Every reference to the aggregator, the COM paths and the render-parity suite is a *historical comment* explaining an absence — deliberate, and the reason `fixtures/README.md` still documents the retired parity test. `conftest.py`'s COM section is likewise a record of what went with Phase D, and its one live helper (`stamp_defined_names`) is load-bearing. The two workbook golden fixtures are referenced by no test, and are still correct to keep: they are the sha-pinned workbook half of a real-run pair, and `pitch-workbook.xlsx` is the cited evidence for the standing "CapIQ error values are expected" rule. `pyproject.toml`'s `--dist loadgroup` comment was the one genuine leftover — it described an `xdist_group` `conftest.py` had already deleted.
+- **`docs/migration-plan.md` was already gone**, deleted in 0.5.47 as that entry records; there is no `docs/` to remove.
+
+### Both Cowork questions are still open — this box cannot answer either
+
+Neither is a judgment call; both need a shell on the production runtime, and this is a Windows dev box.
+
+- `fc-match "Palatino Linotype"` — **not runnable here at all**: Windows has no fontconfig, so there is no degraded answer to report, only no answer. The `CLAUDE.md` note is sharpened to carry the command and how to read it (`P052`/`URW Palladio L` ⟹ metric-compatible and Phase B's converge loop is sound as calibrated; `DejaVu`/`Liberation`/`Times` ⟹ it is calibrated against metrics prod does not use, and needs re-validating), plus why it is the highest-value question left: `deck_repair` decides every font size from a measured render, and that measurement was taken against real Palatino here.
+- **`visualize` / `show_widget` on Cowork — still unconfirmed.** It is present in this Windows desktop session, which re-confirms only the half 0.5.47 already recorded as confirmed. H2's dependency is Cowork specifically, so it stays blocked, and the mandatory widget → dialogs → text fallback chain is unchanged either way.
+
 ## [0.5.46] — 2026-07-28
 
 **Migration Phase G — falsification.** Two changes, one dependent on the other: a figure's source becomes a **structured record** rather than a sentence in a cell comment, and a new `deckcheck` stage uses those records to try to **disprove** every figure on the finished deck. Analyst-facing citation text is unchanged, byte for byte.
