@@ -47,8 +47,9 @@ from pptx_helpers import (
 )
 from schemas import PitchDeckContent, SlidePlan
 from template_layout import (
-    CAP_TABLE_OUTPUT_CCY_ANCHOR,
-    CAP_TABLE_PICTURE_ANCHORS,
+    CAP_TABLE_OUTPUT_CCY_CELL,
+    CAP_TABLE_OUTPUT_CCY_NAMES,
+    CAP_TABLE_PICTURE_NAMES,
     CAP_TABLE_PICTURE_RANGE,
     CAP_TABLE_SHEET,
     MARKER_COMPS,
@@ -65,9 +66,9 @@ from template_layout import (
     NAME_CAP_PICTURE_RANGE,
     NAME_OWN_INSIDERS_PICTURE,
     NAME_OWN_INSTITUTIONS_PICTURE,
-    OWNERSHIP_INSIDERS_PICTURE_ANCHORS,
+    OWNERSHIP_INSIDERS_PICTURE_NAMES,
     OWNERSHIP_INSIDERS_PICTURE_RANGE,
-    OWNERSHIP_INSTITUTIONS_PICTURE_ANCHORS,
+    OWNERSHIP_INSTITUTIONS_PICTURE_NAMES,
     OWNERSHIP_INSTITUTIONS_PICTURE_RANGE,
     OWNERSHIP_SHEET,
     TemplateLayoutError,
@@ -75,7 +76,7 @@ from template_layout import (
     find_slide_by_marker,
     find_slides_by_marker,
     resolve_workbook_range,
-    verify_workbook_anchors,
+    verify_workbook_names,
 )
 
 # Financial Summary slide title shape + the four metric-label tiles it carries
@@ -263,7 +264,7 @@ def _output_currency_letter(workbook_path) -> str:
 
         wb = load_workbook(workbook_path, data_only=True)
         ws = wb[CAP_TABLE_SHEET] if CAP_TABLE_SHEET in wb.sheetnames else wb.active
-        addr = defined_name_ref(ws, NAME_CAP_OUTPUT_CCY) or CAP_TABLE_OUTPUT_CCY_ANCHOR.target
+        addr = defined_name_ref(ws, NAME_CAP_OUTPUT_CCY) or CAP_TABLE_OUTPUT_CCY_CELL
         code = str(ws[addr].value or "").strip().upper()
     except Exception:
         code = ""
@@ -478,20 +479,20 @@ def assemble_pitch_deck(
     output_path = out_dir / f"Pitch Deck - {safe_filename(content.client_name, default='Client')}.pptx"
 
     # Layout pre-flight on the companion workbooks whose cells and picture
-    # ranges are read blind below (F5 for the footnote currency letter, then
-    # 'Cap with Links'!B15:F40 / 'Ownership'!B4:G17 for the slide pictures) —
-    # a shifted template raises here instead of pasting the wrong rows.
+    # ranges are resolved below (the output currency for the footnote letter,
+    # then the cap-table / insiders picture ranges) — a workbook that lost those
+    # names raises here instead of pasting the wrong rows.
     if captable_workbook_path is not None:
-        verify_workbook_anchors(
+        verify_workbook_names(
             captable_workbook_path,
             sheet=_CAP_TABLE_SHEET,
-            anchors=(CAP_TABLE_OUTPUT_CCY_ANCHOR, *CAP_TABLE_PICTURE_ANCHORS),
+            names=(*CAP_TABLE_OUTPUT_CCY_NAMES, *CAP_TABLE_PICTURE_NAMES),
         )
     if ownership_workbook_path is not None:
-        verify_workbook_anchors(
+        verify_workbook_names(
             ownership_workbook_path,
             sheet=_OWNERSHIP_SHEET,
-            anchors=OWNERSHIP_INSIDERS_PICTURE_ANCHORS,
+            names=OWNERSHIP_INSIDERS_PICTURE_NAMES,
         )
 
     # Footnote currency letter for the slide-7 + market-entry '[x]$MM' tokens,
@@ -725,12 +726,12 @@ def assemble_pitch_deck(
             ),
         )
         if _ownership_has_bloomberg(ownership_workbook_path):
-            # Sentinel-check the Select-Institutions block before pasting, then
-            # take the range from its defined name.
-            verify_workbook_anchors(
+            # Check the Select-Institutions block's name is there before
+            # pasting, then take the range from it.
+            verify_workbook_names(
                 ownership_workbook_path,
                 sheet=_OWNERSHIP_SHEET,
-                anchors=OWNERSHIP_INSTITUTIONS_PICTURE_ANCHORS,
+                names=OWNERSHIP_INSTITUTIONS_PICTURE_NAMES,
             )
             insert_excel_into_placeholder(
                 deck_path=output_path,

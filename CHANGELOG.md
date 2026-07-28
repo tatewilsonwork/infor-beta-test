@@ -2,6 +2,45 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
+## [0.5.43] — 2026-07-28
+
+**Phase C's sentinel tables deleted, and `CLAUDE.md` restructured around standing rules.** No deliverable-facing behaviour change on a clean run: the four shipped templates and the deal workbook carry every name the writers resolve, so every verification still passes.
+
+### The sentinel tables are gone — `template_layout.py` 826 → 603 lines
+
+Phase C (v0.5.40) stamped 27 `infor_` defined names into the workbook templates and moved the writers onto them, but **kept** the sentinel tables one release as a cross-check: each protected address was also paired with the caption text the template carries beside it, and `verify_anchors` raised when a name and its sentinel disagreed about where a cell was. That was the check that proved the migration had mapped 27 names to the right cells. It shipped, and two releases later it is retired as planned.
+
+What replaced it. `verify_names(ws, names, template=...)` and `verify_workbook_names(path, sheet=..., names=...)` check that the names a writer is about to resolve are **present**, reporting every missing one at once with the remedy (re-run `tools/add_template_named_ranges.py`). Deleted with the tables: `CellAnchor`, `_anchor_text`, `_anchor_matches`, `verify_anchors`, `verify_cell_anchor`, the twelve `*_ANCHORS` tuples, `named_targets`, `CAP_TABLE_SECTION_VII_ROWS`, and the `require_names` parameter. `TEMPLATE_NAMED_RANGES` is now declared directly as `{template: {sheet: {name: target}}}` rather than derived from the anchors — the addresses are still there because the prep tool stamps them, but nothing reads them at runtime, which is the point of a name.
+
+**What this trades away, deliberately.** A sentinel pinned an *address*. A defined name does not, and Excel moves a name with its cell — so a template an analyst re-saves with an inserted row now simply works, where the sentinel tables raised on it. What verification no longer detects is a name left pointing at a **stale** address, which happens only when a workbook is edited by something that does not maintain names (openpyxl's `insert_rows`, say). That was never the real-world case, and it is not what the tests were really about; the real case is a template re-created without being re-stamped, and that is caught, loudly, with the fix in the message.
+
+The `(b)` half of `test_template_layout.py` was rewritten to match rather than deleted. The four `insert_rows`-a-copy tests become four "this tab lost its name" tests driven through the same wired-in writers, and the new **`test_a_moved_block_needs_no_code_change`** is the payoff case the sentinels got wrong: a precedents group whose label and block names are re-pointed one row down (Excel's own behaviour) has its transaction written to the moved row, with no code change and no complaint. **`test_the_sentinel_tables_are_gone`** is the drift lock — it fails if `CellAnchor`, `label_addr`, `verify_anchors`, `require_names`, or any `*_ANCHOR(S)` export comes back.
+
+Two things surfaced while rewiring the six consumers:
+
+- **`deal_workbook.write_tab` already ran the same check**, with a better-targeted message (it names the deal workbook and the `build_deal_workbook_template.py` remedy, not the source template). It fires *first* for every producer that goes through `write_tab`, so the producers' own `verify_names` is what covers a direct invocation. Both layers are kept and the test pins which one wins.
+- **`infor_comps_output_ccy` is stamped but resolved by nothing.** The workbook aggregator relinked it to the cap table's output currency and Phase D deleted the aggregator. It stays in the template and the registry — the cell keeps a handle — but it is out of `COMPS_WRITE_NAMES`, and a new test asserts every verified group only names something the registry stamps.
+
+Three synthetic test fixtures needed the names they had been faking with caption text (`tests/conftest.stamp_defined_names`, one helper, three call sites): a hand-built `Workbook()` carries no defined names, and those names are now the whole of layout verification.
+
+### `CLAUDE.md`: 239 lines of which 83% was a changelog → a brief that answers "what are the rules"
+
+The file is a contributor brief for agents working **on** the plugin. It does not ship (`marketplace.json` points at `./infor-beta`; this is repo-root), so its only job is orienting a dev session — and 46 phase-status bullets of release narrative, ~21,400 tokens, was not doing that job. Restructured around one test: does a fresh contributor need this line to do the *next* task correctly?
+
+**Standing rules were extracted, not dropped.** Every phase bullet was swept for a rule that existed nowhere else and promoted into Conventions as a present-tense rule with at most one clause of why — so nobody "fixes" it. Six new sections: *Rendering and geometry* (LibreOffice is the conservative oracle **only for shapes without autofit** — it is optimistic about autofit, recomputing its own scale where PowerPoint applies the stored one; never estimate a text extent; render a private copy; one LibreOffice profile per process), *The Excel side* (CapIQ cannot be refreshed here and error values in the forward-estimate cells are **expected**, which is why the error scan never reaches into a rasterised picture; one workbook per deal; Excel AutoSave ignores `Close(SaveChanges=False)` on this OneDrive-synced repo), *Office on the Windows dev box* (never force-kill `EXCEL.EXE`/`POWERPNT.EXE`; never add an HKCU `SPGMI.ExcelShell` key), *Data provenance and content safety*, *The conductor contract*, and *Tests* (a skip guard must never make "environment missing" and "code broken" the same green run — three releases shipped green behind stale ones).
+
+Then the phase log collapsed to one line per phase — name, version, one-sentence outcome, date — with the v0.5.0–v0.5.34 skill build-out as a single themed line. The narrative it replaced is here, and this file is never auto-loaded.
+
+**The shared-helpers import block is fixed and now executed by a test.** It had rotted: eight symbols Phases B/C/D deleted (`combine_workbooks`, `workbook_aggregator`, `CombineResult`, `excel_com_app`, `_ClipboardPasteError`, `palatino_text_width_in`, `OVERVIEW_SLIDE_INDEX`, `_KEEP_LIBRARY_INDICES`) still appeared in the file, and the block's own entries drifted with this release's renames. New `scripts/tests/test_contributor_brief.py` extracts the fenced block and `exec`s it, so a deleted export fails in the release that deletes it rather than in a future session that trusted the brief. The block also gained the helpers a contributor actually reaches for and could not find there: `pptx_helpers`' autofit primitives and `set_table_height` / `fit_overview_textbox`, `comment_citations`' filing-text variant, `plan_refs.validate_plan_references`, `financial_charts`' two mandatory entry points, and `slide_render.render_deck_to_png`.
+
+### Also
+
+- `docs/migration-plan.md` signs off Phase C step 2 — the debt inventory's "441 lines of sentinel tables" line is cleared, and the trade-off above is recorded there too.
+- Five SKILL.mds (captable, comps, precedents, ownership, deck-assembler) described verification as a sentinel-label check; all now describe the defined-name pre-flight. The ownership skill's claim that a *shifted* Section VII raises is corrected to what actually happens: the summing window comes from `infor_cap_share_inputs`, so an inserted row is summed too, and it is a **missing name** that raises.
+- **Found but not fixed** (out of scope for a documentation change; filed separately): both deck assemblers still address the cap table by `CAP_TABLE_SHEET = "Cap with Links"`, the sheet name in the *source* template. Phase D's `build_deal_workbook_template.py` renames that sheet to `captable` in the deal workbook, which is the path `pitch.yaml` actually passes — so the pre-flight raises `TemplateLayoutError` and every build supplying a cap table fails the deck stage. Invisible because both covering tests build a standalone copy of the cap-table template, which still has the old sheet name. Same class as the two stale-constant regressions in v0.5.40 and v0.5.36.
+
+**Suite: 630 passed, 0 skipped** (625 before).
+
 ## [0.5.42] — 2026-07-28
 
 **Migration Phase E — the conductor as code. Phase E is complete.** The conductor SKILL.md drops **216 lines → 118** and stops describing mechanics it no longer performs. Everything that used to be prose the model re-executed by hand each wave is now a function with a return value in `scripts/conductor.py`, and the sub-agent handoff stops depending on shell state.

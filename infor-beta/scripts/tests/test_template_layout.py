@@ -2,28 +2,35 @@
 
 Two halves, per the design contract:
 
-(a) every sentinel anchor / slide marker passes against the SHIPPED templates
-    (verification is a no-op change for an unmodified plugin), and
-(b) mutating a temp COPY of a template (openpyxl ``insert_rows`` / a
-    python-pptx slide re-order) makes the wired-in writers raise
-    ``TemplateLayoutError`` with a message naming the template, the protected
-    address, what was expected, and what was found.
+(a) every declared defined name / slide marker resolves against the SHIPPED
+    templates (verification is a no-op change for an unmodified plugin), and
+(b) a template that lost its ``infor_`` names — or a re-ordered slide library —
+    makes the wired-in writers raise ``TemplateLayoutError`` with a message
+    naming the template, what was missing, and the remedy.
 
 The shipped templates are never modified — every mutation happens on a copy
 under ``tmp_path``.
+
+Note what (b) is and is not. Verification is name-based: it catches a workbook
+that no longer carries the names its writers resolve through. It deliberately
+does NOT re-check that a name still points at a particular address — that is the
+thing the names exist to stop mattering, and Excel moves a name with its cell, so
+a re-saved template is a non-event (``test_a_moved_block_needs_no_code_change``).
+The sentinel tables that used to cross-check name against address were deleted
+once Phase C had shipped; ``test_the_sentinel_tables_are_gone`` keeps them gone.
 """
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
 from openpyxl import Workbook, load_workbook
+from openpyxl.workbook.defined_name import DefinedName
 from pptx import Presentation
 
 import template_layout as tl
-from template_layout import CellAnchor, TemplateLayoutError
+from template_layout import TemplateLayoutError
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = PLUGIN_ROOT / "templates"
@@ -34,10 +41,51 @@ PRECEDENTS = TEMPLATES / "INFOR Precedents Template.xlsx"
 LIBRARY = TEMPLATES / "INFOR Slide Library.pptx"
 
 
+# ─── defined-name helpers ─────────────────────────────────────────────────────
+
+
+def _drop_name(ws, name: str) -> None:
+    """Remove a sheet-scoped defined name, as a re-created template would."""
+    if name in ws.defined_names:
+        del ws.defined_names[name]
+
+
+def _repoint(ws, name: str, ref: str) -> None:
+    """Re-point a sheet-scoped defined name — what Excel does when rows move."""
+    _drop_name(ws, name)
+    ws.defined_names.add(DefinedName(name, attr_text=f"'{ws.title}'!{ref}"))
+
+
+def _named_sheet(name: str, ref: str):
+    """A one-sheet workbook carrying a single sheet-scoped defined name."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "S"
+    _repoint(ws, name, ref)
+    return ws
+
+
+def _deal_workbook(tmp_path: Path) -> Path:
+    from deal_workbook import init_deal_workbook
+
+    return init_deal_workbook(
+        deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+    )
+
+
+def _deal_workbook_without(tmp_path: Path, tab: str, *names: str) -> Path:
+    """A deal workbook whose ``tab`` has had ``names`` stripped."""
+    deal = _deal_workbook(tmp_path)
+    wb = load_workbook(deal)
+    for name in names:
+        _drop_name(wb[tab], name)
+    wb.save(deal)
+    return deal
+
+
 # ─── (a0) the shipped templates carry every declared defined name ────────────
-# The Phase C contract in both directions: each `infor_` name exists on the
-# sheet the registry says, resolves to the address the registry says, and agrees
-# with the sentinel that independently pins the same region.
+# The contract in both directions: each `infor_` name exists on the sheet the
+# registry says, and resolves to the address the registry says.
 
 
 @pytest.mark.parametrize("template", sorted(tl.TEMPLATE_NAMED_RANGES))
@@ -59,8 +107,8 @@ def test_shipped_template_carries_every_declared_name(template: str):
 def test_the_registry_covers_the_names_phase_c_promised():
     # The plan named eight cells explicitly; this pins that each is reachable.
     # (`precedents_input_ccy` ships as `infor_prec_output_ccy` — the cell is
-    # labelled "Output:" and the aggregator relinks it to the cap table's
-    # OUTPUT currency, so the name follows the artefact.)
+    # labelled "Output:" and carries the cap table's OUTPUT currency, so the
+    # name follows the artefact.)
     cap = tl.TEMPLATE_NAMED_RANGES[tl.CAP_TABLE_TEMPLATE][tl.CAP_TABLE_SHEET]
     assert cap[tl.NAME_FX_RATE] == "F7"
     assert cap[tl.NAME_SHARE_PRICE] == "F16"
@@ -74,6 +122,34 @@ def test_the_registry_covers_the_names_phase_c_promised():
     assert tl.TEMPLATE_NAMED_RANGES[tl.PRECEDENTS_TEMPLATE][tl.PRECEDENTS_SHEET][
         tl.NAME_PREC_OUTPUT_CCY
     ] == "C2"
+
+
+def test_every_verified_group_only_names_registered_names():
+    # The groups the writers pass to `verify_names` must be drawn from the
+    # registry: a group naming something the prep tool never stamps would fail
+    # every run, and a name in neither place would be verified by nothing.
+    registered = {
+        name
+        for sheets in tl.TEMPLATE_NAMED_RANGES.values()
+        for targets in sheets.values()
+        for name in targets
+    }
+    groups = {
+        "CAP_TABLE_WRITE_NAMES": tl.CAP_TABLE_WRITE_NAMES,
+        "CAP_TABLE_PICTURE_NAMES": tl.CAP_TABLE_PICTURE_NAMES,
+        "CAP_TABLE_SECTION_VII_NAMES": tl.CAP_TABLE_SECTION_VII_NAMES,
+        "CAP_TABLE_OUTPUT_CCY_NAMES": tl.CAP_TABLE_OUTPUT_CCY_NAMES,
+        "OWNERSHIP_INSIDER_WRITE_NAMES": tl.OWNERSHIP_INSIDER_WRITE_NAMES,
+        "OWNERSHIP_BBG_HOLDER_NAMES": tl.OWNERSHIP_BBG_HOLDER_NAMES,
+        "OWNERSHIP_BBG_LINK_NAMES": tl.OWNERSHIP_BBG_LINK_NAMES,
+        "OWNERSHIP_INSIDERS_PICTURE_NAMES": tl.OWNERSHIP_INSIDERS_PICTURE_NAMES,
+        "OWNERSHIP_INSTITUTIONS_PICTURE_NAMES": tl.OWNERSHIP_INSTITUTIONS_PICTURE_NAMES,
+        "COMPS_WRITE_NAMES": tl.COMPS_WRITE_NAMES,
+        "PRECEDENTS_WRITE_NAMES": tl.PRECEDENTS_WRITE_NAMES,
+    }
+    for group, names in groups.items():
+        assert names, f"{group} is empty"
+        assert set(names) <= registered, f"{group} names nothing the registry stamps"
 
 
 def test_new_names_did_not_disturb_the_capiq_and_legacy_namespaces():
@@ -91,45 +167,39 @@ def test_new_names_did_not_disturb_the_capiq_and_legacy_namespaces():
 # ─── (a) every verification passes against the shipped templates ─────────────
 
 
-def test_cap_table_template_passes_every_anchor_group():
+def test_cap_table_template_passes_every_verified_group():
     ws = load_workbook(CAP_TABLE)[tl.CAP_TABLE_SHEET]
     tl.verify_cap_table_before_write(ws)  # header + LTM + Section VII
-    tl.verify_anchors(ws, tl.CAP_TABLE_PICTURE_ANCHORS, template=tl.CAP_TABLE_TEMPLATE)
+    tl.verify_names(ws, tl.CAP_TABLE_PICTURE_NAMES, template=tl.CAP_TABLE_TEMPLATE)
+    tl.verify_names(ws, tl.CAP_TABLE_OUTPUT_CCY_NAMES, template=tl.CAP_TABLE_TEMPLATE)
 
 
-def test_ownership_template_passes_every_anchor_group():
+def test_ownership_template_passes_every_verified_group():
     wb = load_workbook(OWNERSHIP)
     ws = wb[tl.OWNERSHIP_SHEET]
-    tl.verify_anchors(
+    tl.verify_names(
         ws,
-        tl.OWNERSHIP_INSIDER_BLOCK_ANCHORS
-        + tl.OWNERSHIP_TOTAL_SHARES_ANCHORS
-        + tl.OWNERSHIP_BBG_LINK_ANCHORS
-        + tl.OWNERSHIP_INSIDERS_PICTURE_ANCHORS
-        + tl.OWNERSHIP_INSTITUTIONS_PICTURE_ANCHORS,
+        tl.OWNERSHIP_INSIDER_WRITE_NAMES
+        + tl.OWNERSHIP_BBG_LINK_NAMES
+        + tl.OWNERSHIP_INSIDERS_PICTURE_NAMES
+        + tl.OWNERSHIP_INSTITUTIONS_PICTURE_NAMES,
         template=tl.OWNERSHIP_TEMPLATE,
     )
-    tl.verify_anchors(
+    tl.verify_names(
         wb[tl.OWNERSHIP_BBG_SHEET],
-        tl.OWNERSHIP_BBG_TEMPLATE_ANCHORS,
+        tl.OWNERSHIP_BBG_HOLDER_NAMES,
         template=tl.OWNERSHIP_TEMPLATE,
     )
 
 
-def test_comps_template_passes_every_anchor_group():
+def test_comps_template_passes_every_verified_group():
     ws = load_workbook(COMPS)[tl.COMPS_SHEET]
-    tl.verify_anchors(
-        ws, tl.COMPS_BLOCK_ANCHORS + tl.COMPS_OUTPUT_CCY_ANCHORS, template=tl.COMPS_TEMPLATE
-    )
+    tl.verify_names(ws, tl.COMPS_WRITE_NAMES, template=tl.COMPS_TEMPLATE)
 
 
-def test_precedents_template_passes_every_anchor_group():
+def test_precedents_template_passes_every_verified_group():
     ws = load_workbook(PRECEDENTS)[tl.PRECEDENTS_SHEET]
-    tl.verify_anchors(
-        ws,
-        tl.PRECEDENTS_OUTPUT_CCY_ANCHORS + tl.PRECEDENTS_BLOCK_ANCHORS,
-        template=tl.PRECEDENTS_TEMPLATE,
-    )
+    tl.verify_names(ws, tl.PRECEDENTS_WRITE_NAMES, template=tl.PRECEDENTS_TEMPLATE)
 
 
 def test_slide_library_passes_every_marker():
@@ -220,80 +290,59 @@ def test_fs_marker_matches_financial_charts_self_discovery():
 # ─── verify helper semantics ──────────────────────────────────────────────────
 
 
-def test_verify_anchors_reports_every_mismatch_at_once(tmp_path: Path):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "S"
-    ws["B1"] = "Right Label"
-    anchors = (
-        CellAnchor("F1", "B1", "Right Label"),
-        CellAnchor("F2", "B2", "Missing Label"),
-        CellAnchor("F3", "B3", "Also Missing"),
-    )
-    with pytest.raises(TemplateLayoutError) as exc:
-        tl.verify_anchors(ws, anchors, template="Some Template.xlsx")
-    msg = str(exc.value)
-    assert "Some Template.xlsx" in msg
-    assert "F2" in msg and "'Missing Label'" in msg
-    assert "F3" in msg and "'Also Missing'" in msg
-    assert "F1" not in msg  # the matching anchor is not reported
-
-
-def test_verify_workbook_anchors_names_a_missing_sheet(tmp_path: Path):
-    path = tmp_path / "wrong.xlsx"
-    Workbook().save(path)
-    with pytest.raises(TemplateLayoutError, match="expected sheet 'Cap with Links'"):
-        tl.verify_workbook_anchors(
-            path, sheet=tl.CAP_TABLE_SHEET, anchors=tl.CAP_TABLE_PICTURE_ANCHORS
-        )
-
-
-# ─── the name ↔ sentinel cross-check ──────────────────────────────────────────
-# The check that earns the sentinel tables' deletion in a later release: a name
-# and a sentinel that disagree about where a cell is means the Phase C migration
-# mis-mapped it, and the writers must not proceed on either answer.
-
-
-def _named_sheet(name: str, ref: str):
-    """A one-sheet workbook with `B1 = 'Label'` and a sheet-scoped defined name."""
-    from openpyxl.workbook.defined_name import DefinedName
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "S"
-    ws["B1"] = "Label"
-    ws.defined_names.add(DefinedName(name, attr_text=f"'S'!{ref}"))
-    return ws
-
-
-def test_cross_check_passes_when_the_name_agrees_with_its_sentinel():
+def test_verify_names_passes_when_every_name_resolves():
     ws = _named_sheet("infor_thing", "$F$1")
-    anchor = CellAnchor("F1", "B1", "Label", name="infor_thing")
-    tl.verify_anchors(ws, (anchor,), template="T.xlsx", require_names=True)
+    tl.verify_names(ws, ("infor_thing",), template="T.xlsx")
     assert tl.resolve_name_cell(ws, "infor_thing") == "F1"
 
 
-def test_cross_check_raises_when_the_name_and_sentinel_disagree():
-    # The name points one column right of where the sentinel pins the cell.
-    ws = _named_sheet("infor_thing", "$G$1")
-    anchor = CellAnchor("F1", "B1", "Label", name="infor_thing")
+def test_verify_names_reports_every_missing_name_at_once():
+    # A writer that resolved names one at a time would half-fill the tab and
+    # name only the first casualty; the pre-flight lists all of them.
+    ws = _named_sheet("infor_present", "$F$1")
     with pytest.raises(TemplateLayoutError) as exc:
-        tl.verify_anchors(ws, (anchor,), template="T.xlsx")
+        tl.verify_names(
+            ws,
+            ("infor_present", "infor_absent_one", "infor_absent_two"),
+            template="Some Template.xlsx",
+        )
     msg = str(exc.value)
-    assert "infor_thing" in msg and "resolves to G1" in msg and "pins F1" in msg
+    assert "Some Template.xlsx" in msg
+    assert "infor_absent_one" in msg and "infor_absent_two" in msg
+    assert "infor_present" not in msg  # the resolving name is not reported
+    assert "add_template_named_ranges.py" in msg  # the remedy
 
 
-def test_a_missing_name_is_an_error_only_when_required():
-    # A built artefact from before Phase C carries no names; it must still pass
-    # on its sentinels. A shipped template must not.
+def test_verify_names_rejects_a_name_pointing_at_another_sheet():
+    # A name that survived a sheet copy but still points at the source is not
+    # usable here, and must read as missing rather than resolve elsewhere.
     wb = Workbook()
     ws = wb.active
     ws.title = "S"
-    ws["B1"] = "Label"
-    anchor = CellAnchor("F1", "B1", "Label", name="infor_thing")
-    tl.verify_anchors(ws, (anchor,), template="T.xlsx")  # tolerated
-    with pytest.raises(TemplateLayoutError, match="expects defined name 'infor_thing'"):
-        tl.verify_anchors(ws, (anchor,), template="T.xlsx", require_names=True)
+    other = wb.create_sheet("Other")
+    other.defined_names.add(DefinedName("infor_thing", attr_text="'Other'!$F$1"))
+    with pytest.raises(TemplateLayoutError, match="infor_thing"):
+        tl.verify_names(ws, ("infor_thing",), template="T.xlsx")
+
+
+def test_verify_workbook_names_names_a_missing_sheet(tmp_path: Path):
+    path = tmp_path / "wrong.xlsx"
+    Workbook().save(path)
+    with pytest.raises(TemplateLayoutError, match="expected sheet 'Cap with Links'"):
+        tl.verify_workbook_names(
+            path, sheet=tl.CAP_TABLE_SHEET, names=tl.CAP_TABLE_PICTURE_NAMES
+        )
+
+
+def test_verify_workbook_names_passes_on_the_shipped_deal_workbook(tmp_path: Path):
+    # The pre-flight both assemblers run, against a workbook produced the way a
+    # real run produces one.
+    from deal_workbook import TAB_OWNERSHIP
+
+    deal = _deal_workbook(tmp_path)
+    tl.verify_workbook_names(
+        deal, sheet=TAB_OWNERSHIP, names=tl.OWNERSHIP_INSIDERS_PICTURE_NAMES
+    )
 
 
 def test_resolve_helpers_fail_loudly_and_distinguish_cell_from_range():
@@ -305,11 +354,11 @@ def test_resolve_helpers_fail_loudly_and_distinguish_cell_from_range():
         tl.resolve_name_range(ws, "infor_absent")
 
 
-def test_resolve_workbook_range_falls_back_for_a_pre_phase_c_artefact(tmp_path: Path):
-    # An artefact an earlier release produced has no names; the assemblers must
-    # still be able to paste its picture range rather than failing for a reason
-    # that is not a layout shift.
-    path = tmp_path / "old.xlsx"
+def test_resolve_workbook_range_falls_back_when_the_name_is_absent(tmp_path: Path):
+    # The fallback is the shipped address. It is unreachable after a
+    # `verify_workbook_names` pre-flight — which requires the name — so this
+    # pins the behaviour for a caller that skipped one, not a supported path.
+    path = tmp_path / "nameless.xlsx"
     wb = Workbook()
     wb.active.title = tl.CAP_TABLE_SHEET
     wb.save(path)
@@ -322,116 +371,134 @@ def test_resolve_workbook_range_falls_back_for_a_pre_phase_c_artefact(tmp_path: 
     ) == "B15:F40"
 
 
-# ─── (b) a shifted Excel template raises through the wired-in writers ─────────
+def test_the_sentinel_tables_are_gone():
+    """Drift lock: the name↔address cross-check must not come back.
 
-
-def _shifted_copy(template: Path, dest: Path, sheet: str, at_row: int) -> Path:
-    """Copy a template and insert one row at ``at_row`` (shifting rows down)."""
-    shutil.copyfile(template, dest)
-    wb = load_workbook(dest)
-    wb[sheet].insert_rows(at_row)
-    wb.save(dest)
-    return dest
-
-
-def _shifted_deal_workbook(tmp_path: Path, tab: str, at_row: int) -> Path:
-    """A deal workbook with one row inserted into `tab`, shifting its layout.
-
-    The Phase D equivalent of `_shifted_copy`: the builders write tabs of the
-    deal workbook now, so a layout shift has to be introduced there for the
-    sentinel/name cross-check to catch it.
+    Sentinels paired every protected address with the caption text beside it, as
+    a Phase C cross-check that the names had been mapped to the right cells.
+    That shipped (v0.5.40) and the tables were deleted (v0.5.42). Reintroducing
+    one would re-couple the writers to an address, which is the coupling the
+    names exist to remove — and two tables that can disagree is its own failure
+    mode.
     """
-    from deal_workbook import init_deal_workbook
-
-    deal = init_deal_workbook(
-        deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
-    )
-    wb = load_workbook(deal)
-    wb[tab].insert_rows(at_row)
-    wb.save(deal)
-    return deal
+    source = Path(tl.__file__).read_text(encoding="utf-8")
+    for gone in ("CellAnchor", "label_addr", "verify_anchors", "require_names"):
+        assert gone not in source, f"{gone} is back in template_layout.py"
+    assert not [n for n in dir(tl) if n.endswith("_ANCHORS") or n.endswith("_ANCHOR")]
 
 
-def test_shifted_cap_table_fails_ltm_anchor_verification(tmp_path: Path):
-    # A row inserted above the LTM block shifts D47/D48 — the anchors must
-    # catch it and the message must name template, address, expected and found.
-    shifted = _shifted_copy(CAP_TABLE, tmp_path / "cap.xlsx", tl.CAP_TABLE_SHEET, 45)
-    with pytest.raises(TemplateLayoutError) as exc:
-        tl.verify_workbook_anchors(
-            shifted, sheet=tl.CAP_TABLE_SHEET, anchors=tl.CAP_TABLE_LTM_ANCHORS
-        )
-    msg = str(exc.value)
-    assert "cap.xlsx" in msg
-    assert "D47" in msg and "'Revenue'" in msg
+# ─── (b) a template that lost its names raises through the wired-in writers ───
 
 
-def test_shifted_cap_table_fails_section_vii_read(tmp_path: Path):
-    # read_basic_shares_from_cap_table must raise on a shifted Section VII
-    # instead of silently summing the wrong F168:F185 window.
+def test_cap_table_without_its_share_inputs_name_fails_the_section_vii_read(tmp_path: Path):
+    # read_basic_shares_from_cap_table must raise rather than fall back to a
+    # hardcoded F168:F185 window that may no longer be Section VII.
+    from deal_workbook import TAB_CAPTABLE
     from ownership_workbook import read_basic_shares_from_cap_table
 
-    shifted = _shifted_copy(CAP_TABLE, tmp_path / "cap.xlsx", tl.CAP_TABLE_SHEET, 150)
-    with pytest.raises(TemplateLayoutError, match="VII. BASIC SHARES OUTSTANDING"):
-        read_basic_shares_from_cap_table(shifted)
+    stripped = _deal_workbook_without(tmp_path, TAB_CAPTABLE, tl.NAME_CAP_SHARE_INPUTS)
+    with pytest.raises(TemplateLayoutError, match=tl.NAME_CAP_SHARE_INPUTS):
+        read_basic_shares_from_cap_table(stripped)
 
 
-def test_shifted_ownership_template_fails_the_builder(tmp_path: Path):
+def test_ownership_tab_without_its_names_fails_the_builder(tmp_path: Path):
+    from deal_workbook import TAB_OWNERSHIP
     from ownership_workbook import InsiderHolding, build_ownership_workbook
 
-    from deal_workbook import TAB_OWNERSHIP
-
-    shifted = _shifted_deal_workbook(tmp_path, TAB_OWNERSHIP, 30)
+    stripped = _deal_workbook_without(
+        tmp_path, TAB_OWNERSHIP, tl.NAME_OWN_INSIDER_BLOCK, tl.NAME_OWN_TOTAL_SHARES
+    )
     with pytest.raises(TemplateLayoutError) as exc:
         build_ownership_workbook(
             insiders=[InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 500)],
             total_shares_outstanding=1_000_000,
-            deal_workbook=shifted,
+            deal_workbook=stripped,
         )
     msg = str(exc.value)
-    assert tl.OWNERSHIP_TEMPLATE in msg
-    assert "B38" in msg and "'SEDI Name'" in msg
+    # Both missing names are reported, not just the first.
+    assert tl.NAME_OWN_INSIDER_BLOCK in msg and tl.NAME_OWN_TOTAL_SHARES in msg
+    # Two layers check this, and the OUTER one wins: `deal_workbook.write_tab`
+    # verifies each `TabSpec`'s names before handing the sheet to the producer,
+    # so the message carries the deal-workbook remedy (re-run
+    # build_deal_workbook_template.py) rather than the source-template one. The
+    # producer's own `verify_names` is what covers a direct invocation.
+    assert "deal workbook" in msg
+    assert "build_deal_workbook_template.py" in msg
 
 
-def test_shifted_comps_template_fails_the_builder(tmp_path: Path):
+def test_comps_tab_without_its_names_fails_the_builder(tmp_path: Path):
     from comps_workbook import build_comps_workbook
-
     from deal_workbook import TAB_COMPS
 
-    shifted = _shifted_deal_workbook(tmp_path, TAB_COMPS, 8)
-    with pytest.raises(TemplateLayoutError, match="Group Average"):
+    stripped = _deal_workbook_without(
+        tmp_path, TAB_COMPS, tl.NAME_COMPS_GROUP_BLOCKS[0]
+    )
+    with pytest.raises(TemplateLayoutError, match=tl.NAME_COMPS_GROUP_BLOCKS[0]):
         build_comps_workbook(
             verticals=[{"name": "Vertical A", "companies": [{"ticker": "TSX:RY"}]}],
-            deal_workbook=shifted,
+            deal_workbook=stripped,
         )
 
 
-def test_shifted_precedents_template_fails_the_builder(tmp_path: Path):
-    from precedents_workbook import build_precedents_workbook
-
-    from deal_workbook import TAB_PRECEDENTS
-
-    shifted = _shifted_deal_workbook(tmp_path, TAB_PRECEDENTS, 3)
-    with pytest.raises(TemplateLayoutError) as exc:
-        build_precedents_workbook(
-            deal_workbook=shifted,
-            groups=[
+def _one_precedent_group(name: str = "Group A") -> list[dict]:
+    return [
+        {
+            "name": name,
+            "transactions": [
                 {
-                    "name": "Group A",
-                    "transactions": [
-                        {
-                            "input_currency": "USD",
-                            "announce_date": "2025-01-01",
-                            "target": "T",
-                            "acquiror": "A",
-                            "tev": 100.0,
-                            "hq_country": "USA",
-                            "revenue_ltm": 50.0,
-                        }
-                    ],
+                    "input_currency": "USD",
+                    "announce_date": "2025-01-01",
+                    "target": "Example Target Inc.",
+                    "acquiror": "Example Acquiror Inc.",
+                    "tev": 999.9,
+                    "hq_country": "USA",
+                    "revenue_ltm": 888.8,
                 }
             ],
-        )
-    assert "'Currency'" in str(exc.value)
+        }
+    ]
+
+
+def test_precedents_tab_without_its_names_fails_the_builder(tmp_path: Path):
+    from deal_workbook import TAB_PRECEDENTS
+    from precedents_workbook import build_precedents_workbook
+
+    stripped = _deal_workbook_without(
+        tmp_path, TAB_PRECEDENTS, tl.NAME_PREC_GROUP_LABELS[0]
+    )
+    with pytest.raises(TemplateLayoutError, match=tl.NAME_PREC_GROUP_LABELS[0]):
+        build_precedents_workbook(deal_workbook=stripped, groups=_one_precedent_group())
+
+
+def test_a_moved_block_needs_no_code_change(tmp_path: Path):
+    """The payoff, on the Excel path that actually happens.
+
+    An analyst who inserts a row in Excel gets the defined names moved for them —
+    that is what a name is. So the writer must follow the name to wherever it now
+    points, with no code change and no complaint. Here group 1's label and block
+    are re-pointed one row down (``E7`` -> ``E8``, ``B8:AI13`` -> ``B9:AI14``) and
+    the transaction lands on row 9 instead of row 8.
+
+    This is the case the deleted sentinel tables got wrong: they pinned the old
+    address, so a correctly re-saved template raised.
+    """
+    from deal_workbook import TAB_PRECEDENTS
+    from precedents_workbook import build_precedents_workbook
+
+    deal = _deal_workbook(tmp_path)
+    wb = load_workbook(deal)
+    ws = wb[TAB_PRECEDENTS]
+    ws.insert_rows(8)
+    _repoint(ws, tl.NAME_PREC_GROUP_LABELS[0], "$E$8")
+    _repoint(ws, tl.NAME_PREC_GROUP_BLOCKS[0], "$B$9:$AI$14")
+    wb.save(deal)
+
+    build_precedents_workbook(deal_workbook=deal, groups=_one_precedent_group("Moved Group"))
+
+    check = load_workbook(deal)[TAB_PRECEDENTS]
+    assert check["E8"].value == "Moved Group"
+    assert check["F9"].value == "Example Target Inc."
+    assert check["F8"].value is None  # the shipped row was left alone
 
 
 def _reordered_library_copy(dest: Path, from_index: int) -> Path:

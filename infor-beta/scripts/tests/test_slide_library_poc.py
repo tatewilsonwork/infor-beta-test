@@ -423,14 +423,26 @@ def _content_with_targets(n: int) -> PitchDeckContent:
 
 
 def _write_sample_cap_table(path: Path, currency: str = "CAD") -> Path:
+    from template_layout import (
+        CAP_TABLE_SHEET,
+        NAME_CAP_OUTPUT_CCY,
+        NAME_CAP_PICTURE_RANGE,
+    )
+    from tests.conftest import stamp_defined_names
+
     wb = Workbook()
     ws = wb.active
-    ws.title = "Cap with Links"
+    ws.title = CAP_TABLE_SHEET
+    # The assembler resolves both of these through their names and verifies them
+    # first, so a synthetic cap table has to carry them.
+    stamp_defined_names(
+        ws, {NAME_CAP_OUTPUT_CCY: "F5", NAME_CAP_PICTURE_RANGE: "B15:F40"}
+    )
     ws["F5"] = currency  # output currency drives the footnote letter
     rows = {
-        # The pitch assembler verifies the template's sentinel anchors
-        # (template_layout) before reading F5 / pasting B15:F40: the B5 label
-        # for the output currency, and B15/B40 pinning the picture range.
+        # The pitch assembler verifies `infor_cap_output_ccy` and
+        # `infor_cap_picture_range` (template_layout) before reading the output
+        # currency / pasting the picture, then resolves both through those names.
         5: ("Output Currency:", None),
         15: ("Company Ticker:", None),
         16: ("Share Price", "12.34"),

@@ -34,10 +34,10 @@ Three structural consequences of building blind, all of which this plan removes:
   sheet renames, the v0.5.33 source-deletion gate.
 - 441 lines of sentinel tables (`template_layout.py`) guarding dozens of
   hardcoded cell addresses and slide indices — `_KEEP_LIBRARY_INDICES` alone has
-  needed three manual migrations. *(Addressed in Phase C: the addresses and
-  indices are gone, replaced by defined names and marker shapes. The sentinel
-  tables remain for one release as the cross-check that proves the migration was
-  faithful, then get deleted.)*
+  needed three manual migrations. *(Cleared: Phase C replaced the addresses and
+  indices with defined names and marker shapes, keeping the sentinel tables one
+  release as the cross-check that the migration was faithful; v0.5.42 deleted
+  them.)*
 
 ## Ordering principle
 
@@ -358,12 +358,11 @@ library slide without a code migration.
 
 27 `infor_`-prefixed, **worksheet-scoped** names across the four templates
 (cap table 9, ownership 6, comps 7, precedents 5), registered in
-`template_layout.TEMPLATE_NAMED_RANGES` — derived from the same `CellAnchor`
-declarations the writers and the sentinel checks read, so the registry and the
-stamped file cannot drift. `precedents_input_ccy` ships as
-`infor_prec_output_ccy`: the cell is labelled "Output:" and the aggregator
-relinks it to the cap table's *output* currency, so the name follows the
-artefact rather than the plan's shorthand.
+`template_layout.TEMPLATE_NAMED_RANGES` — the one registry the prep tool stamps
+and the writers resolve from, so the registry and the stamped file cannot drift.
+`precedents_input_ccy` ships as `infor_prec_output_ccy`: the cell is labelled
+"Output:" and it carries the cap table's *output* currency, so the name follows
+the artefact rather than the plan's shorthand.
 
 Added by **`tools/add_template_named_ranges.py`** — re-runnable prep tooling,
 COM-free, exempt from Phase D. It rewrites only `xl/workbook.xml` and copies
@@ -375,10 +374,22 @@ would rewrite the whole file through Excel with the Cap IQ add-in loaded. Excel
 is still the *oracle* (`--verify-excel`), and it was self-tested against two
 deliberately damaged copies to prove it can fire.
 
-The sentinel tables are **kept for this release** as the cross-check, per step 2.
-`verify_anchors` now fails when a name and its sentinel disagree about where a
-cell is. **Follow-up release: delete the sentinel tables** — that is the debt
-this cross-check exists to retire, and nothing else in the phase is outstanding.
+The sentinel tables were kept for one release as the cross-check, per step 2, and
+**deleted in v0.5.42** now that it has shipped — 441 lines gone, and step 2 is
+complete. Verification is name-based from here: `verify_names` /
+`verify_workbook_names` check that the names a writer is about to resolve are
+present, and report every missing one at once with the re-stamp remedy.
+
+Worth recording what that trades away, because it is the point rather than a
+regression. Sentinels pinned an *address*; a name does not, and Excel moves a
+name with its cell — so a template an analyst re-saves with an inserted row now
+just works, where the sentinel tables raised on it. What verification no longer
+detects is a name left pointing at a stale address, which happens when a
+workbook is edited by something that does *not* maintain names (openpyxl's
+`insert_rows`, for instance). That was never the real-world case; the real one is
+a template re-created without being re-stamped, and that is caught. The tests
+were rewritten to match — `test_a_moved_block_needs_no_code_change` is the new
+payoff case, and `test_the_sentinel_tables_are_gone` is the drift lock.
 
 Step 3 went further than replacing three call sites: `_PitchLayout`'s index
 arithmetic is gone entirely, replaced by marker lookups over the finished slide

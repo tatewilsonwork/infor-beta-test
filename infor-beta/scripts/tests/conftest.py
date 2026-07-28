@@ -68,3 +68,38 @@ if not os.environ.get("INFOR_RENDER_CACHE_DIR"):
 #
 # `test_powerpoint_com_render_still_works` — the accepted flake in a full run —
 # is deleted with the backend it covered.
+
+
+# ─── Synthetic workbooks need the `infor_` names ─────────────────────────────
+
+
+def stamp_defined_names(ws, names: dict[str, str]) -> None:
+    """Add sheet-scoped `infor_` defined names to a hand-built test workbook.
+
+    A synthetic workbook is not a copy of a shipped template, so it carries none
+    of the defined names the writers resolve through — and since the sentinel
+    tables were deleted, those names are the *whole* of layout verification, so a
+    fixture without them fails the pre-flight rather than being tolerated.
+
+    Any fixture standing in for a real cap table / ownership tab has to declare
+    the names the code under test will look up. `names` maps each one to its A1
+    target, e.g. `{NAME_CAP_PICTURE_RANGE: "B15:F40"}`.
+    """
+    from openpyxl.workbook.defined_name import DefinedName
+
+    for name, target in names.items():
+        if name in ws.defined_names:
+            del ws.defined_names[name]
+        ws.defined_names.add(
+            DefinedName(name, attr_text=f"'{ws.title}'!{_absolute(target)}")
+        )
+
+
+def _absolute(target: str) -> str:
+    """`"B15:F40"` -> `"$B$15:$F$40"` — the form Excel stores a name's target in."""
+    cells = []
+    for cell in target.split(":"):
+        column = "".join(c for c in cell if c.isalpha())
+        row = "".join(c for c in cell if c.isdigit())
+        cells.append(f"${column}${row}")
+    return ":".join(cells)

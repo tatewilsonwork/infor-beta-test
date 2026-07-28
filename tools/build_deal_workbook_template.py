@@ -107,10 +107,10 @@ DROP_SHEETS = ("__snloffice",)
 def _expected_infor_names() -> dict[str, dict[str, str]]:
     """`{dest tab: {infor_name: target}}`, read off the SOURCE templates.
 
-    The source of truth stays `template_layout.TEMPLATE_NAMED_RANGES` (which
-    `add_template_named_ranges.py` stamps from the same `CellAnchor`
-    declarations the writers read), so this tool cannot expect a name the code
-    does not, or miss one it does.
+    The source of truth stays `template_layout.TEMPLATE_NAMED_RANGES` (the same
+    registry `add_template_named_ranges.py` stamps and the writers resolve
+    through), so this tool cannot expect a name the code does not, or miss one
+    it does.
     """
     from template_layout import TEMPLATE_NAMED_RANGES
 

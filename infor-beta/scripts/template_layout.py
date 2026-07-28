@@ -1,4 +1,4 @@
-"""The shipped templates' layout map: named ranges, sentinels, slide markers.
+"""The shipped templates' layout map: defined names and slide markers.
 
 Nothing here is addressed blind. Every load-bearing cell in the four workbook
 templates is reachable by a **defined name** the template itself carries, and
@@ -6,31 +6,26 @@ every library slide the assemblers touch is located by a **marker shape**
 rather than an index. The point of both is the same: an analyst re-saving a
 template or inserting a library slide must not require a code change.
 
-**Named ranges (Phase C).** Writers resolve an address through
-``resolve_name_cell`` / ``resolve_name_range`` instead of hardcoding it. A
-defined name is metadata that Excel moves with its cell when rows or columns
-are inserted, so ``infor_fx_rate`` follows the FX cell from ``F7`` to ``F9``
-and the writer never notices. The names are all ``infor_``-prefixed and
-**worksheet-scoped**: the cap table ships 34 Capital IQ defined names
-(``CIQWBGuid``, ``IQ_LTM``, …) and the comps template 1,246 legacy artefacts
-(``_______AOL2``, ``__123Graph_A``, …), so a bare ``fx_rate`` would be neither
-obviously ours nor safe from collision — and a workbook-scoped name travelling
-with a sheet through the aggregator's COM merge is how phantom
-external-workbook aliases get created.
+**Named ranges.** Writers resolve an address through ``resolve_name_cell`` /
+``resolve_name_range`` instead of hardcoding it, and verify the names they are
+about to use with ``verify_names`` first. A defined name is metadata that Excel
+moves with its cell when rows or columns are inserted, so ``infor_fx_rate``
+follows the FX cell from ``F7`` to ``F9`` and the writer never notices. The
+names are all ``infor_``-prefixed and **worksheet-scoped**: the cap table ships
+33 Capital IQ defined names (``CIQWBGuid``, ``IQ_LTM``, …) and the comps
+template 1,245 legacy artefacts (``_______AOL2``, ``__123Graph_A``, …), so a
+bare ``fx_rate`` would be neither obviously ours nor safe from collision.
 
-**Sentinels (Phase A/B, kept as a cross-check for this release).** Each
-protected address is also paired with the label text the shipped template
-carries in a stable anchor cell beside it (discovered by opening the templates,
-never invented). ``verify_anchors`` checks the sentinel *and*, when the anchor
-declares a ``name``, asserts the defined name resolves to the very same cell —
-so the Phase C migration cannot silently have mis-mapped an address. A
-disagreement raises :class:`TemplateLayoutError` naming both. The sentinel
-tables are scheduled for deletion in a follow-up release; the cross-check is
-what earns that deletion.
-
-Style model: the Bloomberg-export ``C13 = "Holder Name"`` header check in
-``ownership_workbook.read_bloomberg_export`` — cheap, targeted cell reads (no
-full-sheet scans), with a message that tells the analyst what to fix.
+What verification catches is a template that no longer carries the names — an
+analyst who re-created it, or re-saved it through a tool that strips them. That
+halts the run with the remedy (re-run ``tools/add_template_named_ranges.py``)
+rather than writing to a stale address. Sentinel labels — a second, parallel
+table pairing each address with the caption text beside it — were carried
+through Phase C as a cross-check that the names had been mapped to the right
+cells, and were deleted once that had shipped (v0.5.40 → v0.5.42). Do not
+reintroduce them: a sentinel pins an *address*, which is the thing the names
+exist to stop mattering, and the two tables disagreeing was itself a failure
+mode.
 
 **Slide markers.** The pitch flow's self-discovery of Financial Summary slides
 by their ``Rectangle 17`` marker shape is generalised here into
@@ -50,66 +45,14 @@ from pathlib import Path
 
 
 class TemplateLayoutError(RuntimeError):
-    """A shipped template's layout no longer matches the hardcoded addresses.
+    """A shipped template's layout no longer matches what the code expects.
 
-    Raised by the verify helpers when a sentinel anchor cell / marker shape
-    does not carry its expected label — i.e. the template was re-saved with
-    rows/columns inserted, or the slide library was re-ordered. The message
-    names the template, the protected address, the anchor, what was expected,
-    and what was actually found.
+    Raised by the verify helpers when a workbook has lost the ``infor_`` defined
+    names its writers resolve through, or when a library slide's marker shape is
+    missing — i.e. the template was re-created without being re-stamped, or the
+    slide library was re-ordered. The message names the template, the sheet or
+    slide, what was expected, and the remedy.
     """
-
-
-# ─── Cell anchors ─────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class CellAnchor:
-    """One protected address, its defined name, and the sentinel that anchors it.
-
-    - ``target``: the load-bearing cell/range/rows being protected (what a
-      writer reads or writes).
-    - ``label_addr``: the nearby cell that carries the sentinel label in the
-      shipped template.
-    - ``expected``: the sentinel text (verbatim from the shipped template).
-    - ``contains``: substring match instead of exact — for anchors whose cell
-      holds a formula string (e.g. the cap table's ``B16`` share-price label
-      is a ``CONCATENATE`` formula containing ``"Share Price"``).
-    - ``name``: the ``infor_``-prefixed defined name the shipped template
-      carries for ``target``. Writers resolve through it; ``verify_anchors``
-      cross-checks that it still points at ``target``. ``None`` for anchors
-      that only *witness* a region another anchor names (the cap table's
-      ``D33 = "LTM"`` column header, say), so a region is named exactly once.
-    """
-
-    target: str
-    label_addr: str
-    expected: str
-    contains: bool = False
-    name: str | None = None
-
-
-def _anchor_text(value) -> str | None:
-    """Normalise a cell value for sentinel comparison.
-
-    Plain strings (labels and formula strings) pass through; openpyxl
-    ``ArrayFormula`` objects contribute their formula text; everything else
-    (numbers, None) is returned as-is / None.
-    """
-    if value is None or isinstance(value, str):
-        return value
-    text = getattr(value, "text", None)  # openpyxl ArrayFormula
-    if isinstance(text, str):
-        return text
-    return str(value)
-
-
-def _anchor_matches(anchor: CellAnchor, found: str | None) -> bool:
-    if found is None:
-        return False
-    if anchor.contains:
-        return anchor.expected in found
-    return found.strip() == anchor.expected
 
 
 # ─── Defined-name resolution ─────────────────────────────────────────────────
@@ -120,7 +63,7 @@ def normalize_ref(ref: str) -> str:
 
     Strips the absolute-reference ``$`` markers Excel stores (``$B$15:$F$40`` ->
     ``B15:F40``) and upper-cases, so a resolved name compares directly against
-    the ``CellAnchor.target`` addresses the writers used before Phase C.
+    the shipped addresses recorded in ``TEMPLATE_NAMED_RANGES``.
     """
     return ref.replace("$", "").strip().upper()
 
@@ -164,6 +107,12 @@ def defined_name_ref(ws, name: str) -> str | None:
     return normalize_ref(ref)
 
 
+_RESTAMP_REMEDY = (
+    "The shipped templates carry it; a re-saved template that dropped it must be "
+    "re-stamped with tools/add_template_named_ranges.py before it can be used."
+)
+
+
 def resolve_name_range(ws, name: str, *, template: str | None = None) -> str:
     """The A1 range ``name`` resolves to on ``ws``; raise if it does not.
 
@@ -175,9 +124,8 @@ def resolve_name_range(ws, name: str, *, template: str | None = None) -> str:
     if ref is None:
         raise TemplateLayoutError(
             f"{template or 'workbook'}, sheet {ws.title!r}: defined name {name!r} is "
-            f"missing (or does not resolve to a single range on this sheet). The "
-            f"shipped templates carry it; a re-saved template that dropped it must be "
-            f"re-stamped with tools/add_template_named_ranges.py before it can be used."
+            f"missing (or does not resolve to a single range on this sheet). "
+            f"{_RESTAMP_REMEDY}"
         )
     return ref
 
@@ -193,106 +141,39 @@ def resolve_name_cell(ws, name: str, *, template: str | None = None) -> str:
     return ref
 
 
-def verify_cell_anchor(ws, anchor: CellAnchor, *, template: str) -> None:
-    """Verify one sentinel anchor on an open openpyxl worksheet; raise on mismatch."""
-    verify_anchors(ws, (anchor,), template=template)
+def verify_names(ws, names, *, template: str) -> None:
+    """Verify a sheet carries every defined name the caller is about to resolve.
 
-
-def verify_anchors(ws, anchors, *, template: str, require_names: bool = False) -> None:
-    """Verify sentinel anchors — and their defined names — on an open worksheet.
-
-    Two independent checks per anchor, both reported together so a shifted
-    template names every displaced address at once rather than the first:
-
-    1. **Sentinel** — the anchor cell still carries its expected label.
-    2. **Name ↔ sentinel cross-check** — when the anchor declares a ``name``
-       *and* the workbook carries it, the name must resolve to exactly
-       ``anchor.target``. A disagreement means the Phase C migration mapped a
-       name to the wrong cell, or the template moved one without the other;
-       either way the writers must not proceed.
-
-    ``require_names`` additionally makes a *missing* name an error. Writers
-    resolving through names pass it (they are looking at a freshly copied
-    shipped template, which always carries them); the built-artefact callers —
-    the assemblers' picture-range checks, the aggregator's relink pre-flight —
-    leave it off, so a workbook produced before Phase C still passes on its
-    sentinels alone.
+    The pre-flight the writers run before touching a cell: resolving names one
+    at a time would write the first few cells and then raise, leaving a
+    half-filled tab, and would name only the first casualty. Every missing name
+    is reported at once so a template that was re-created rather than re-stamped
+    lists everything that has to be restored.
     """
-    problems: list[str] = []
-    for anchor in anchors:
-        found = _anchor_text(ws[anchor.label_addr].value)
-        if not _anchor_matches(anchor, found):
-            mode = "containing" if anchor.contains else "="
-            problems.append(
-                f"{anchor.target} expects anchor {anchor.label_addr} {mode} "
-                f"{anchor.expected!r} but found {found!r}"
-            )
-        if anchor.name is None:
-            continue
-        resolved = defined_name_ref(ws, anchor.name)
-        if resolved is None:
-            if require_names:
-                problems.append(
-                    f"{anchor.target} expects defined name {anchor.name!r}, which is "
-                    f"missing from this workbook"
-                )
-        elif resolved != normalize_ref(anchor.target):
-            problems.append(
-                f"defined name {anchor.name!r} resolves to {resolved} but its sentinel "
-                f"{anchor.label_addr}={anchor.expected!r} pins {anchor.target}"
-            )
-    if problems:
+    missing = [name for name in names if defined_name_ref(ws, name) is None]
+    if missing:
         raise TemplateLayoutError(
-            f"{template}, sheet {ws.title!r}: layout verification failed — "
-            + "; ".join(problems)
-            + ". The template layout has shifted; refusing to read/write these "
-            "addresses."
+            f"{template}, sheet {ws.title!r}: layout verification failed — defined "
+            f"name(s) {', '.join(sorted(missing))} are missing (or do not resolve to "
+            f"a single range on this sheet). {_RESTAMP_REMEDY} Refusing to read/write "
+            f"these addresses."
         )
 
 
-def resolve_workbook_range(
-    workbook_path: Path | str, *, sheet: str, name: str, fallback: str
-) -> str:
-    """The A1 range ``name`` resolves to on a saved workbook, else ``fallback``.
-
-    For the callers holding a path to a **built artefact** rather than a
-    template: the deck assemblers' Excel picture ranges, and the aggregator's
-    relink cells. A workbook a builder produced this release carries the names
-    its template did, so this resolves; ``fallback`` keeps a workbook from an
-    earlier run — an analyst re-running the deck stage over an existing deal
-    directory — working on the pre-Phase-C address rather than failing for a
-    reason that is not a layout shift.
-
-    Safe to fall back because the caller has already run
-    ``verify_workbook_anchors``, which sentinel-checks the same region and
-    fails hard if a *present* name disagrees with it.
-    """
-    from openpyxl import load_workbook
-
-    wb = load_workbook(Path(workbook_path), read_only=False, data_only=False)
-    try:
-        if sheet not in wb.sheetnames:
-            return fallback
-        return defined_name_ref(wb[sheet], name) or fallback
-    finally:
-        wb.close()
-
-
-def verify_workbook_anchors(
+def verify_workbook_names(
     workbook_path: Path | str,
     *,
     sheet: str,
-    anchors,
+    names,
     template: str | None = None,
-    require_names: bool = False,
 ) -> None:
-    """Open a workbook and verify sentinel anchors on one sheet.
+    """Open a workbook and verify one sheet carries the given defined names.
 
-    Convenience wrapper for callers holding only a path (the assemblers'
-    picture-range inserts, the aggregator's relink pre-flight). ``template``
-    defaults to the workbook's filename. Raises :class:`TemplateLayoutError`
-    when the sheet is missing or an anchor mismatches; file-level errors
-    (missing/corrupt file) propagate as their native exceptions.
+    Convenience wrapper for callers holding only a path — the deck assemblers'
+    picture-range pre-flights. ``template`` defaults to the workbook's filename.
+    Raises :class:`TemplateLayoutError` when the sheet is missing or a name is
+    absent; file-level errors (missing/corrupt file) propagate as their native
+    exceptions.
     """
     from openpyxl import load_workbook
 
@@ -305,7 +186,30 @@ def verify_workbook_anchors(
                 f"{name}: layout verification failed — expected sheet {sheet!r} "
                 f"(have {wb.sheetnames})"
             )
-        verify_anchors(wb[sheet], anchors, template=name, require_names=require_names)
+        verify_names(wb[sheet], names, template=name)
+    finally:
+        wb.close()
+
+
+def resolve_workbook_range(
+    workbook_path: Path | str, *, sheet: str, name: str, fallback: str
+) -> str:
+    """The A1 range ``name`` resolves to on a saved workbook, else ``fallback``.
+
+    For the callers holding a path to a **built artefact** rather than a
+    template: the deck assemblers' Excel picture ranges. Every workbook the
+    pipeline produces descends from ``INFOR Deal Workbook Template.xlsx``, so
+    this resolves; ``fallback`` is the shipped address, and is only reachable
+    for a caller that skipped ``verify_workbook_names`` — which requires the
+    name and so would already have raised.
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(Path(workbook_path), read_only=False, data_only=False)
+    try:
+        if sheet not in wb.sheetnames:
+            return fallback
+        return defined_name_ref(wb[sheet], name) or fallback
     finally:
         wb.close()
 
@@ -315,91 +219,64 @@ def verify_workbook_anchors(
 CAP_TABLE_TEMPLATE = "INFOR Cap Table Template.xlsx"
 CAP_TABLE_SHEET = "Cap with Links"
 
-# Defined names carried by the shipped cap-table template. Writers resolve
-# through these; `CAP_TABLE_*_ANCHOR.name` cross-checks each one against its
-# sentinel. Addresses in the comments are the shipped positions, for orientation
-# only — nothing reads them.
-NAME_CAP_TICKER = "infor_cap_ticker"                        # F3
-NAME_CAP_OUTPUT_CCY = "infor_cap_output_ccy"                # F5
-NAME_FX_RATE = "infor_fx_rate"                              # F7
-NAME_SHARE_PRICE = "infor_share_price"                      # F16
-NAME_BASIC_SHARES = "infor_basic_shares"                    # F17
-NAME_LTM_REVENUE_VALUATION = "infor_ltm_revenue_valuation"  # D47
-NAME_LTM_EBITDA_VALUATION = "infor_ltm_ebitda_valuation"    # D48
-NAME_CAP_PICTURE_RANGE = "infor_cap_picture_range"          # B15:F40
-NAME_CAP_SHARE_INPUTS = "infor_cap_share_inputs"            # F168:F185
+NAME_CAP_TICKER = "infor_cap_ticker"
+NAME_CAP_OUTPUT_CCY = "infor_cap_output_ccy"
+NAME_FX_RATE = "infor_fx_rate"
+NAME_SHARE_PRICE = "infor_share_price"
+NAME_BASIC_SHARES = "infor_basic_shares"
+NAME_LTM_REVENUE_VALUATION = "infor_ltm_revenue_valuation"
+NAME_LTM_EBITDA_VALUATION = "infor_ltm_ebitda_valuation"
+NAME_CAP_PICTURE_RANGE = "infor_cap_picture_range"
+NAME_CAP_SHARE_INPUTS = "infor_cap_share_inputs"
 
-# Header input cells the captable skill writes (Steps 3/3b) and the aggregator
-# reads/references at relink time.
-CAP_TABLE_TICKER_ANCHOR = CellAnchor("F3", "B3", "Ticker:", name=NAME_CAP_TICKER)
-CAP_TABLE_OUTPUT_CCY_ANCHOR = CellAnchor(
-    "F5", "B5", "Output Currency:", name=NAME_CAP_OUTPUT_CCY
-)
-CAP_TABLE_FX_ANCHOR = CellAnchor("F7", "B7", "FX Rate:", name=NAME_FX_RATE)
-# B16 is a CONCATENATE formula ('Share Price (<date>)'), so substring-match it.
-CAP_TABLE_SHARE_PRICE_ANCHOR = CellAnchor(
-    "F16", "B16", "Share Price", contains=True, name=NAME_SHARE_PRICE
-)
-CAP_TABLE_BASIC_SHARES_ANCHOR = CellAnchor(
-    "F17", "B17", "Basic Shares Outstanding", name=NAME_BASIC_SHARES
-)
+#: ``{name: address as shipped}``. The addresses are what the prep tool stamps;
+#: nothing reads them at runtime — that is the whole point of the names.
+CAP_TABLE_NAMED_RANGES: dict[str, str] = {
+    NAME_CAP_TICKER: "F3",
+    NAME_CAP_OUTPUT_CCY: "F5",
+    NAME_FX_RATE: "F7",
+    NAME_SHARE_PRICE: "F16",
+    NAME_BASIC_SHARES: "F17",
+    NAME_LTM_REVENUE_VALUATION: "D47",
+    NAME_LTM_EBITDA_VALUATION: "D48",
+    NAME_CAP_PICTURE_RANGE: "B15:F40",
+    NAME_CAP_SHARE_INPUTS: "F168:F185",
+}
 
-CAP_TABLE_HEADER_ANCHORS = (
-    CAP_TABLE_TICKER_ANCHOR,
-    CAP_TABLE_OUTPUT_CCY_ANCHOR,
-    CAP_TABLE_FX_ANCHOR,
-    CAP_TABLE_SHARE_PRICE_ANCHOR,
-    CAP_TABLE_BASIC_SHARES_ANCHOR,
-)
-
-# LTM valuation inputs (captable Step 6b; relinked to the ltm-metrics tab by
-# the aggregator). D33 is the Financial Metrics block's LTM column header — a
-# witness for the pair, so it carries no name of its own.
-CAP_TABLE_LTM_ANCHORS = (
-    CellAnchor("D47", "B47", "Revenue", name=NAME_LTM_REVENUE_VALUATION),
-    CellAnchor("D48", "B48", "Adj. EBITDA", name=NAME_LTM_EBITDA_VALUATION),
-    CellAnchor("D47:D48", "D33", "LTM"),
+#: Everything the captable skill writes: the header inputs (Steps 3/3b), the LTM
+#: valuation cells (Step 6b), and the Section VII basic-share input block.
+CAP_TABLE_WRITE_NAMES = (
+    NAME_CAP_TICKER,
+    NAME_CAP_OUTPUT_CCY,
+    NAME_FX_RATE,
+    NAME_SHARE_PRICE,
+    NAME_BASIC_SHARES,
+    NAME_LTM_REVENUE_VALUATION,
+    NAME_LTM_EBITDA_VALUATION,
+    NAME_CAP_SHARE_INPUTS,
 )
 
-# Slide picture range (both deck assemblers paste 'Cap with Links'!B15:F40).
-# B15 is the range's own top-left label; B40 pins the bottom row.
-CAP_TABLE_PICTURE_RANGE = "B15:F40"
-CAP_TABLE_PICTURE_ANCHORS = (
-    CellAnchor(
-        CAP_TABLE_PICTURE_RANGE, "B15", "Company Ticker:", name=NAME_CAP_PICTURE_RANGE
-    ),
-    CellAnchor(CAP_TABLE_PICTURE_RANGE, "B40", "EV / Adj. EBITDA"),
-)
+#: Slide picture range — both deck assemblers paste this block.
+CAP_TABLE_PICTURE_NAMES = (NAME_CAP_PICTURE_RANGE,)
+CAP_TABLE_PICTURE_RANGE = "B15:F40"  # shipped address; `resolve_workbook_range` fallback
 
-# Section VII basic-share input rows (read by
-# ownership_workbook.read_basic_shares_from_cap_table as F168:F185).
-CAP_TABLE_SECTION_VII_ROWS = (168, 185)
-CAP_TABLE_SECTION_VII_ANCHORS = (
-    CellAnchor(
-        "F168:F185", "B166", "VII. BASIC SHARES OUTSTANDING", name=NAME_CAP_SHARE_INPUTS
-    ),
-    CellAnchor("F168:F185", "B167", "Description"),
-    CellAnchor("F168:F185", "F167", "Amount"),
-    CellAnchor("F168:F185", "B186", "Total Basic Shares Outstanding"),
-)
+#: Section VII basic-share input rows, read by
+#: `ownership_workbook.read_basic_shares_from_cap_table`.
+CAP_TABLE_SECTION_VII_NAMES = (NAME_CAP_SHARE_INPUTS,)
+
+#: Output-currency cell, read by the pitch assembler for the `[x]$MM` footnote.
+CAP_TABLE_OUTPUT_CCY_NAMES = (NAME_CAP_OUTPUT_CCY,)
+CAP_TABLE_OUTPUT_CCY_CELL = "F5"  # shipped address; fallback for a nameless workbook
 
 
 def verify_cap_table_before_write(ws) -> None:
-    """Verify every cap-table region the captable skill writes.
+    """Verify every cap-table name the captable skill resolves before writing.
 
     Called by the captable skill (SKILL.md Step 3) on the freshly copied
-    template before any cell write: the header inputs (F3/F5/F7/F16), the LTM
-    valuation cells (D47/D48), and the Section VII block the section writes
-    land around. Requires the defined names — this is a shipped template, so a
-    missing name is itself the layout problem. Raises
-    :class:`TemplateLayoutError` if the template layout has shifted.
+    template before any cell write. Raises :class:`TemplateLayoutError` if the
+    workbook has lost the names.
     """
-    verify_anchors(
-        ws,
-        CAP_TABLE_HEADER_ANCHORS + CAP_TABLE_LTM_ANCHORS + CAP_TABLE_SECTION_VII_ANCHORS,
-        template=CAP_TABLE_TEMPLATE,
-        require_names=True,
-    )
+    verify_names(ws, CAP_TABLE_WRITE_NAMES, template=CAP_TABLE_TEMPLATE)
 
 
 # ─── Ownership (INFOR Ownership Template.xlsx) ────────────────────────────────
@@ -408,68 +285,36 @@ OWNERSHIP_TEMPLATE = "INFOR Ownership Template.xlsx"
 OWNERSHIP_SHEET = "Ownership"
 OWNERSHIP_BBG_SHEET = "Bloomberg Output"
 
-NAME_OWN_INSIDER_BLOCK = "infor_own_insider_block"                    # B39:J65
-NAME_OWN_TOTAL_SHARES = "infor_own_total_shares"                      # F35
-NAME_OWN_BBG_LINK_BLOCK = "infor_own_bbg_link_block"                  # H68:J185
-NAME_OWN_BBG_HOLDER_BLOCK = "infor_own_bbg_holder_block"              # C14:AC131
-NAME_OWN_INSIDERS_PICTURE = "infor_own_insiders_picture_range"        # B4:G17
-NAME_OWN_INSTITUTIONS_PICTURE = "infor_own_institutions_picture_range"  # B19:G35
+NAME_OWN_INSIDER_BLOCK = "infor_own_insider_block"
+NAME_OWN_TOTAL_SHARES = "infor_own_total_shares"
+NAME_OWN_BBG_LINK_BLOCK = "infor_own_bbg_link_block"
+NAME_OWN_BBG_HOLDER_BLOCK = "infor_own_bbg_holder_block"
+NAME_OWN_INSIDERS_PICTURE = "infor_own_insiders_picture_range"
+NAME_OWN_INSTITUTIONS_PICTURE = "infor_own_institutions_picture_range"
 
-# Select-Insiders data block (rows 39–65, cols B/F/G/H/J): anchored by its
-# header row 38 and bounded below by the row-67 Bloomberg link-block header.
-OWNERSHIP_INSIDER_BLOCK_ANCHORS = (
-    CellAnchor("B39:J65", "B38", "SEDI Name", name=NAME_OWN_INSIDER_BLOCK),
-    CellAnchor("B39:J65", "F38", "Basic"),
-    CellAnchor("B39:J65", "G38", "Date"),
-    CellAnchor("B39:J65", "H38", "Include"),
-    CellAnchor("B39:J65", "J38", "Adj. Name"),
-    CellAnchor("B39:J65", "B67", "From Bloomberg"),
-)
+OWNERSHIP_NAMED_RANGES: dict[str, str] = {
+    NAME_OWN_INSIDER_BLOCK: "B39:J65",
+    NAME_OWN_TOTAL_SHARES: "F35",
+    NAME_OWN_BBG_LINK_BLOCK: "H68:J185",
+    NAME_OWN_INSIDERS_PICTURE: "B4:G17",
+    NAME_OWN_INSTITUTIONS_PICTURE: "B19:G35",
+}
+OWNERSHIP_BBG_NAMED_RANGES: dict[str, str] = {NAME_OWN_BBG_HOLDER_BLOCK: "C14:AC131"}
 
-# % denominator (written by the ownership skill; relinked to the cap table's
-# basic shares by the aggregator).
-OWNERSHIP_TOTAL_SHARES_ANCHORS = (
-    CellAnchor(
-        "F35", "B35", "Total Basic Shares Outstanding", name=NAME_OWN_TOTAL_SHARES
-    ),
-)
+#: The Select-Insiders data block plus the `%` denominator it divides by.
+OWNERSHIP_INSIDER_WRITE_NAMES = (NAME_OWN_INSIDER_BLOCK, NAME_OWN_TOTAL_SHARES)
 
-# Bloomberg link rows 68–185 (cols H/J written; B/F/G neutralised on unused
-# rows): anchored by the row-67 header and the first/last pre-wired link
-# formulas, which pin the 118-row extent against 'Bloomberg Output'!C14:C131.
-OWNERSHIP_BBG_LINK_ANCHORS = (
-    CellAnchor("H68:J185", "B67", "From Bloomberg", name=NAME_OWN_BBG_LINK_BLOCK),
-    CellAnchor("H68:J185", "B68", "'Bloomberg Output'!C14", contains=True),
-    CellAnchor("H68:J185", "B185", "'Bloomberg Output'!C131", contains=True),
-)
+#: The Bloomberg side: the holder block the export's rows are copied into, and
+#: the Ownership tab's pre-wired link rows that XLOOKUP against it. The two are
+#: pre-wired one-to-one, so the builder also checks their spans match.
+OWNERSHIP_BBG_HOLDER_NAMES = (NAME_OWN_BBG_HOLDER_BLOCK,)
+OWNERSHIP_BBG_LINK_NAMES = (NAME_OWN_BBG_LINK_BLOCK,)
 
-# The template's own 'Bloomberg Output' tab mirrors the BBG add-in Summary
-# View; the export-side header check in read_bloomberg_export validates the
-# attachment, this validates the template copy the holder rows land on.
-OWNERSHIP_BBG_TEMPLATE_ANCHORS = (
-    CellAnchor("C14:AC131", "C13", "Holder Name", name=NAME_OWN_BBG_HOLDER_BLOCK),
-    CellAnchor("C14:AC131", "L13", "Position"),
-    CellAnchor("C14:AC131", "N13", "Filing Date"),
-    CellAnchor("C14:AC131", "R13", "Insider Status"),
-)
-
-# Slide picture ranges (pitch deck ownership slide).
-OWNERSHIP_INSIDERS_PICTURE_RANGE = "B4:G17"
-OWNERSHIP_INSIDERS_PICTURE_ANCHORS = (
-    CellAnchor(
-        OWNERSHIP_INSIDERS_PICTURE_RANGE, "B4", "Select Insiders",
-        name=NAME_OWN_INSIDERS_PICTURE,
-    ),
-    CellAnchor(OWNERSHIP_INSIDERS_PICTURE_RANGE, "B17", "Subtotal"),
-)
-OWNERSHIP_INSTITUTIONS_PICTURE_RANGE = "B19:G35"
-OWNERSHIP_INSTITUTIONS_PICTURE_ANCHORS = (
-    CellAnchor(
-        OWNERSHIP_INSTITUTIONS_PICTURE_RANGE, "B19", "Select Institutions",
-        name=NAME_OWN_INSTITUTIONS_PICTURE,
-    ),
-    CellAnchor(OWNERSHIP_INSTITUTIONS_PICTURE_RANGE, "B35", "Total Basic Shares Outstanding"),
-)
+#: Slide picture ranges (pitch deck ownership slide).
+OWNERSHIP_INSIDERS_PICTURE_NAMES = (NAME_OWN_INSIDERS_PICTURE,)
+OWNERSHIP_INSIDERS_PICTURE_RANGE = "B4:G17"  # shipped address; fallback
+OWNERSHIP_INSTITUTIONS_PICTURE_NAMES = (NAME_OWN_INSTITUTIONS_PICTURE,)
+OWNERSHIP_INSTITUTIONS_PICTURE_RANGE = "B19:G35"  # shipped address; fallback
 
 
 # ─── Comps (INFOR Comps Template.xlsx, sheet 'Comps') ─────────────────────────
@@ -477,45 +322,37 @@ OWNERSHIP_INSTITUTIONS_PICTURE_ANCHORS = (
 COMPS_TEMPLATE = "INFOR Comps Template.xlsx"
 COMPS_SHEET = "Comps"
 
-NAME_COMPS_OUTPUT_CCY = "infor_comps_output_ccy"  # F3
+NAME_COMPS_OUTPUT_CCY = "infor_comps_output_ccy"
 # One label + one block name per vertical. The builder derives the ticker
 # (column B) and description (column AA) rows from the block's own extent, so
 # a template that grows a vertical from six rows to eight needs no code change.
 NAME_COMPS_GROUP_LABELS = (
-    "infor_comps_group1_label",  # D9
-    "infor_comps_group2_label",  # D19
-    "infor_comps_group3_label",  # D29
+    "infor_comps_group1_label",
+    "infor_comps_group2_label",
+    "infor_comps_group3_label",
 )
 NAME_COMPS_GROUP_BLOCKS = (
-    "infor_comps_group1_block",  # B10:AA15
-    "infor_comps_group2_block",  # B20:AA25
-    "infor_comps_group3_block",  # B30:AA35
+    "infor_comps_group1_block",
+    "infor_comps_group2_block",
+    "infor_comps_group3_block",
 )
 
-# The three vertical blocks (label D9/D19/D29; tickers B10:B15/B20:B25/B30:B35;
-# descriptions AA10…): anchored by the row-7 column headers above the first
-# block and the 'Group Average' row that closes each 6-row block. The ticker
-# column B itself has no adjacent header label in the template — its position
-# is pinned transitively by the D/AA headers and the block bounds.
-#
-# Each label cell is its own sentinel: the shipped template carries the
-# '[Group #N]' placeholder there, and the builder verifies before it overwrites
-# it, so the check always runs against a pristine copy.
-COMPS_BLOCK_ANCHORS = (
-    CellAnchor("D9", "D9", "[Group #1]", name=NAME_COMPS_GROUP_LABELS[0]),
-    CellAnchor("D19", "D19", "[Group #2]", name=NAME_COMPS_GROUP_LABELS[1]),
-    CellAnchor("D29", "D29", "[Group #3]", name=NAME_COMPS_GROUP_LABELS[2]),
-    CellAnchor("B10:AA15", "D7", "Company", name=NAME_COMPS_GROUP_BLOCKS[0]),
-    CellAnchor("B10:AA15", "AA7", "Description"),
-    CellAnchor("B10:AA15", "D17", "Group Average"),
-    CellAnchor("B20:AA25", "D27", "Group Average", name=NAME_COMPS_GROUP_BLOCKS[1]),
-    CellAnchor("B30:AA35", "D37", "Group Average", name=NAME_COMPS_GROUP_BLOCKS[2]),
-)
+#: `infor_comps_output_ccy` is stamped but resolved by nothing today — the
+#: workbook aggregator relinked it to the cap table's output currency, and Phase
+#: D deleted the aggregator. It stays in the template so the cell keeps a handle.
+COMPS_NAMED_RANGES: dict[str, str] = {
+    NAME_COMPS_OUTPUT_CCY: "F3",
+    NAME_COMPS_GROUP_LABELS[0]: "D9",
+    NAME_COMPS_GROUP_LABELS[1]: "D19",
+    NAME_COMPS_GROUP_LABELS[2]: "D29",
+    NAME_COMPS_GROUP_BLOCKS[0]: "B10:AA15",
+    NAME_COMPS_GROUP_BLOCKS[1]: "B20:AA25",
+    NAME_COMPS_GROUP_BLOCKS[2]: "B30:AA35",
+}
 
-# Output-currency cell the aggregator relinks to the cap table's F5.
-COMPS_OUTPUT_CCY_ANCHORS = (
-    CellAnchor("F3", "E3", "Currency:", name=NAME_COMPS_OUTPUT_CCY),
-)
+#: Everything the comps builder writes: each vertical's label cell and data
+#: block.
+COMPS_WRITE_NAMES = (*NAME_COMPS_GROUP_LABELS, *NAME_COMPS_GROUP_BLOCKS)
 
 
 # ─── Precedents (INFOR Precedents Template.xlsx, sheet 'Precedents') ──────────
@@ -524,113 +361,52 @@ PRECEDENTS_TEMPLATE = "INFOR Precedents Template.xlsx"
 PRECEDENTS_SHEET = "Precedents"
 
 # The plan calls this one `precedents_input_ccy`; the template labels the cell
-# "Output:" and the aggregator relinks it to the cap table's *output* currency,
-# so the name follows the artefact rather than the plan's shorthand.
-NAME_PREC_OUTPUT_CCY = "infor_prec_output_ccy"  # C2
+# "Output:" and it carries the cap table's *output* currency, so the name
+# follows the artefact rather than the plan's shorthand.
+NAME_PREC_OUTPUT_CCY = "infor_prec_output_ccy"
 NAME_PREC_GROUP_LABELS = (
-    "infor_prec_group1_label",  # E7
-    "infor_prec_group2_label",  # E16
+    "infor_prec_group1_label",
+    "infor_prec_group2_label",
 )
 NAME_PREC_GROUP_BLOCKS = (
-    "infor_prec_group1_block",  # B8:AI13
-    "infor_prec_group2_block",  # B17:AI22
+    "infor_prec_group1_block",
+    "infor_prec_group2_block",
 )
 
-# Output-currency cell (written by the builder; relinked by the aggregator).
-PRECEDENTS_OUTPUT_CCY_ANCHORS = (
-    CellAnchor("C2", "B2", "Output:", name=NAME_PREC_OUTPUT_CCY),
-)
+PRECEDENTS_NAMED_RANGES: dict[str, str] = {
+    NAME_PREC_OUTPUT_CCY: "C2",
+    NAME_PREC_GROUP_LABELS[0]: "E7",
+    NAME_PREC_GROUP_LABELS[1]: "E16",
+    NAME_PREC_GROUP_BLOCKS[0]: "B8:AI13",
+    NAME_PREC_GROUP_BLOCKS[1]: "B17:AI22",
+}
 
-# The two transaction blocks (rows 8–13 / 17–22) and the input columns the
-# builder writes, anchored by the row-4/5 header labels and the 'Group
-# Average' row that closes each block. Column AI (HQ code) has its own row-5
-# header; column H is left empty by design (no anchor needed). Like comps, each
-# group label cell is its own sentinel — the builder verifies the pristine
-# '[Group #N]' placeholder before overwriting it.
-PRECEDENTS_BLOCK_ANCHORS = (
-    CellAnchor("E7", "E7", "[Group #1]", name=NAME_PREC_GROUP_LABELS[0]),
-    CellAnchor("E16", "E16", "[Group #2]", name=NAME_PREC_GROUP_LABELS[1]),
-    CellAnchor("B8:B22", "B5", "Currency"),
-    CellAnchor("E8:E22", "E5", "Ann. Date"),
-    CellAnchor("F8:F22", "F5", "Target"),
-    CellAnchor("G8:G22", "G5", "Acquiror"),
-    CellAnchor("I8:I22", "I4", "TEV"),
-    CellAnchor("I8:I22", "I5", "Source FX"),
-    CellAnchor("K8:L22", "K4", "Revenue - Source FX"),
-    CellAnchor("M8:N22", "M4", "Net Income - Source FX"),
-    CellAnchor("O8:P22", "O4", "Adj. EBITDA - Source FX"),
-    CellAnchor("Q8:R22", "Q4", "Book Value - Source FX"),
-    CellAnchor("S8:V22", "S4", "EV / Revenue"),
-    CellAnchor("S8:V22", "U4", "EV / EBITDA"),
-    CellAnchor("W8:X22", "W4", "P/ E"),
-    CellAnchor("Y8:Y22", "Y4", "P / B"),
-    CellAnchor("Z8:Z22", "Z4", "P / TBV"),
-    CellAnchor("AB8:AG22", "AB4", "TEV"),
-    CellAnchor("AB8:AG22", "AG4", "P / TBV"),
-    CellAnchor("AI8:AI22", "AI5", "HQ"),
-    CellAnchor("B8:AI13", "E14", "Group Average", name=NAME_PREC_GROUP_BLOCKS[0]),
-    CellAnchor("B17:AI22", "E23", "Group Average", name=NAME_PREC_GROUP_BLOCKS[1]),
+#: Everything the precedents builder writes: the output-currency cell plus each
+#: peer group's label and transaction block.
+PRECEDENTS_WRITE_NAMES = (
+    NAME_PREC_OUTPUT_CCY,
+    *NAME_PREC_GROUP_LABELS,
+    *NAME_PREC_GROUP_BLOCKS,
 )
 
 
 # ─── The defined-name registry ────────────────────────────────────────────────
-# Derived from the anchors above rather than written out a second time: the
-# prep tool that stamps the templates and the test that verifies them both read
-# this, so a name can never be declared in one place and stamped in another.
+# `tools/add_template_named_ranges.py` stamps exactly this, and
+# `tools/build_deal_workbook_template.py` verifies the assembled deal workbook
+# against it — so a name can never be declared in one place and stamped in
+# another.
 
-
-def named_targets(*anchor_groups) -> dict[str, str]:
-    """``{defined name: target address}`` for every named anchor in the groups.
-
-    Raises :class:`TemplateLayoutError` when one name is declared against two
-    different targets — a contradiction the writers could not resolve.
-    """
-    targets: dict[str, str] = {}
-    for group in anchor_groups:
-        for anchor in group:
-            if anchor.name is None:
-                continue
-            existing = targets.get(anchor.name)
-            if existing is not None and existing != anchor.target:
-                raise TemplateLayoutError(
-                    f"defined name {anchor.name!r} is declared against both "
-                    f"{existing} and {anchor.target}"
-                )
-            targets[anchor.name] = anchor.target
-    return targets
-
-
-# template filename -> sheet -> {name: A1 target}. The order here is the order
-# the prep tool stamps them in.
+#: template filename -> sheet -> ``{name: A1 target}``. The order here is the
+#: order the prep tool stamps them in.
 TEMPLATE_NAMED_RANGES: dict[str, dict[str, dict[str, str]]] = {
-    CAP_TABLE_TEMPLATE: {
-        CAP_TABLE_SHEET: named_targets(
-            CAP_TABLE_HEADER_ANCHORS,
-            CAP_TABLE_LTM_ANCHORS,
-            CAP_TABLE_PICTURE_ANCHORS,
-            CAP_TABLE_SECTION_VII_ANCHORS,
-        )
-    },
+    CAP_TABLE_TEMPLATE: {CAP_TABLE_SHEET: CAP_TABLE_NAMED_RANGES},
     OWNERSHIP_TEMPLATE: {
-        OWNERSHIP_SHEET: named_targets(
-            OWNERSHIP_INSIDER_BLOCK_ANCHORS,
-            OWNERSHIP_TOTAL_SHARES_ANCHORS,
-            OWNERSHIP_BBG_LINK_ANCHORS,
-            OWNERSHIP_INSIDERS_PICTURE_ANCHORS,
-            OWNERSHIP_INSTITUTIONS_PICTURE_ANCHORS,
-        ),
-        OWNERSHIP_BBG_SHEET: named_targets(OWNERSHIP_BBG_TEMPLATE_ANCHORS),
+        OWNERSHIP_SHEET: OWNERSHIP_NAMED_RANGES,
+        OWNERSHIP_BBG_SHEET: OWNERSHIP_BBG_NAMED_RANGES,
     },
-    COMPS_TEMPLATE: {
-        COMPS_SHEET: named_targets(COMPS_BLOCK_ANCHORS, COMPS_OUTPUT_CCY_ANCHORS)
-    },
-    PRECEDENTS_TEMPLATE: {
-        PRECEDENTS_SHEET: named_targets(
-            PRECEDENTS_BLOCK_ANCHORS, PRECEDENTS_OUTPUT_CCY_ANCHORS
-        )
-    },
+    COMPS_TEMPLATE: {COMPS_SHEET: COMPS_NAMED_RANGES},
+    PRECEDENTS_TEMPLATE: {PRECEDENTS_SHEET: PRECEDENTS_NAMED_RANGES},
 }
-
 
 # ─── Slide library (INFOR Slide Library.pptx) ─────────────────────────────────
 

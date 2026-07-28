@@ -14,9 +14,9 @@ Usage (from the repo root):
 
 What the names are and where they come from
 -------------------------------------------
-`template_layout.TEMPLATE_NAMED_RANGES` — derived from the same `CellAnchor`
-declarations the writers and the sentinel cross-check use, so this tool cannot
-stamp a name the code does not expect, or miss one it does.
+`template_layout.TEMPLATE_NAMED_RANGES` — the same registry the writers resolve
+their names from, so this tool cannot stamp a name the code does not expect, or
+miss one it does.
 
 Why direct XML surgery, and not openpyxl or Excel COM
 -----------------------------------------------------
@@ -65,8 +65,8 @@ Why the names are worksheet-scoped
 ----------------------------------
 A workbook-scoped name travels with its sheet through the aggregator's Excel-COM
 merge and lands in the destination's global namespace, which is how phantom
-`[1]!name` external-workbook aliases appear — the failure that already blocks an
-order-dependent sheet rename in `workbook_aggregator`. Worksheet-scoped names
+`[1]!name` external-workbook aliases appear — the failure that used to block an
+order-dependent sheet rename in the since-deleted `workbook_aggregator`. Worksheet-scoped names
 travel with the sheet without ever entering that namespace. They are also
 unambiguous in a dirty namespace on their own merits: the comps template carries
 1,246 legacy names.
