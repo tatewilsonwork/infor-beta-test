@@ -254,7 +254,8 @@ was left as a placeholder and can be filled by re-running with the Bloomberg att
   analyst can blank the surplus display rows.
 - The `Bloomberg Output` tab holds **118 holders** (`C14:C131`); a longer export is truncated to the
   118 largest (the Summary View is position-sorted) and the truncation is reported in the summary.
-- **Render fidelity:** the picture render uses Excel COM on Windows (full fidelity, native `XLOOKUP`)
-  and LibreOffice headless elsewhere (Cowork). LibreOffice needs a recent build (24.8+) for `XLOOKUP`;
-  on older builds the insider/institution **name** columns may render blank — run the ownership stage
-  on Windows + Excel for production decks.
+- **Render fidelity:** the picture render is **LibreOffice headless on every platform** (Phase D
+  deleted the Excel-COM path, which only ever ran on a Windows dev box — production is Cowork/Linux
+  with no Excel). LibreOffice needs a recent build (24.8+) for `XLOOKUP`; on older builds the
+  insider/institution **name** columns may render blank, so check the build before a production run
+  rather than reaching for Excel.

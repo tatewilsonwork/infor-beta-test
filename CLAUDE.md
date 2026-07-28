@@ -154,7 +154,7 @@ from template_layout import (  # the templates' layout map: defined names, senti
     find_slide_by_marker, find_slides_by_marker, find_optional_slide_by_marker,  # NEVER index a library slide — locate it by its marker shape
     TEMPLATE_NAMED_RANGES,  # the registry `tools/add_template_named_ranges.py` stamps
 )
-from excel_to_powerpoint import find_soffice, excel_com_app  # the ONLY LibreOffice locator (never shutil.which("soffice") — the Windows MSI puts nothing on PATH) and the ONLY Excel-COM instance owner (never a bare DispatchEx("Excel.Application") — it guards Quit and always tears the apartment down); both drift-locked by tests
+from excel_to_powerpoint import find_soffice, insert_excel_into_placeholder  # the ONLY LibreOffice locator (never shutil.which("soffice") — the Windows MSI puts nothing on PATH), and the range-picture-into-placeholder helper. Phase D deleted every Excel/PowerPoint COM path, so LibreOffice is the one render backend on every platform
 from deck_contract import verify_deck, vision_pass, Finding, SEVERITY_BLOCKING  # Phase B visual oracle: blocking geometry/string checks + an advisory agent-inspected vision agenda
 from deck_repair import converge_deck, assert_converged, DeckNotConvergedError  # Phase B converge loop: write -> verify -> repair -> re-verify; the ONLY place font sizes / autofit scales are decided (never estimate text extents — measure, via deck_contract's probes)
 ```

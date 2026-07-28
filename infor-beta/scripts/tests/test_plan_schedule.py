@@ -169,7 +169,35 @@ def test_non_stage_references_do_not_create_edges():
     assert stage_dependencies(plan) == {"a": set()}
 
 
-# --- aggregator barrier -----------------------------------------------------
+# --- no forced barrier (Phase D) --------------------------------------------
+
+
+def test_no_stage_gets_a_dependency_it_does_not_reference():
+    """Every edge is a real reference — there is no hardcoded barrier any more.
+
+    Replaces three tests that pinned the `workbook-aggregator` barrier: it
+    depended on every stage EXCEPT its own downstream consumers (excluding them
+    was what kept a post-aggregation stage from forming a cycle), and was forced
+    alone into the final wave. That rule, and the filesystem side-effect it
+    modelled — the aggregator merging and DELETING standalone workbooks the deck
+    had already read — are gone with the aggregator.
+    """
+    for name in ("pitch.yaml", "earnings-update.yaml"):
+        plan = _load_plan(name)
+        deps = stage_dependencies(plan)
+        for stage in plan.stages:
+            referenced = set()
+            for text in iter_input_strings(stage.inputs):
+                parsed = parse_ref(text)
+                if parsed and parsed[0] == "stages":
+                    referenced.add(parsed[1][0])
+            extra = deps[stage.id] - referenced
+            assert not extra, (
+                f"{name}: {stage.id} has dependencies it never references: {extra}"
+            )
+
+
+# --- cycle detection --------------------------------------------------------
 
 
 def test_cycle_raises():

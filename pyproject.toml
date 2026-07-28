@@ -8,7 +8,6 @@ dependencies = [
     "PyYAML>=6,<7",
     "python-pptx>=1,<2",
     "openpyxl>=3,<4",
-    "pywin32>=308 ; sys_platform == 'win32'",
     # Unconditional: LibreOffice + pypdfium2 is the default slide renderer on
     # every platform, so Windows dev renders exactly the way Cowork/Linux prod
     # does. (Was `sys_platform != 'win32'` through v0.5.34, which is why a
@@ -23,6 +22,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=9,<10",
+    # Only `tools/` needs COM now: build_deal_workbook_template.py assembles the
+    # deal-workbook template through an add-in-free Excel, and
+    # add_template_named_ranges.py --verify-excel uses Excel as its repair oracle.
+    # Phase D deleted every COM path from the shipped plugin, so production no
+    # longer installs this.
+    "pywin32>=308 ; sys_platform == 'win32'",
     # The Phase B contract renders through LibreOffice constantly and a
     # conversion costs seconds, so the suite is soffice-bound and is run
     # distributed by default (see `addopts`). `slide_render` gives each process
@@ -49,8 +54,3 @@ pythonpath = ["infor-beta/scripts"]
 # xdist_group — `conftest.py` puts every Office-COM test in one, since those COM
 # servers are per-user singletons and must not be driven from two workers at once.
 addopts = "-n 6 --dist loadgroup"
-markers = [
-    # Spawns a real, visible Excel via COM. Skipped unless INFOR_EXCEL_COM_TESTS
-    # is set — see the gate in infor-beta/scripts/tests/conftest.py.
-    "excel_com: Excel-COM test; opt in with INFOR_EXCEL_COM_TESTS=1",
-]

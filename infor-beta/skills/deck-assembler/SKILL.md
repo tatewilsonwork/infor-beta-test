@@ -131,11 +131,10 @@ and a manual nudge both fights it and is invisible to it on the next run. If you
 believe a shape still overflows after the loop reported convergence, that is a bug
 in the contract worth reporting, not something to patch here.
 
-The renderer is **LibreOffice headless on every platform** (v0.5.35), so dev and
-Cowork render identically; PowerPoint COM is reachable only by explicit opt-in
-(`backend="powerpoint"` / `INFOR_SLIDE_RENDER_BACKEND`). If LibreOffice is absent it
-raises `RuntimeError` — note that QA could not run rather than claiming the deck is
-clean.
+The renderer is **LibreOffice headless on every platform** (v0.5.35, and the only
+one since Phase D deleted the PowerPoint-COM backend), so dev and Cowork render
+identically. If LibreOffice is absent it raises `RuntimeError` — note that QA could
+not run rather than claiming the deck is clean.
 
 ## Reference command
 

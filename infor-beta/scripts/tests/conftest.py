@@ -19,7 +19,6 @@ import shutil
 import sys
 from pathlib import Path
 
-import pytest
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -51,69 +50,21 @@ if not os.environ.get("INFOR_RENDER_CACHE_DIR"):
     atexit.register(shutil.rmtree, _RENDER_CACHE_DIR, True)
 
 
-# ─── Excel-COM opt-in gate (Phase I item 2) ───────────────────────────────────
-# The `excel_com` marker covers the tests that spawn a REAL Excel through
-# `DispatchEx` and must run it `Visible = True` (`CopyPicture(xlScreen)` captures
-# what the instance renders, so an invisible one exports a blank picture). The S&P
-# Cap IQ Office Tools add-in loads into that throwaway instance, finds its Cap IQ
-# Pro sibling absent, and raises its own `MessageBox` — which
-# `excel.DisplayAlerts = False` cannot suppress, because that gates Excel's own
-# alerts, not a third-party add-in's. Up to four modal dialogs per run, each
-# stalling the suite until someone clicks it.
+# ─── Office-COM serialization under xdist — no longer needed ────────────────
+# Phase D deleted every COM path (the Excel range renderer and chart builders,
+# and slide_render's PowerPoint backend), so nothing in the suite drives a
+# per-user COM singleton any more. What went with it:
 #
-# Default off, matching where Phase A already went (LibreOffice everywhere by
-# default; PowerPoint COM opt-in via `INFOR_SLIDE_RENDER_BACKEND`). Accepted
-# consequence: the Windows COM path loses routine coverage — Phase D deletes it,
-# and nothing else depends on these tests. The marker is declared in
-# `pyproject.toml`'s `markers` list.
-_EXCEL_COM_ENV_VAR = "INFOR_EXCEL_COM_TESTS"
-
-
-def _excel_com_opted_in() -> bool:
-    return os.environ.get(_EXCEL_COM_ENV_VAR, "").strip().lower() not in (
-        "",
-        "0",
-        "false",
-        "no",
-    )
-
-
-# ─── Office-COM serialization under xdist (Phase C) ──────────────────────────
-# The suite runs distributed by default (`-n auto` in pyproject). Excel and
-# PowerPoint's COM servers are per-user singletons, so two workers driving one
-# of them at the same time can interfere — `test_powerpoint_com_render_still_works`
-# already flakes in a full serial run and passes in isolation, and running it
-# beside `test_render_parity`'s PowerPoint pass would only widen that window.
+#   - the `excel_com` marker and its `INFOR_EXCEL_COM_TESTS` opt-in gate. Those
+#     four tests each spawned a real, VISIBLE Excel (an invisible instance
+#     exports a blank picture after a recalc), into which the Cap IQ Office Tools
+#     add-in loaded and raised a modal dialog `DisplayAlerts = False` cannot
+#     suppress. Gating them was the prevention that worked; deleting the path is
+#     the cure.
+#   - the `office_com` xdist group that pinned `test_render_parity` and
+#     `test_slide_render` to one worker so two workers could not drive
+#     PowerPoint at once. Both now render only through LibreOffice, which is safe
+#     concurrently because each process gets its own profile (`slide_render`).
 #
-# Every Office-COM test is therefore put in one xdist group, which pins the
-# group to a single worker and so keeps them serialized relative to each other.
-# Grouping is applied here rather than as per-test markers so a new COM test
-# cannot forget it: membership follows from the marker/module that already
-# identifies these tests.
-_COM_GROUP = "office_com"
-_COM_MODULES = ("test_render_parity.py", "test_slide_render.py")
-
-
-def pytest_collection_modifyitems(config, items) -> None:
-    """Gate the Excel-COM tests, and keep every Office-COM test on one worker."""
-    skip = pytest.mark.skip(
-        reason=(
-            f"Excel-COM test: set {_EXCEL_COM_ENV_VAR}=1 to run. Spawns a real "
-            "visible Excel, whose Cap IQ Office Tools add-in can raise a modal "
-            "dialog that stalls the run."
-        )
-    )
-    opted_in = _excel_com_opted_in()
-    for item in items:
-        if "excel_com" in item.keywords:
-            if not opted_in:
-                item.add_marker(skip)
-            item.add_marker(pytest.mark.xdist_group(_COM_GROUP))
-        elif _module_name(item) in _COM_MODULES:
-            item.add_marker(pytest.mark.xdist_group(_COM_GROUP))
-
-
-def _module_name(item) -> str:
-    """The item's test-module filename, or '' when it has none."""
-    path = getattr(item, "path", None)
-    return Path(str(path)).name if path is not None else ""
+# `test_powerpoint_com_render_still_works` — the accepted flake in a full run —
+# is deleted with the backend it covered.

@@ -795,11 +795,7 @@ def test_pitch_wireframe_expands_market_entry_slides():
     assert len(default_plan.slides) == 19
 
 
-# ─── Fix 2: cap table pasted onto slide 7 + footnote currency ────────────────
-
-@pytest.mark.excel_com
 def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
-    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
     workbook = _write_sample_cap_table(tmp_path / "cap-table.xlsx", currency="USD")
     deck_path = _assemble(tmp_path, _sample_content(), captable_workbook_path=workbook)
     prs = Presentation(deck_path)
@@ -816,27 +812,23 @@ def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
     assert "US$MM" in note_hl and "[x]" not in note_hl, "highlights-slide footnote currency derived from the cap table"
 
 
-# ─── Ownership: insider table pasted onto the ownership slide ─────────────────
-
-@pytest.mark.excel_com
 def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
-    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
-    import pywintypes
-
+    from deal_workbook import init_deal_workbook
     from ownership_workbook import build_ownership_workbook, InsiderHolding
 
     own_wb = build_ownership_workbook(
-        template_path=PLUGIN_ROOT / "templates" / "INFOR Ownership Template.xlsx",
+        deal_workbook=init_deal_workbook(
+            deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+        ),
         insiders=[
             InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),
             InsiderHolding("Fowlie, Randy", "Randy Fowlie (Director)", [193000, 0], "2025-12-01"),
         ],
         total_shares_outstanding=261_000_000,
-        output_path=tmp_path / "Ownership.xlsx",
     )
     try:
         deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
-    except (pywintypes.com_error, RuntimeError) as exc:  # Excel/LibreOffice unavailable here
+    except RuntimeError as exc:  # LibreOffice unavailable here
         pytest.skip(f"range render backend unavailable in this environment: {exc}")
 
     prs = Presentation(deck_path)
@@ -851,15 +843,10 @@ def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
     assert "[Placeholder for Insider Ownership]" not in text, "insider placeholder replaced"
     # No Bloomberg export was ingested, so the institutional side stays a placeholder.
     assert "[Placeholder for Institutional Ownership]" in text
-
-
-@pytest.mark.excel_com
 def test_pitch_deck_inserts_institutions_with_bloomberg(tmp_path: Path):
     """With a Bloomberg export ingested, the ownership slide's right
     "Institutions" placeholder (Rectangle 3) is replaced by the
     Select-Institutions block picture alongside the insider side."""
-    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
-    import pywintypes
     from openpyxl import Workbook
 
     from ownership_workbook import build_ownership_workbook, InsiderHolding
@@ -881,19 +868,22 @@ def test_pitch_deck_inserts_institutions_with_bloomberg(tmp_path: Path):
         ws[f"R{14 + i}"] = status
     wb.save(bbg_path)
 
+    from deal_workbook import init_deal_workbook
+
     own_wb = build_ownership_workbook(
-        template_path=PLUGIN_ROOT / "templates" / "INFOR Ownership Template.xlsx",
+        deal_workbook=init_deal_workbook(
+            deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+        ),
         insiders=[
             InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),
             InsiderHolding("Fowlie, Randy", "Randy Fowlie (Director)", [193000, 0], "2025-12-01"),
         ],
         total_shares_outstanding=261_000_000,
-        output_path=tmp_path / "Ownership.xlsx",
         bloomberg_export_path=bbg_path,
     )
     try:
         deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
-    except (pywintypes.com_error, RuntimeError) as exc:  # Excel/LibreOffice unavailable here
+    except RuntimeError as exc:  # LibreOffice unavailable here
         pytest.skip(f"range render backend unavailable in this environment: {exc}")
 
     prs = Presentation(deck_path)
