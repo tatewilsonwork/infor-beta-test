@@ -3,8 +3,10 @@
 One-time prep tooling for Phase C, kept in the repo because it has to be
 re-runnable: any time an analyst re-saves one of the four templates from Excel,
 run this again to restore the names the writers resolve through. It is **not**
-shipped plugin code and is therefore exempt from Phase D's COM deletion — it
-does not use COM at all.
+shipped plugin code, and is therefore deliberately exempt from Phase D's COM
+deletion: the stamping path below uses no COM (it is direct XML surgery), but
+`--verify-excel` does, through `tools/_excel_com.py`, and that is intended — see
+"Excel COM does still get used" below.
 
 Usage (from the repo root):
 

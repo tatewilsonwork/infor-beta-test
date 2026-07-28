@@ -1,6 +1,6 @@
 [project]
 name = "infor-beta"
-version = "0.5.47"
+version = "0.5.48"
 description = "INFOR Financial Group internal Claude Code plugin — clean-break rebuild of infor-workflows."
 requires-python = ">=3.11"
 dependencies = [
@@ -51,6 +51,10 @@ pythonpath = ["infor-beta/scripts"]
 # debugging a single test.
 #
 # `--dist loadgroup` distributes per test, except for tests placed in an
-# xdist_group — `conftest.py` puts every Office-COM test in one, since those COM
-# servers are per-user singletons and must not be driven from two workers at once.
+# xdist_group. No test is in one today: the group existed to pin the Office-COM
+# tests to a single worker, because those COM servers are per-user singletons, and
+# Phase D deleted every COM path from the plugin and the suite (`conftest.py`
+# records what went with it). So this behaves as plain `--dist load`; it is kept
+# because the next test that must not run concurrently only has to declare the
+# group, not also rediscover this setting.
 addopts = "-n 6 --dist loadgroup"

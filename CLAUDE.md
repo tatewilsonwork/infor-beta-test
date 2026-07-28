@@ -68,11 +68,15 @@ Load-bearing decisions made before any code was written. Full record in Obsidian
 
 ## v1 stage portfolio
 
-Every plan stage is one of two kinds, and the kind decides where it lives.
+Every plan stage is one of two kinds, and the kind decides where it lives. Both lists below are exhaustive and locked to the repo by `test_contributor_brief_stage_lists_match_the_repo` — so if a stage is not in the first list, it has no `SKILL.md`, and looking for one is wasted time.
 
-**Judgment — a dispatched sub-agent with a real tool allow-list, one `skills/<name>/SKILL.md` each.** Refactored from the old repo: `comps`, `precedents`, `buyerslist`, `captable`, `lbo-model`, `deck-writing`, `deckcheck`, `brand-guidelines` (→ library). New: `ownership` (SEDI insiders + Bloomberg institutions; Canadian public targets), `financial-summary` (chart-ready data tab; single source of truth for the deck's metrics), `ltm-metrics`, plus not-yet-built `valuation`, `company-profile-public`, `company-profile-private`, `industry-research`.
+**Judgment — a dispatched sub-agent with a real tool allow-list, one `skills/<name>/SKILL.md` each.** The nine that exist: `captable`, `comps`, `precedents`, `ownership`, `financial-summary`, `ltm-metrics`, `earningsupdate-content`, `pitch-content`, `deckcheck`.
 
-**Transform — deterministic, run in-process by the conductor, no SKILL.md and no directory under `skills/`.** The two wireframes (`pitch-wireframe`, `earningsupdate-wireframe`), the deck assembler (`deck-assembler`), and the Financial Summary charts (`financial-charts`). `scripts/stage_transforms.py` holds all four and the registry that classifies them.
+**Transform — deterministic, run in-process by the conductor, no SKILL.md and no directory under `skills/`.** The four that exist: `pitch-wireframe`, `earningsupdate-wireframe`, `deck-assembler`, `financial-charts`.
+
+`scripts/stage_transforms.py` holds those four ports and the registry that classifies every stage. The plan YAMLs still name a transform in their `skill:` field, and that is correct — for a transform the string is its key in `TRANSFORMS`, not a directory under `skills/`. `conductor` is the tenth `skills/` directory but is not a stage of anything: it is the meta-skill that dispatches the first list and calls the second.
+
+**Not built yet**, and therefore in neither list: `buyerslist`, `lbo-model`, `deck-writing`, `brand-guidelines` (a **library** consumed by the deck assembler and `deckcheck` when it lands, not a plan stage), `valuation`, `company-profile-public`, `company-profile-private`, `industry-research`. `README.md` carries the same three-way split in analyst-facing wording; keep the two in step.
 
 **Conductor plans:** `earnings-update.yaml` (6 stages / 4 waves), `pitch.yaml` (16-slide library deck, 11 stages / 7 waves), `overview.yaml` (stub). Both numbers are parsed and checked against the scheduler by `test_contributor_brief_wave_counts_match_the_scheduler` — edit the plan and this line fails until it agrees. How many of those stages are *dispatched* is deliberately **not** written here: `plan_overview(...).narration()` derives it from the registry, and the README's prose copy is locked by `test_readme_dispatch_counts_match_the_transform_registry`.
 
@@ -126,6 +130,7 @@ from deal_workbook import (  # the deal's ONE workbook — never write a standal
     TAB_LTM_METRICS, TAB_FINANCIAL_SUMMARY,
 )
 from slide_library_registry import load_slide_library_registry
+from naming import safe_filename  # the Python side of sanitize_name.sh; never re-roll a _safe_name
 from codename import resolve, find_existing, disambiguate, codename_from_company
 from intake_spec import (  # the analyst questionnaire, declared once; both renderings generated
     IntakeSpec, IntakeField, IntakeOption, IntakeDefault, IntakeNote,
@@ -167,6 +172,7 @@ from template_layout import (  # the templates' layout map: defined names + slid
     resolve_name_cell, resolve_name_range, resolve_workbook_range, defined_name_ref,
     find_slide_by_marker, find_slides_by_marker, find_optional_slide_by_marker,
     TEMPLATE_NAMED_RANGES,  # the registry tools/add_template_named_ranges.py stamps
+    NAME_FX_RATE, MARKER_CONTACT,  # every infor_ NAME_* and every MARKER_* lives here too
 )
 from excel_to_powerpoint import find_soffice, insert_excel_into_placeholder
 from financial_charts import render_financial_summary_charts_into_deck, render_ltm_revenue_pie_into_deck
@@ -201,7 +207,7 @@ Verify before you write: `verify_names` / `verify_workbook_names` / `verify_cap_
 - **Never estimate a text extent.** `deck_repair` is the only place a font size or autofit scale is decided, and it decides from a measured render — one probe slide per candidate size, the whole ladder rendered in a single pass, the ink read back. Four hand-calibrated heuristics were deleted for this; don't write a fifth.
 - **A renderer must render a private copy.** Both engines hold the caller's file open (LibreOffice drops a `.~lock`), and `zipfile.is_zipfile` swallows the resulting `OSError` into a bogus `PackageNotFoundError`.
 - **Each process gets its own LibreOffice profile** (`-env:UserInstallation`). Concurrent conversions sharing the default profile fail.
-- Palatino on Cowork is an open question: LibreOffice has no `palatinolinotype` substitution entry, so prod most likely resolves it to URW Palladio L / P052 (metric-compatible) but degrades to Times/DejaVu metrics without `fonts-urw-base35`. One `fc-match` on a Cowork shell would close it. The Windows install does not answer it.
+- Palatino on Cowork is **the highest-value open question left**, and it is one command: LibreOffice has no `palatinolinotype` substitution entry, so prod most likely resolves it to URW Palladio L / P052 (metric-compatible) but degrades to Times/DejaVu metrics without `fonts-urw-base35`. It matters because `deck_repair` decides every font size from a measured render, and that calibration was measured against **real Palatino on the Windows dev box** — if prod substitutes different metrics, the oracle is measuring a deck the analyst will not receive. On a Cowork shell: `fc-match "Palatino Linotype"`. `P052`/`URW Palladio L` ⟹ metric-compatible, converge loop sound as calibrated; `DejaVu`/`Liberation`/`Times` ⟹ the loop is calibrated against the wrong metrics and Phase B needs re-validating on prod fonts. A Windows box cannot answer it — it has no fontconfig at all, so there is nothing to run.
 
 ### The Excel side
 - **CapIQ cannot be refreshed in this environment.** Array formulas ship un-evaluated and the analyst refreshes in Excel. Error values in the cap table's forward-estimate cells are therefore **expected, not a defect** — which is why `deck_contract`'s error scan covers text shapes and table cells only, and never reaches into a rasterised range picture.
@@ -212,7 +218,7 @@ Verify before you write: `verify_names` / `verify_workbook_names` / `verify_cap_
 - openpyxl chart-label gotcha: a label `numFmt` is source-linked in Excel, so the cell format and the label format must agree. Per-point label suppression is a series-level `dLbls` override with all show-flags off — never a `<c:delete>` shape, which does not survive a load→save round-trip.
 
 ### Office on the Windows dev box
-Nothing in the plugin or the test suite spawns Office any more; only `tools/build_deal_workbook_template.py` drives Excel COM. When you do touch it:
+Nothing in the plugin or the test suite spawns Office any more. Excel COM survives in exactly one place, `tools/`, and it is **deliberately exempt** from Phase D's COM deletion rather than an oversight: `tools/` is repo maintenance tooling that never ships, and both of its COM users need a real Excel to do a job openpyxl cannot. `tools/_excel_com.py` is the single instance owner; `build_deal_workbook_template.py` assembles the deal-workbook template through an add-in-free Excel, and `add_template_named_ranges.py --verify-excel` uses Excel as its repair oracle (its stamping path is pure XML surgery and uses no COM). Do not "finish the job" by deleting these — `test_the_shipped_plugin_holds_no_excel_com` states the boundary in both directions. When you do touch it:
 
 - **Never force-kill `EXCEL.EXE` / `POWERPNT.EXE`.** Killing an instance that holds documents and loaded add-ins trips Office crash-resiliency and disabled the analyst's CapIQ add-ins on 2026-07-13. Close orphans with a graceful `Quit()`; if a process is genuinely hung, warn the analyst before killing it. (A windowless automation orphan holding nothing is the benign case — check the registry before "repairing" anything.)
 - **Never add an HKCU `SPGMI.ExcelShell` key** to suppress the Office Tools dialog. A same-named HKCU key overrides HKLM wholesale, and a manifest-less stub there is exactly the 2026-07-13 damage.

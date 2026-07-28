@@ -1,4 +1,10 @@
-"""Drift lock on `CLAUDE.md`'s shared-helpers import block.
+"""Drift locks on `CLAUDE.md`'s standing claims about the repo.
+
+The import block came first (see below). The rest were added in v0.5.48, when the
+migration wrap-up audited the brief against the repo and found three claims that
+prose alone had let rot — the same failure mode, one level up: the brief is what a
+fresh session reads *instead of* looking, so a stale claim there costs more than no
+claim at all.
 
 The block is the first thing a fresh dev session reads to learn what to import,
 so a symbol that has been renamed or deleted is worse than no documentation: it
@@ -60,3 +66,135 @@ def test_the_brief_keeps_its_bootstrap_lines_importable_by_a_skill():
     source = _python_blocks()[0]
     assert "CLAUDE_PLUGIN_ROOT" in source
     assert 'sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT"' in source
+
+
+# ─── The stage portfolio ──────────────────────────────────────────────────────
+
+PLUGIN_ROOT = REPO_ROOT / "infor-beta"
+
+
+def _brief_stage_list(lead: str) -> set[str]:
+    """The bare backticked names in the brief's paragraph starting with `lead`.
+
+    Tokens holding a `/` or a `.` are paths, not stage names (`skills/<name>/SKILL.md`,
+    `skills/`), so they are dropped — which keeps the prose free to name a path in
+    the same breath as the list.
+    """
+    for line in BRIEF.read_text(encoding="utf-8").splitlines():
+        if line.startswith(lead):
+            return {
+                token
+                for token in re.findall(r"`([^`]+)`", line)
+                if "/" not in token and "." not in token
+            }
+    raise AssertionError(f"CLAUDE.md no longer has a paragraph starting {lead!r}")
+
+
+def test_contributor_brief_stage_lists_match_the_repo():
+    """The brief's two exhaustive stage lists are checked against the repo.
+
+    Phase F turned four dispatched skills into in-process transforms and deleted
+    their SKILL.md files. The brief's portfolio section was updated for *that*, but
+    the judgment list it left behind still named four skills which have never
+    existed (`buyerslist`, `lbo-model`, `deck-writing`, `brand-guidelines`) as
+    though they had been refactored, and omitted the two that do
+    (`earningsupdate-content`, `pitch-content`). A reader trusting it would go
+    hunting for four SKILL.md files and never learn about two real ones — the exact
+    cost the section exists to avoid, which is why it is now a checked list rather
+    than a described one.
+    """
+    import stage_transforms
+
+    judgment = _brief_stage_list("**Judgment —")
+    transforms = _brief_stage_list("**Transform —")
+
+    # `conductor` is a skills/ directory but not a stage — it is the dispatcher.
+    on_disk = {
+        p.parent.name
+        for p in (PLUGIN_ROOT / "skills").glob("*/SKILL.md")
+    } - {"conductor"}
+
+    assert judgment == on_disk, (
+        f"CLAUDE.md's judgment list and skills/ disagree. "
+        f"Only in the brief (no SKILL.md — a reader would hunt for one): "
+        f"{sorted(judgment - on_disk)}. "
+        f"Only on disk (undocumented): {sorted(on_disk - judgment)}."
+    )
+    assert transforms == set(stage_transforms.TRANSFORMS), (
+        f"CLAUDE.md's transform list and stage_transforms.TRANSFORMS disagree: "
+        f"brief-only {sorted(transforms - set(stage_transforms.TRANSFORMS))}, "
+        f"registry-only {sorted(set(stage_transforms.TRANSFORMS) - transforms)}."
+    )
+    assert not judgment & transforms, (
+        f"a stage is in both of the brief's lists: {sorted(judgment & transforms)}"
+    )
+
+
+# ─── The COM boundary ────────────────────────────────────────────────────────
+
+_COM_TOKENS = ("win32com", "pythoncom", "DispatchEx", "EnsureDispatch")
+
+
+def _com_users(root: Path) -> list[str]:
+    this_file = Path(__file__).resolve()
+    return sorted(
+        f"{py.relative_to(REPO_ROOT).as_posix()}:{n}"
+        for py in root.rglob("*.py")
+        if py.resolve() != this_file  # the scanner spells the tokens it looks for
+        for n, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1)
+        if any(token in line for token in _COM_TOKENS)
+    )
+
+
+def test_the_shipped_plugin_holds_no_excel_com():
+    """Phase D's deletion, and `tools/`'s exemption from it, in one assertion.
+
+    Both halves are load-bearing and neither was checked. Production is Linux, so a
+    COM path reintroduced under `infor-beta/` is code that cannot run where the
+    analyst runs it — and it would run *green* on this Windows dev box, which is the
+    inversion Phase A existed to end. In the other direction, `tools/` keeps COM on
+    purpose (an add-in-free Excel assembles the deal-workbook template, and Excel is
+    the repair oracle for the stamped defined names); a later sweep "finishing the
+    job" would take working prep tooling with it. So the boundary is asserted, not
+    described.
+    """
+    assert _com_users(PLUGIN_ROOT) == [], (
+        f"Excel COM is back in the shipped plugin: {_com_users(PLUGIN_ROOT)}. "
+        f"Production (Cowork) is Linux and has no Excel — render through LibreOffice "
+        f"and write workbooks through openpyxl."
+    )
+    assert _com_users(REPO_ROOT / "tools"), (
+        "tools/ no longer drives Excel COM. If that is deliberate, update the "
+        "'Office on the Windows dev box' section of CLAUDE.md and the module "
+        "docstrings in tools/ in the same change, then delete this assertion."
+    )
+
+
+# ─── One plugin version, three files ─────────────────────────────────────────
+
+
+def test_the_three_version_files_agree():
+    """The bump checklist, executed.
+
+    `CLAUDE.md` names exactly three files that carry the version and calls updating
+    all of them a release requirement. That was a hand-check through 47 releases;
+    a missed file ships a plugin whose manifest and package disagree, and nothing
+    would have said so.
+    """
+    import json
+    import tomllib
+
+    marketplace = json.loads(
+        (REPO_ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8")
+    )
+    plugin = json.loads(
+        (PLUGIN_ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+    )
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    found = {
+        ".claude-plugin/marketplace.json": marketplace["version"],
+        "infor-beta/.claude-plugin/plugin.json": plugin["version"],
+        "pyproject.toml": pyproject["project"]["version"],
+    }
+    assert len(set(found.values())) == 1, f"the three version files disagree: {found}"
