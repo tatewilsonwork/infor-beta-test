@@ -136,7 +136,7 @@ rows.
 ## Reference command
 
 ```python
-import json, os, subprocess, sys
+import json, os, sys
 from datetime import date
 from pathlib import Path
 
@@ -145,13 +145,7 @@ sys.path.insert(0, str(plugin_root / "scripts"))
 from precedents_workbook import build_precedents_workbook, PrecedentGroup, PrecedentTransaction
 
 inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())   # conductor mode
-company_name = inputs["company"]["legal_name"]
-template = plugin_root / "templates" / "INFOR Precedents Template.xlsx"  # native path (no /c/…)
-sanitized = subprocess.run(
-    ["bash", str(plugin_root / "scripts" / "sanitize_name.sh"), company_name],
-    capture_output=True, text=True,
-).stdout.strip() or company_name
-out_dir = Path(os.environ.get("DEAL_DIR", ".")) / "artefacts"       # cwd for direct /precedents
+deal_workbook = inputs["deal_workbook"]   # the deal's ONE workbook; the `precedents` tab is in it
 
 # Operating-family example (Revenue + EBITDA). Pick ONE family for the whole table.
 # FORMAT ILLUSTRATION ONLY — the deals/figures below are obviously-synthetic
@@ -183,10 +177,10 @@ groups = [
 ]
 
 workbook_path = build_precedents_workbook(
-    template_path=template,
+
     groups=groups,
     output_currency="USD",                                   # -> C2 (the FX formula keys off it)
-    output_path=out_dir / f"{sanitized} - Precedent Transactions.xlsx",
+    deal_workbook=deal_workbook,
 )
 
 Path(os.environ["STAGE_OUTPUTS"]).write_text(
@@ -256,5 +250,5 @@ Two groups: rows **8–13** (label `E7`) and **17–22** (label `E16`). Write pe
 - Pick **one** metric family per table; do not fill both families' columns.
 - Do **not** build the precedents chart or edit the deck. The slide stays a placeholder until
   Capital IQ refresh is available.
-- The workbook is a companion artefact: the conductor's `workbook-aggregation` stage folds it
-  into the combined `pitch-<deal>.xlsx` as the `precedents` tab.
+- You are writing the `precedents` tab of the deal's single workbook,
+  `pitch-<codename>.xlsx`. Since Phase D there is no companion file and no aggregation stage.

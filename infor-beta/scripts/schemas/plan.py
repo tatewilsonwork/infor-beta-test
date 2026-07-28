@@ -5,8 +5,8 @@ Per Obsidian note 12, H1: start minimal. There is no DAG `depends_on` /
 a stage declares its dependencies implicitly, by referencing an earlier
 stage's output (`$stages.<id>.<name>`). The conductor derives an execution
 schedule from those references and dispatches independent stages in concurrent
-waves (see `plan_schedule.compute_waves`); the `workbook-aggregator` stage is
-pinned to the final wave.
+waves (see `plan_schedule.compute_waves`). Since Phase D every ordering
+constraint is a real reference — there is no hardcoded barrier.
 
 Reference resolution is a pure string-templating pass over `Stage.inputs`:
 

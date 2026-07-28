@@ -57,3 +57,18 @@ class DealContext(BaseModel):
         default=None,
         description="Optional analyst notes captured at deal-init (G7 item 7).",
     )
+
+    @property
+    def deal_workbook(self) -> Path:
+        """The deal's single workbook — `<deal_dir>/<deliverable>-<codename>.xlsx`.
+
+        Every workbook-producing stage writes one tab of this file (Phase D), so
+        plans reference it as `$deal.deal_workbook` rather than threading a path
+        from stage to stage. Derived, not stored, so it cannot disagree with the
+        codename / deliverable / directory it is built from. The conductor creates
+        the file at deal-init with `deal_workbook.init_deal_workbook`; this only
+        says where it is.
+        """
+        from deal_workbook import deal_workbook_path
+
+        return deal_workbook_path(self.deal_dir, str(self.deliverable_type), self.codename)

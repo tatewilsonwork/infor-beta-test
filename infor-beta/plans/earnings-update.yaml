@@ -61,10 +61,11 @@ stages:
       ticker: $deal.subject_company.ticker
       reporting_quarter: $plan_inputs.reporting_quarter
       comparison_quarter: $plan_inputs.comparison_quarter
+      deal_workbook: $deal.deal_workbook
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the standalone LTM metrics .xlsx (revenue overview + revenue/EBITDA bridges; companion to the overview slide pie placeholder).
+        description: Absolute path to the deal workbook, whose `ltm-metrics` tab this stage wrote (revenue overview + revenue/EBITDA bridges; feeds the overview slide pie).
       - name: ltm_revenue
         type: float
         description: LTM revenue total (millions, filing reporting currency) — fed to the cap table D47.
@@ -80,10 +81,11 @@ stages:
       ticker: $deal.subject_company.ticker
       ltm_revenue: $stages.ltm-metrics.ltm_revenue
       ltm_adj_ebitda: $stages.ltm-metrics.ltm_adj_ebitda
+      deal_workbook: $deal.deal_workbook
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the generated companion cap table .xlsx (with LTM revenue/EBITDA in D47/D48).
+        description: Absolute path to the deal workbook, whose `captable` tab this stage wrote (with LTM revenue/EBITDA in D47/D48).
     checkpoint: informational
 
   - id: deck
@@ -100,26 +102,7 @@ stages:
         description: Absolute path to the generated earnings update .pptx deck with the cap table inserted.
     # Pre-delivery gate: the assembled deck is built from untrusted external
     # inputs (filings, EEO snip, web data), so the analyst must approve it
-    # before the final combined workbook is produced. `deck` sits alone in its
-    # wave ahead of `workbook-aggregation`, so this wave-boundary gate
-    # genuinely holds the final artefact.
+    # before delivery. `deck` is the last stage of the plan, so this gate holds
+    # the final artefact.
     checkpoint: required
 
-  # Final consolidation: merge every companion workbook into one file named
-  # earningsupdate-<codename>.xlsx (one tab per producing skill) and delete the
-  # individual sources. Runs last so the deck stage can still read the
-  # standalone cap-table workbook before it is folded in.
-  - id: workbook-aggregation
-    skill: workbook-aggregator
-    inputs:
-      workbooks:
-        captable: $stages.captable.workbook_path
-        ltm-metrics: $stages.ltm-metrics.workbook_path
-      deliverable_type: $deal.deliverable_type
-      deal_name: $deal.codename
-      output_dir: $deal.deal_dir
-    outputs:
-      - name: combined_workbook_path
-        type: Path
-        description: Absolute path to the combined workbook (one tab per producing skill); replaces the individual workbooks once the merge is verified (a degraded or partially-linked merge preserves them).
-    checkpoint: informational

@@ -1,24 +1,25 @@
 """Financial Summary charts — build the deck's metric charts and place them.
 
-Post-aggregation stage (`financial-charts`). One clustered-column chart per
-metric row — four for the default single Financial Summary slide, eight when the
-deck spec asked for two FS slides — is built on the **combined** pitch workbook's
-`financial-summary` tab — the only place each flow metric's
-``=INDEX('ltm-metrics'!…)`` LTM link resolves, because the `ltm-metrics` tab
-co-exists there after `workbook-aggregation` folds it in. (The standalone
-Financial Summary file can't be charted: its LTM cells stay ``#N/A`` until
-aggregation.) The charts are then rendered and dropped into the Financial
-Summary slides' chart placeholders (four per slide, discovered by scanning the
-deck for the Metric #1 placeholder), stretched to each placeholder's box — the
-same picture-into-placeholder pattern as the cap-table / ownership insertions.
+The `financial-charts` stage. One clustered-column chart per metric row — four for
+the default single Financial Summary slide, eight when the deck spec asked for two
+FS slides — is built on the deal workbook's `financial-summary` tab, where each
+flow metric's ``=INDEX('ltm-metrics'!…)`` LTM link is an ordinary internal
+reference to a sibling tab. The charts are then rendered and dropped into the
+Financial Summary slides' chart placeholders (four per slide, discovered by
+scanning the deck for the Metric #1 placeholder), stretched to each placeholder's
+box — the same picture-into-placeholder pattern as the cap-table / ownership
+insertions.
+
+Before Phase D this had to be a *post-aggregation* stage: the two tabs lived in
+separate standalone files until `workbook-aggregation` merged them, so the LTM
+links read ``#N/A`` and could not be charted. The deal owns one workbook from
+stage one now, so this stage's only ordering constraint is that it follows
+`deck` — the deck it edits.
 
 This stage MUTATES THE ALREADY-ASSEMBLED DECK IN PLACE — it must never re-run the
-`deck-assembler` (or any other skill). It runs *after* `workbook-aggregation` has
-folded the standalone `captable` / `ownership` workbooks into the combined file and
-deleted them, so re-assembling the deck would re-paste those (now-gone) tables and
-revert them to empty placeholders. The orchestrators below only open ``deck_path``,
-insert pictures into existing placeholders, and save; nothing here dispatches a
-sub-agent or rebuilds the deck.
+`deck-assembler` (or any other skill). The orchestrators below only open
+``deck_path``, insert pictures into existing placeholders, and save; nothing here
+dispatches a sub-agent or rebuilds the deck.
 
 Two backends mirror ``excel_to_powerpoint.py`` / ``slide_render.py``:
 
@@ -41,7 +42,7 @@ same ``$`` currency format as the tab's value cells (so a bar reads ``$102.7``
 exactly like its cell); all bars filled RGB(70, 86, 110) = hex ``46566E``.
 
 The same module also builds the overview slide's **LTM revenue pie**
-(``render_ltm_revenue_pie_into_deck``): a by-segment pie over the combined
+(``render_ltm_revenue_pie_into_deck``): a by-segment pie over the deal
 workbook's ``ltm-metrics`` tab "LTM Revenue Overview" block. The pie series is the
 **"% of Total" column** (the ``=B/Btotal`` fraction), so its data labels show the
 segment share (value-only, ``#,##0.0%`` format) rather than the dollar amounts —
@@ -119,10 +120,10 @@ _CHART_W_CM = 4.53 * 2.54
 _CHART_H_CM = 2.51 * 2.54
 
 # --- LTM revenue pie (overview slide) ----------------------------------------
-# The pie is built on the combined workbook's `ltm-metrics` tab — its "LTM Revenue
+# The pie is built on the deal workbook's `ltm-metrics` tab — its "LTM Revenue
 # Overview" block carries literal segment × LTM-revenue values — and dropped into
 # the overview slide's wide/short "[Pie Chart Placeholder]" (Rectangle 4). The
-# data live on the same combined workbook the FS charts use, so this rides the
+# data live on the same deal workbook the FS charts use, so this rides the
 # post-aggregation `financial-charts` stage rather than a parallel path.
 _PIE_SHEET_DEFAULT = "ltm-metrics"
 _PIE_SECTION_LABEL = "LTM Revenue Overview"
@@ -248,7 +249,7 @@ def metric_data_rows(ws) -> list[int]:
 def _find_label_row_openpyxl(ws, prefixes) -> int | None:
     """Row (1-based) of the first col-A cell whose text starts with any prefix.
 
-    Mirrors ``workbook_aggregator._find_label_row_openpyxl`` — the established way
+    The established way
     to locate a labelled block on these tabs without hardcoding row numbers.
     """
     for row in ws.iter_rows(min_col=1, max_col=1):
@@ -384,7 +385,7 @@ def _grouped_pie_labels_amounts(names: list, amounts: list) -> tuple[list, list]
 def render_financial_summary_charts_into_deck(
     *,
     deck_path: Path | str,
-    combined_workbook_path: Path | str,
+    deal_workbook: Path | str,
     sheet_name: str = _SHEET_DEFAULT,
     slide_index: int | None = None,
     output_path: Path | str | None = None,
@@ -399,7 +400,7 @@ def render_financial_summary_charts_into_deck(
     known slide instead of scanning (legacy call shape).
 
     Returns the output deck path, or ``None`` when the slide is left with its
-    placeholders — either because the combined workbook has no ``financial-summary``
+    placeholders — either because the deal workbook has no ``financial-summary``
     tab (the financial-summary stage produced nothing) **or** because the native
     charts were persisted to the workbook but their PNGs could not be rendered for
     the deck (LibreOffice unavailable — the graceful-degradation path, Issue 1).
@@ -413,11 +414,11 @@ def render_financial_summary_charts_into_deck(
     deck-assembler — see the module docstring.
     """
     deck = Path(deck_path).resolve()
-    workbook = Path(combined_workbook_path).resolve()
+    workbook = Path(deal_workbook).resolve()
     if not deck.exists():
         raise FileNotFoundError(f"deck not found: {deck}")
     if not workbook.exists():
-        raise FileNotFoundError(f"combined workbook not found: {workbook}")
+        raise FileNotFoundError(f"deal workbook not found: {workbook}")
 
     geometry = _resolve_geometry(workbook, sheet_name)
     if geometry is None:
@@ -464,7 +465,7 @@ def render_financial_summary_charts_into_deck(
 
 
 def _resolve_geometry(workbook: Path, sheet_name: str) -> tuple[int, int, list[int]] | None:
-    """Read the period-axis columns + metric data rows from the combined
+    """Read the period-axis columns + metric data rows from the deal
     workbook, or None if the ``financial-summary`` tab is absent."""
     from openpyxl import load_workbook
 
@@ -507,7 +508,7 @@ def _find_financial_summary_slides(deck_path: Path) -> list[int]:
 def render_ltm_revenue_pie_into_deck(
     *,
     deck_path: Path | str,
-    combined_workbook_path: Path | str,
+    deal_workbook: Path | str,
     sheet_name: str = _PIE_SHEET_DEFAULT,
     slide_index: int | None = None,
     placeholder_name: str = _PIE_PLACEHOLDER,
@@ -515,7 +516,7 @@ def render_ltm_revenue_pie_into_deck(
 ) -> Path | None:
     """Build the LTM-revenue-by-segment pie and place it on the overview slide.
 
-    The pie is built on the combined workbook's ``ltm-metrics`` tab (its "LTM
+    The pie is built on the deal workbook's ``ltm-metrics`` tab (its "LTM
     Revenue Overview" block carries literal segment × LTM-revenue values) and
     dropped into the overview slide's "[Pie Chart Placeholder]" (``Rectangle 4``).
 
@@ -524,7 +525,7 @@ def render_ltm_revenue_pie_into_deck(
     rather than the two agreeing on a number.
 
     Returns the output deck path, or ``None`` when the slide keeps its placeholder
-    — either because the combined workbook has no ``ltm-metrics`` tab / no "LTM
+    — either because the deal workbook has no ``ltm-metrics`` tab / no "LTM
     Revenue Overview" block, **or** because the native pie was persisted to the
     workbook but its PNG could not be rendered for the deck (LibreOffice unavailable
     — the graceful-degradation path). Mirrors the FS / ownership null paths.
@@ -534,11 +535,11 @@ def render_ltm_revenue_pie_into_deck(
     deck-assembler — see the module docstring.
     """
     deck = Path(deck_path).resolve()
-    workbook = Path(combined_workbook_path).resolve()
+    workbook = Path(deal_workbook).resolve()
     if not deck.exists():
         raise FileNotFoundError(f"deck not found: {deck}")
     if not workbook.exists():
-        raise FileNotFoundError(f"combined workbook not found: {workbook}")
+        raise FileNotFoundError(f"deal workbook not found: {workbook}")
 
     rng = _resolve_pie_range(workbook, sheet_name)
     if rng is None:
@@ -577,7 +578,7 @@ def render_ltm_revenue_pie_into_deck(
 
 
 def _resolve_pie_range(workbook: Path, sheet_name: str) -> tuple[int, int] | None:
-    """Read the "LTM Revenue Overview" data-row span from the combined workbook,
+    """Read the "LTM Revenue Overview" data-row span from the deal workbook,
     or None if the ``ltm-metrics`` tab / block is absent."""
     from openpyxl import load_workbook
 
@@ -1120,10 +1121,10 @@ def _persist_native_charts_openpyxl(
     pie_sheet: str = _PIE_SHEET_DEFAULT,
     pie_rows: tuple[int, int] | None = None,
 ):
-    """Load the combined workbook, (re)create native charts, save. Returns the wb.
+    """Load the deal workbook, (re)create native charts, save. Returns the wb.
 
     The FS-chart and pie steps run as separate orchestrator calls against the
-    SAME combined workbook, so each save must neither lose the other step's
+    SAME deal workbook, so each save must neither lose the other step's
     charts nor let a re-run accumulate duplicates:
 
       - The ``rebuild`` side (``"fs"`` | ``"pie"``) has its sheet's charts
@@ -1193,7 +1194,7 @@ def _build_charts_openpyxl_libreoffice(
 ) -> dict[int, bytes]:
     """Persist native openpyxl charts on the tab, then render each PNG.
 
-    The combined workbook off-Windows was already built by openpyxl (CapIQ links
+    The deal workbook off-Windows was already built by openpyxl (CapIQ links
     do not survive that path), so loading + re-saving it here costs nothing extra.
     PNGs are rendered from single-chart temp workbooks built off
     LibreOffice-recalculated values so the LTM bar is correct.
@@ -1322,7 +1323,7 @@ def _palatino_text(size_hundredths: int = _FONT_SIZE_HUNDREDTHS, color: str = "0
 def _libreoffice_recalc_values(
     workbook: Path, sheet_name: str, first_col: int, last_col: int, data_rows: list[int]
 ) -> dict:
-    """Recalc the combined workbook with LibreOffice and read the period labels +
+    """Recalc the deal workbook with LibreOffice and read the period labels +
     each metric row's resolved values (so the LTM cell is no longer a formula)."""
     from openpyxl import load_workbook
 

@@ -40,7 +40,7 @@ stages:
   checkpoint: informational
 ```
 
-- `id` — unique within the plan. Lowercase + hyphens by convention (`ltm-metrics`, `workbook-aggregation`); must not contain a dot (it would break `$stages.<id>.<name>` parsing).
+- `id` — unique within the plan. Lowercase + hyphens by convention (`ltm-metrics`, `financial-charts`); must not contain a dot (it would break `$stages.<id>.<name>` parsing).
 - `skill` — must match a skill directory under `infor-beta/skills/`. The conductor dispatches the named skill via the `Task` (Agent) tool.
 - `inputs` — dict passed to the sub-skill. Values may be literals or **reference strings** (see below).
 - `outputs` — names + types the sub-skill is expected to write to its `outputs.json`. The conductor reads `outputs.json` after the stage finishes and exposes the named outputs as `$stages.<id>.<name>` to later stages. **Declared names are enforced at collect time** (`conductor_cli.collect_wave`): every declared name must be present as a key, or the stage is reported failed naming the missing key(s). Presence only — a `null` value passes (the contract requires e.g. ltm-metrics to emit null, never omit, `ltm_revenue`/`ltm_adj_ebitda`), extra undeclared keys are allowed, and the `type` label stays documentation (no value-type check). Malformed (non-JSON) `outputs.json` is likewise converted to a stage failure rather than crashing the driver.
@@ -66,7 +66,7 @@ Unknown prefix or unresolvable field at dispatch time still raises an error and 
 
 ## What plans should NOT contain
 
-- `depends_on` / `parallel_with` — there is deliberately **no** dependency field. The conductor derives the execution DAG from the `$stages.<id>.<name>` references in each stage's inputs and dispatches independent stages in concurrent waves (`plan_schedule.compute_waves`). To make stage B wait for stage A, reference one of A's outputs in B's inputs. The one non-reference edge — `workbook-aggregator` depending on every stage except its own downstream consumers (it merges and deletes the individual workbooks; a post-aggregation consumer like the pitch plan's `financial-charts` runs in a later wave after it) — is hardcoded in the scheduler, not declared per-plan.
+- `depends_on` / `parallel_with` — there is deliberately **no** dependency field. The conductor derives the execution DAG from the `$stages.<id>.<name>` references in each stage's inputs and dispatches independent stages in concurrent waves (`plan_schedule.compute_waves`). To make stage B wait for stage A, reference one of A's outputs in B's inputs. Since Phase D there are no non-reference edges: the one that existed — `workbook-aggregator` depending on every stage except its own downstream consumers, because it merged and DELETED the individual workbooks — went with the aggregator.
 - `cost_class`, `expected_duration`, `gate_mode_default`, `idempotent` — per-skill operational metadata, not a plan concern. Deferred to a future phase (the prototyped typed skill manifest was removed in 0.5.6; revisit when per-skill metadata is actually needed).
 - Anything that re-asks a G7 question — those are owned by deal-init.
 - Free-form prompt text for the sub-agent. Each stage gets the standardised envelope from `stage-envelope.md`.

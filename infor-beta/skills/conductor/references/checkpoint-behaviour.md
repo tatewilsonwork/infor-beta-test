@@ -23,7 +23,7 @@ Use `required` for stages where the analyst's review is a real-world checkpoint,
 - the assembled deck before QA
 - the final deck before it's shared externally
 
-**Shipped usage:** both shipped plans (`pitch.yaml`, `earnings-update.yaml`) mark the `deck` stage `required` — the pre-delivery gate. The assembled deck is built from untrusted external inputs (filings, exports, web data), so the analyst approves it before the final artefacts are produced. Because `deck` is scheduled alone in its wave ahead of `workbook-aggregation` (and, for pitch, `financial-charts`), the wave-boundary gate genuinely holds the final combined workbook and charted deck. Every other shipped stage is `informational`.
+**Shipped usage:** both shipped plans (`pitch.yaml`, `earnings-update.yaml`) mark the `deck` stage `required` — the pre-delivery gate. The assembled deck is built from untrusted external inputs (filings, exports, web data), so the analyst approves it before delivery. For pitch, `deck` is scheduled alone in its wave ahead of `financial-charts`, so the wave-boundary gate genuinely holds the charted deck; the earnings-update plan ends at `deck`, so its gate has no downstream wave to hold. Every other shipped stage is `informational`.
 
 ## `informational` (default)
 

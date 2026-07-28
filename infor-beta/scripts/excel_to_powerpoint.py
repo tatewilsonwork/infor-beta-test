@@ -426,7 +426,7 @@ def find_soffice() -> str | None:
     directly.** A bare PATH lookup is what shipped in v0.5.35: the renderer was
     flipped to LibreOffice-by-default on every platform while five other call
     sites (this module's range renderer, three in ``financial_charts``, one in
-    ``workbook_aggregator``) still resolved through PATH only, so on a Windows
+    the aggregator, since deleted) still resolved through PATH only, so on a Windows
     dev box (MSI install, no PATH entry) they failed or silently degraded —
     inverting the dev/prod parity the flip existed to create. The drift lock in
     ``test_excel_to_powerpoint.py`` fails if a bare lookup reappears.

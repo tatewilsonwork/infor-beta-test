@@ -91,20 +91,20 @@ asset class, client segment, or business model). Rules:
 - Examples: `Enterprise workflow & IT service mgmt` (38), `Global payments & merchant acquiring`
   (37), `Diversified multi-asset & alternatives mgr` (43).
 
-### Step 5 — Build the workbook
+### Step 5 — Write the `comps` tab
 
-Resolve the template at `$CLAUDE_PLUGIN_ROOT/templates/INFOR Comps Template.xlsx` **in Python**
-(the same primary location `find_template.sh` searches; resolving it in Python avoids the
-Git-Bash `/c/…` path that breaks `pathlib` on Windows) and build with the shared helper — see
-the reference command below.
+The deal owns ONE workbook, created at deal-init, and the `comps` tab is already in it with
+its CapIQ array formulas and `infor_comps_*` defined names. Pass the workbook path from
+`$STAGE_INPUTS["deal_workbook"]` to the shared helper — see the reference command below.
 
-**Do not build the workbook by hand or in any other format.** If the template can't be found,
-stop and tell the analyst to confirm `INFOR Comps Template.xlsx` exists in the plugin
-`templates/`.
+**Do not create a standalone comps workbook, and do not copy a template.** There is no
+`output_path` and no `template_path` any more; `write_tab` serializes the write so concurrent
+stages in the same wave cannot clobber one another. If the tab is missing or has lost its
+defined names, the helper raises `TemplateLayoutError` — stop and report it verbatim.
 
 ### Step 6 — Summary
 
-Report: the output path; the three verticals, each with its six companies (ticker — description);
+Report: the deal workbook path and the tab written; the three verticals, each with its six companies (ticker — description);
 and the reminder that the analyst must **open the file in Excel with the Capital IQ add-in
 active and refresh** to populate every market-data / multiple / statistic column (this
 environment can't refresh CapIQ). Flag any ticker whose current listing you could not verify.
@@ -114,7 +114,7 @@ environment can't refresh CapIQ). Flag any ticker whose current listing you coul
 ## Reference command
 
 ```python
-import json, os, subprocess, sys
+import json, os, sys
 from pathlib import Path
 
 plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
@@ -122,13 +122,7 @@ sys.path.insert(0, str(plugin_root / "scripts"))
 from comps_workbook import build_comps_workbook, Vertical, CompCompany
 
 inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())   # conductor mode
-company_name = inputs["company"]["legal_name"]
-template = plugin_root / "templates" / "INFOR Comps Template.xlsx"   # native path (no /c/… )
-sanitized = subprocess.run(
-    ["bash", str(plugin_root / "scripts" / "sanitize_name.sh"), company_name],
-    capture_output=True, text=True,
-).stdout.strip() or company_name
-out_dir = Path(os.environ.get("DEAL_DIR", ".")) / "artefacts"       # cwd for direct /comps
+deal_workbook = inputs["deal_workbook"]   # the deal's ONE workbook; the `comps` tab is in it
 
 # FORMAT ILLUSTRATION ONLY — the tickers/labels below are obviously-synthetic
 # placeholders showing the call shape; NEVER reuse them as data. Every real
@@ -150,9 +144,8 @@ verticals = [
 ]
 
 workbook_path = build_comps_workbook(
-    template_path=template,
     verticals=verticals,
-    output_path=out_dir / f"{sanitized} - Comparable Companies.xlsx",
+    deal_workbook=deal_workbook,
 )
 
 Path(os.environ["STAGE_OUTPUTS"]).write_text(
@@ -202,6 +195,6 @@ Use `Exchange:Ticker`. Common prefixes:
   Capital IQ populates every metric column on refresh; this environment cannot refresh it.
 - Do **not** build the comps chart or edit the deck. The comps slide stays a placeholder; a
   later stage handles the Excel→PowerPoint step once CapIQ refresh is available.
-- The workbook is a companion artefact: the conductor's `workbook-aggregation` stage folds it
-  into the combined `pitch-<deal>.xlsx` as the `comps` tab (the CapIQ `__snloffice` helper
-  sheet is dropped automatically).
+- You are writing the `comps` tab of the deal's single workbook, `pitch-<codename>.xlsx`.
+  Since Phase D there is no companion file and no aggregation stage to fold one in; the CapIQ
+  `__snloffice` helper sheet was already dropped when the deal-workbook template was built.

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from plan_refs import iter_input_strings, parse_ref
 from plan_schedule import PlanCycleError, compute_waves, stage_dependencies
 from schemas import OutputSpec, Plan, Stage
 
@@ -28,14 +29,17 @@ def _stage(id, skill=None, inputs=None):
 
 
 def test_pitch_plan_waves():
-    """The pitch plan schedules 11 stages into 7 dependency waves.
+    """The pitch plan schedules 10 stages into 6 dependency waves.
 
     Wave 0 overlaps the research-heavy roots (financial-summary / comps /
     precedents / wireframe). financial-summary precedes ltm-metrics because it
     selects the deck's metrics and tells ltm-metrics which extra ones to bridge.
-    `workbook-aggregation` is alone in its wave (it consolidates + deletes the
-    source workbooks), then `financial-charts` runs strictly last: it charts the
-    combined workbook (where the LTM links resolve) and edits the assembled deck.
+    `financial-charts` runs strictly last: it edits the assembled deck.
+
+    Phase D removed the `workbook-aggregation` wave that used to sit between
+    `deck` and `financial-charts`. The deal owns one workbook from stage one, so
+    there is nothing to consolidate and the chart stage's LTM links already
+    resolve.
     """
     waves = compute_waves(_load_plan("pitch.yaml"))
     assert waves == [
@@ -44,7 +48,6 @@ def test_pitch_plan_waves():
         ["captable"],
         ["ownership"],
         ["deck"],
-        ["workbook-aggregation"],
         ["financial-charts"],
     ]
 
@@ -55,17 +58,19 @@ def test_earnings_update_plan_waves():
         ["wireframe", "ltm-metrics"],
         ["content", "captable"],
         ["deck"],
-        ["workbook-aggregation"],
     ]
 
 
-def test_financial_charts_depends_on_deck_and_aggregation():
-    """`financial-charts` edits the assembled deck and charts the combined workbook,
-    so it must depend on BOTH `deck` and `workbook-aggregation`. This is the contract
-    the post-aggregation chart + LTM-pie rendering (and its graceful-degradation path)
-    relies on — lock it so a future plan edit can't reorder the stage ahead of either."""
+def test_financial_charts_depends_on_deck():
+    """`financial-charts` edits the assembled deck, so it must depend on `deck`.
+
+    That is now its ONLY ordering constraint — before Phase D it also had to
+    follow `workbook-aggregation`, because the `financial-summary` LTM links
+    resolved only in the combined workbook. Lock the remaining edge so a plan
+    edit cannot reorder the stage ahead of the deck it mutates.
+    """
     deps = stage_dependencies(_load_plan("pitch.yaml"))
-    assert {"deck", "workbook-aggregation"} <= deps["financial-charts"]
+    assert "deck" in deps["financial-charts"]
 
 
 def test_required_deck_gate_precedes_final_artefact_waves():
@@ -73,16 +78,20 @@ def test_required_deck_gate_precedes_final_artefact_waves():
     (v0.5.31). Checkpoints are evaluated at the wave boundary and only stop
     DOWNSTREAM waves, so the gate is only real if `deck` is scheduled in an
     earlier wave than the final-artefact stages — lock that here so a plan edit
-    can't silently move aggregation or charts alongside (or ahead of) the gate."""
+    can't silently move charts alongside (or ahead of) the gate."""
     for name in ("pitch.yaml", "earnings-update.yaml"):
         plan = _load_plan(name)
         checkpoints = {s.id: s.checkpoint for s in plan.stages}
         assert checkpoints["deck"] == "required", name
         assert all(m == "informational" for sid, m in checkpoints.items() if sid != "deck"), name
-        wave_index = {sid: i for i, wave in enumerate(compute_waves(plan)) for sid in wave}
-        assert wave_index["deck"] < wave_index["workbook-aggregation"], name
+        waves = compute_waves(plan)
+        wave_index = {sid: i for i, wave in enumerate(waves) for sid in wave}
         if "financial-charts" in wave_index:
             assert wave_index["deck"] < wave_index["financial-charts"], name
+        else:
+            # Since Phase D the earnings-update plan ENDS at `deck`, so its gate
+            # has no downstream wave to hold; it still fires before delivery.
+            assert wave_index["deck"] == len(waves) - 1, name
 
 
 def test_every_stage_scheduled_exactly_once():
@@ -161,60 +170,6 @@ def test_non_stage_references_do_not_create_edges():
 
 
 # --- aggregator barrier -----------------------------------------------------
-
-
-def test_aggregator_depends_on_everything():
-    """A workbook-aggregator stage depends on all others even with no explicit
-    reference to some of them — the hardcoded final-barrier rule."""
-    plan = Plan(
-        deliverable_type="pitch",
-        description="x",
-        stages=[
-            _stage("a"),
-            _stage("b"),
-            _stage("agg", skill="workbook-aggregator", inputs={"w": "$stages.a.out"}),
-        ],
-    )
-    deps = stage_dependencies(plan)
-    assert deps["agg"] == {"a", "b"}  # 'b' added by the barrier, not a reference
-    waves = compute_waves(plan)
-    assert waves[-1] == ["agg"]  # strictly last, alone
-
-
-def test_aggregator_runs_after_a_stage_it_does_not_reference():
-    """Regression for the deck/aggregator side-effect ordering: the aggregator
-    must follow `deck` even though it never references deck's output."""
-    plan = _load_plan("pitch.yaml")
-    wave_index = {sid: i for i, wave in enumerate(compute_waves(plan)) for sid in wave}
-    assert wave_index["workbook-aggregation"] > wave_index["deck"]
-
-
-def test_post_aggregation_consumer_does_not_cycle():
-    """A stage that consumes the combined workbook (e.g. `financial-charts`) runs
-    AFTER the aggregator. The barrier must not force the aggregator to depend on
-    its own consumer (that would be a cycle)."""
-    plan = Plan(
-        deliverable_type="pitch",
-        description="x",
-        stages=[
-            _stage("a"),
-            _stage("deck", inputs={"x": "$stages.a.out"}),
-            _stage("agg", skill="workbook-aggregator", inputs={"w": "$stages.a.out"}),
-            _stage("charts", inputs={"wb": "$stages.agg.out", "d": "$stages.deck.out"}),
-        ],
-    )
-    deps = stage_dependencies(plan)
-    # The aggregator depends on producers (a, deck) but NOT on its consumer.
-    assert "charts" not in deps["agg"]
-    assert {"a", "deck"} <= deps["agg"]
-    # No cycle; charts is strictly last.
-    waves = compute_waves(plan)
-    assert waves[-1] == ["charts"]
-    wave_index = {sid: i for i, wave in enumerate(waves) for sid in wave}
-    assert wave_index["charts"] > wave_index["agg"]
-
-
-# --- cycle detection --------------------------------------------------------
 
 
 def test_cycle_raises():

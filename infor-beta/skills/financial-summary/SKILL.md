@@ -112,7 +112,7 @@ the artefact is auditable without this chat transcript. Pass `sources=[...]` on 
 `"FY2023 10-K, Consolidated Statements of Operations"`, or the attached filing's filename plus the
 section) — and set `ltm_source` on each **non-flow** metric's point-in-time LTM figure. The builder
 writes each as a `Source: <…>` cell comment on the value cell (shared `comment_citations` helper),
-and the workbook aggregator carries the comments into the combined workbook. Never skip a source —
+on the deal workbook's `financial-summary` tab. Never skip a source —
 a headline figure with no citation is indistinguishable from an invented one. (Flow metrics' LTM
 cells are links into the `ltm-metrics` tab, whose bridge components carry their own citations, so
 they need no `ltm_source`.)
@@ -166,7 +166,7 @@ aggregator folds this tab and the `ltm-metrics` tab into the combined `pitch-<co
 
 ```json
 {
-  "workbook_path": "/absolute/path/to/<Company> - Financial Summary.xlsx",
+  "workbook_path": "/absolute/path/to/pitch-<codename>.xlsx",
   "financial_metric_labels": ["Revenue", "Gross Profit", "Adjusted EBITDA", "Net Income"],
   "ltm_bridge_specs": [
     {"tile_label": "Gross Profit", "result_label": "LTM Gross Profit"},
@@ -184,7 +184,7 @@ aggregator folds this tab and the `ltm-metrics` tab into the combined `pitch-<co
 ## Chart-ready layout contract
 
 Future chart steps rely on this exact shape on the `Financial Summary` tab (renamed
-`financial-summary` in the combined workbook):
+`financial-summary` tab of the deal workbook):
 
 | Cell(s) | Contents |
 |---------|----------|
@@ -203,7 +203,7 @@ metric row and charts it directly.
 ## Reference command
 
 ```python
-import json, os, subprocess, sys
+import json, os, sys
 from pathlib import Path
 
 plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
@@ -212,11 +212,7 @@ from financial_summary_workbook import build_financial_summary_workbook, MetricS
 
 inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())   # conductor mode
 company_name = inputs["company"]["legal_name"]
-sanitized = subprocess.run(
-    ["bash", str(plugin_root / "scripts" / "sanitize_name.sh"), company_name],
-    capture_output=True, text=True,
-).stdout.strip() or company_name
-out_dir = Path(os.environ.get("DEAL_DIR", ".")) / "artefacts"
+deal_workbook = inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `financial-summary` tab
 
 # FORMAT ILLUSTRATION ONLY — the labels/values below are obviously-synthetic
 # placeholders showing the call shape; NEVER reuse them as data. Every real
@@ -244,7 +240,7 @@ workbook_path = build_financial_summary_workbook(
     metrics=metrics,
     metric_count=inputs.get("financial_metric_count") or 4,  # 4 or 8; must equal len(metrics)
     show_ltm=True,                       # False when the latest filing is a 10-K with no later stub
-    output_dir=out_dir,
+    deal_workbook=deal_workbook,
     file_stem=f"{sanitized} - Financial Summary",
 )
 
@@ -269,6 +265,7 @@ Path(os.environ["STAGE_OUTPUTS"]).write_text(json.dumps(handoff, indent=2) + "\n
   only *link* to it. Do not hardcode an LTM value for a flow metric.
 - Do **not** build charts or edit the deck — the Financial Summary slide's chart regions stay
   placeholders; a later task builds them off this tab.
-- The workbook is a companion artefact: the conductor's `workbook-aggregation` stage folds it into
-  the combined `pitch-<codename>.xlsx` as the `financial-summary` tab, where the LTM links resolve
-  against the `ltm-metrics` tab.
+- You are writing the `financial-summary` tab of the deal's single workbook,
+  `pitch-<codename>.xlsx`. The LTM links resolve against the sibling `ltm-metrics` tab
+  immediately — before Phase D they were `#N/A` until an aggregation stage merged the two
+  standalone files.

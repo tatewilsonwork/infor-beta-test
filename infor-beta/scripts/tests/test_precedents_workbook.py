@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
+
+from deal_workbook import TAB_PRECEDENTS, init_deal_workbook
 from openpyxl.worksheet.formula import ArrayFormula
 
 from precedents_workbook import (
@@ -24,6 +26,13 @@ from precedents_workbook import (
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = PLUGIN_ROOT / "templates" / "INFOR Precedents Template.xlsx"
+
+
+def _deal(tmp_path: Path) -> Path:
+    """A fresh deal workbook — the `precedents` tab arrives with it."""
+    return init_deal_workbook(
+        deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+    )
 
 
 def _operating_tx(**overrides) -> PrecedentTransaction:
@@ -71,9 +80,8 @@ def _build(tmp_path: Path, groups=None, **kwargs) -> Path:
             PrecedentGroup("Financial Peers", [_financial_tx()]),
         ]
     return build_precedents_workbook(
-        template_path=TEMPLATE,
+        deal_workbook=_deal(tmp_path),
         groups=groups,
-        output_path=tmp_path / "Precedents.xlsx",
         **kwargs,
     )
 
@@ -89,7 +97,7 @@ def _as_date(value):
 
 
 def test_writes_identity_metrics_and_groups(tmp_path: Path):
-    ws = load_workbook(_build(tmp_path))["Precedents"]
+    ws = load_workbook(_build(tmp_path))[TAB_PRECEDENTS]
 
     # Output currency (C2) defaults to USD; group labels at E7 / E16.
     assert ws["C2"].value == "USD"
@@ -119,7 +127,7 @@ def test_disclosed_multiple_overwrites_ratio_formula(tmp_path: Path):
     """A disclosed multiple replaces the S–Z ratio formula with a literal; an
     un-disclosed ratio keeps its template formula so it computes on refresh."""
     groups = [PrecedentGroup("Ops", [_operating_tx(ev_ebitda_ltm=12.5, ebitda_ltm=None)])]
-    ws = load_workbook(_build(tmp_path, groups))["Precedents"]
+    ws = load_workbook(_build(tmp_path, groups))[TAB_PRECEDENTS]
 
     assert ws["U8"].value == 12.5                       # EV/EBITDA literal
     assert ws["O8"].value is None                        # no $ EBITDA written
@@ -127,7 +135,7 @@ def test_disclosed_multiple_overwrites_ratio_formula(tmp_path: Path):
 
 
 def test_source_links_hyperlinked_unused_cleared(tmp_path: Path):
-    ws = load_workbook(_build(tmp_path))["Precedents"]
+    ws = load_workbook(_build(tmp_path))[TAB_PRECEDENTS]
 
     # Provided links -> "Link" text + hyperlink target.
     assert ws["AB8"].value == "Link"
@@ -143,7 +151,7 @@ def test_source_links_hyperlinked_unused_cleared(tmp_path: Path):
 
 def test_live_formulas_preserved(tmp_path: Path):
     """FX / TEV / ratio / statistic formulas must survive the openpyxl round-trip."""
-    ws = load_workbook(_build(tmp_path))["Precedents"]
+    ws = load_workbook(_build(tmp_path))[TAB_PRECEDENTS]
 
     fx = _ftext(ws["C8"])
     assert isinstance(fx, str) and "SPG" in fx and "$C$2" in fx
@@ -160,7 +168,7 @@ def test_live_formulas_preserved(tmp_path: Path):
 def test_only_intended_cells_written(tmp_path: Path):
     """Unused rows stay blank and an unfilled group keeps its placeholder."""
     groups = [PrecedentGroup("Solo", [_operating_tx()])]
-    ws = load_workbook(_build(tmp_path, groups))["Precedents"]
+    ws = load_workbook(_build(tmp_path, groups))[TAB_PRECEDENTS]
 
     assert ws["E7"].value == "Solo"
     assert ws["F8"].value == "Target Operating Co"
@@ -170,7 +178,7 @@ def test_only_intended_cells_written(tmp_path: Path):
 
 def test_iso_date_string_coerced_via_dict(tmp_path: Path):
     out = build_precedents_workbook(
-        template_path=TEMPLATE,
+        deal_workbook=_deal(tmp_path),
         groups=[{"name": "Dict Group", "transactions": [{
             "input_currency": "gbp",
             "announce_date": "2023-11-20",
@@ -180,10 +188,9 @@ def test_iso_date_string_coerced_via_dict(tmp_path: Path):
             "hq_country": "gbr",
             "ev_revenue_ltm": 3.1,
         }]}],
-        output_path=tmp_path / "Precedents.xlsx",
         output_currency="cad",
     )
-    ws = load_workbook(out)["Precedents"]
+    ws = load_workbook(out)[TAB_PRECEDENTS]
     assert ws["C2"].value == "CAD"          # lower-case input upper-cased
     assert ws["B8"].value == "GBP"
     assert ws["AI8"].value == "GBR"
@@ -246,13 +253,13 @@ def test_deal_with_only_a_disclosed_multiple_is_allowed(tmp_path: Path):
         target="Multiple-Only Co", acquiror="Buyer LP", tev=900.0, hq_country="USA",
         ev_ebitda_ltm=11.0,
     )
-    ws = load_workbook(_build(tmp_path, [PrecedentGroup("G", [tx])]))["Precedents"]
+    ws = load_workbook(_build(tmp_path, [PrecedentGroup("G", [tx])]))[TAB_PRECEDENTS]
     assert ws["U8"].value == 11.0
 
 
 def test_target_and_acquiror_use_palatino_9(tmp_path: Path):
     """Target / acquiror are written Palatino 9, not the template's stray Calibri 11."""
-    ws = load_workbook(_build(tmp_path))["Precedents"]
+    ws = load_workbook(_build(tmp_path))[TAB_PRECEDENTS]
     for ref in ("F8", "G8"):
         assert ws[ref].font.name == "Palatino Linotype", f"{ref} must be Palatino"
         assert ws[ref].font.size == 9, f"{ref} must be 9 pt"
@@ -261,11 +268,10 @@ def test_target_and_acquiror_use_palatino_9(tmp_path: Path):
 def test_unknown_dict_field_raises(tmp_path: Path):
     with pytest.raises(ValueError, match="unknown transaction field"):
         build_precedents_workbook(
-            template_path=TEMPLATE,
+            deal_workbook=_deal(tmp_path),
             groups=[{"name": "G", "transactions": [{
                 "input_currency": "USD", "announce_date": "2025-01-01",
                 "target": "T", "acquiror": "A", "tev": 100, "hq_country": "USA",
                 "ev_revenue": 3.0,  # not a real field (should be ev_revenue_ltm/ntm)
             }]}],
-            output_path=tmp_path / "Precedents.xlsx",
-        )
+            )

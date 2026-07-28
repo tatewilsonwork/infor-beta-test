@@ -9,27 +9,21 @@ per stage, all issued in a single message), waits for the whole wave to finish,
 then moves to the next — collapsing the critical path from the *sum* of stage
 durations to the *longest dependency chain*.
 
-Two kinds of edge feed the DAG:
+**One kind of edge feeds the DAG: data edges, auto-derived.** If stage B's
+inputs contain the reference string `$stages.A.<name>`, then B depends on A.
+This reuses the very same reference grammar the resolver (`plan_refs`)
+understands, so the schedule can never disagree with what actually resolves at
+dispatch time. No `depends_on` field is added to the Stage schema — the
+references *are* the DAG.
 
-1. **Data edges — auto-derived.** If stage B's inputs contain the reference
-   string `$stages.A.<name>`, then B depends on A. This reuses the very same
-   reference grammar the resolver (`plan_refs`) understands, so the schedule can
-   never disagree with what actually resolves at dispatch time. No `depends_on`
-   field is added to the Stage schema — the references *are* the DAG.
-
-2. **The aggregator barrier — hardcoded.** The `workbook-aggregator` stage
-   *mutates* the run: it merges every companion `.xlsx` into one combined
-   workbook and deletes the individual sources. The deck-assembler reads one of
-   those sources (the standalone cap table) before it is folded in, and that
-   ordering is a filesystem side-effect, NOT a value reference — so it is
-   invisible to the data-edge derivation above. We therefore force the
-   aggregator to depend on every other stage EXCEPT its own downstream
-   consumers (stages that reference `$stages.workbook-aggregation.*`, e.g. the
-   pitch plan's post-aggregation `financial-charts`, which must run after it —
-   including them would be a cycle). The aggregator is thus always alone in its
-   wave, with any post-aggregation consumers in later waves; see
-   `stage_dependencies` (generalized in v0.5.16 from the original strict
-   final-barrier form).
+Phase D removed the second kind. A hardcoded **aggregator barrier** used to force
+the `workbook-aggregator` stage to depend on every other stage except its own
+downstream consumers, because that stage merged every companion `.xlsx` into one
+combined workbook and deleted the sources — an ordering the deck-assembler
+depended on through the *filesystem*, invisible to a reference scan. The deal now
+owns one workbook from stage one, so there is no merge, no deletion, and no
+side-effect edge: every ordering constraint in every shipped plan is a real data
+reference again.
 
 The scheduler only *orders* stages. It does not validate references: a typo'd
 `$stages.<id>` is ignored here and left for the load-time pre-flight
@@ -46,46 +40,19 @@ from __future__ import annotations
 from plan_refs import iter_input_strings, parse_ref
 from schemas import Plan
 
-# Skill name whose stage acts as a strict final barrier (see module docstring).
-_AGGREGATOR_SKILL = "workbook-aggregator"
-
 
 class PlanCycleError(ValueError):
     """The plan's stage dependencies form a cycle — it cannot be scheduled."""
 
 
-def _transitive_deps(deps: dict[str, set[str]]) -> dict[str, set[str]]:
-    """Transitive closure of a direct-dependency map (fixpoint iteration)."""
-    closure = {k: set(v) for k, v in deps.items()}
-    changed = True
-    while changed:
-        changed = False
-        for k in closure:
-            add: set[str] = set()
-            for d in closure[k]:
-                add |= closure.get(d, set())
-            if not add <= closure[k]:
-                closure[k] |= add
-                changed = True
-    return closure
-
-
 def stage_dependencies(plan: Plan) -> dict[str, set[str]]:
     """Map each stage id to the set of stage ids it depends on.
 
-    Data edges are derived from `$stages.<id>.<name>` references found anywhere
-    in a stage's inputs. The `workbook-aggregator` stage (if present) is then
-    forced to depend on every other stage **except its own downstream
-    consumers** — the barrier rule (see module docstring). Self-references and
-    references to unknown stage ids are dropped.
-
-    Excluding the aggregator's consumers matters once a stage runs *after*
-    aggregation (e.g. `financial-charts`, which charts the combined workbook):
-    such a stage references `$stages.<aggregator>.…`, so blindly making the
-    aggregator depend on *every* stage would form a cycle. A stage that consumes
-    the combined workbook must run after the aggregator, never before it. Plans
-    with no post-aggregation consumer are unaffected (the consumer set is empty,
-    so the aggregator still depends on every other stage and is alone last).
+    Edges are derived from `$stages.<id>.<name>` references found anywhere in a
+    stage's inputs. Self-references and references to unknown stage ids are
+    dropped. That is the whole rule: since Phase D deleted the aggregator there
+    is no forced barrier, so every ordering constraint is a real data reference
+    and this function is a pure read of the plan.
     """
     ids = {s.id for s in plan.stages}
     deps: dict[str, set[str]] = {s.id: set() for s in plan.stages}
@@ -101,17 +68,6 @@ def stage_dependencies(plan: Plan) -> dict[str, set[str]]:
             dep_id = parts[0]
             if dep_id in ids and dep_id != stage.id:
                 deps[stage.id].add(dep_id)
-
-    # Aggregator barrier: it consolidates + deletes every source workbook, so it
-    # must run strictly last among its *producers* — after the deck reads the
-    # standalone cap table — but strictly *before* any stage that consumes the
-    # combined workbook it emits. Use the data-edge closure to find those
-    # consumers and leave them out of the forced dependency set.
-    trans = _transitive_deps(deps)
-    for stage in plan.stages:
-        if stage.skill == _AGGREGATOR_SKILL:
-            consumers = {sid for sid in ids if stage.id in trans.get(sid, set())}
-            deps[stage.id] |= ids - {stage.id} - consumers
 
     return deps
 

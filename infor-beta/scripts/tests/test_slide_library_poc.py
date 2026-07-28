@@ -287,15 +287,15 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
         "ltm-metrics",
         "captable",
         "deck",
-        "workbook-aggregation",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
     assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
-    # Aggregation runs last so the deck stage can still read the standalone cap table.
-    assert plan.stages[-1].id == "workbook-aggregation"
+    # Since Phase D the deck stage is last: there is no aggregation stage, because
+    # every producer wrote its own tab of the deal's single workbook.
+    assert plan.stages[-1].id == "deck"
     # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before workbook aggregation produces the final artefact.
+    # assembled deck before delivery.
     assert deck_stage.checkpoint == "required"
     assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
 
@@ -314,7 +314,6 @@ def test_pitch_library_poc_plan_stage_order():
         "comps",
         "precedents",
         "deck",
-        "workbook-aggregation",
         "financial-charts",
     ]
     assert plan.stages[0].skill == "pitch-wireframe"
@@ -326,14 +325,15 @@ def test_pitch_library_poc_plan_stage_order():
     assert plan.stages[6].skill == "comps"
     assert plan.stages[7].skill == "precedents"
     assert plan.stages[8].skill == "deck-assembler"
-    assert plan.stages[9].skill == "workbook-aggregator"
-    assert plan.stages[10].skill == "financial-charts"
-    # financial-charts runs last: it charts the combined workbook and edits the deck.
+    assert plan.stages[9].skill == "financial-charts"
+    # financial-charts runs last: it charts the deal workbook and edits the deck.
+    # Since Phase D its only ordering constraint is `deck` — the aggregation stage
+    # it used to wait for is gone, along with the combined workbook it produced.
     fc_stage = next(s for s in plan.stages if s.id == "financial-charts")
-    assert fc_stage.inputs["combined_workbook_path"] == "$stages.workbook-aggregation.combined_workbook_path"
+    assert fc_stage.inputs["deal_workbook"] == "$deal.deal_workbook"
     assert fc_stage.inputs["deck_path"] == "$stages.deck.deck_path"
     # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before aggregation + charts produce the final artefacts.
+    # assembled deck before the charts produce the final artefact.
     assert next(s for s in plan.stages if s.id == "deck").checkpoint == "required"
     assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
     deck_stage = next(s for s in plan.stages if s.id == "deck")
@@ -365,14 +365,13 @@ def test_pitch_library_poc_plan_stage_order():
     captable_stage = next(s for s in plan.stages if s.id == "captable")
     assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
-    # The LTM, financial-summary, ownership, comps and precedents workbooks fold into
-    # the combined pitch workbook.
-    agg_stage = next(s for s in plan.stages if s.id == "workbook-aggregation")
-    assert agg_stage.inputs["workbooks"]["ltm-metrics"] == "$stages.ltm-metrics.workbook_path"
-    assert agg_stage.inputs["workbooks"]["financial-summary"] == "$stages.financial-summary.workbook_path"
-    assert agg_stage.inputs["workbooks"]["ownership"] == "$stages.ownership.workbook_path"
-    assert agg_stage.inputs["workbooks"]["comps"] == "$stages.comps.workbook_path"
-    assert agg_stage.inputs["workbooks"]["precedents"] == "$stages.precedents.workbook_path"
+    # Every workbook-producing stage writes a tab of the deal's ONE workbook, so
+    # each is handed the same `$deal.deal_workbook` instead of emitting a
+    # standalone file for a later merge to consolidate.
+    for stage_id in ("ltm-metrics", "financial-summary", "ownership", "comps",
+                     "precedents", "captable"):
+        stage = next(s for s in plan.stages if s.id == stage_id)
+        assert stage.inputs["deal_workbook"] == "$deal.deal_workbook", stage_id
 
 
 # ─── Helpers for the post-review fixes ───────────────────────────────────────
