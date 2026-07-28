@@ -14,6 +14,7 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.util import Pt
 
+from deal_workbook import TAB_CAPTABLE
 from deck_repair import assert_converged, converge_deck
 from excel_to_powerpoint import insert_excel_into_placeholder
 from naming import safe_filename
@@ -35,7 +36,6 @@ from schemas import EarningsUpdateContent, SlidePlan
 from template_layout import (
     CAP_TABLE_PICTURE_NAMES,
     CAP_TABLE_PICTURE_RANGE,
-    CAP_TABLE_SHEET,
     MARKER_CONTACT,
     MARKER_COVER,
     MARKER_DISCLAIMER,
@@ -71,10 +71,15 @@ _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
 
 
 def cap_table_picture_range(workbook_path) -> str:
-    """The cap table's slide-picture range, by name."""
+    """The cap table's slide-picture range, by name.
+
+    ``workbook_path`` is the **deal workbook**, so the sheet is ``TAB_CAPTABLE``
+    and not the source template's ``Cap with Links`` — see the sheet-name note in
+    `template_layout`.
+    """
     return resolve_workbook_range(
         workbook_path,
-        sheet=CAP_TABLE_SHEET,
+        sheet=TAB_CAPTABLE,
         name=NAME_CAP_PICTURE_RANGE,
         fallback=CAP_TABLE_PICTURE_RANGE,
     )
@@ -365,7 +370,7 @@ def assemble_earnings_update_deck(
         # lost the name raises instead of pasting whatever the shipped address
         # happens to hold now.
         verify_workbook_names(
-            captable_workbook_path, sheet=CAP_TABLE_SHEET, names=CAP_TABLE_PICTURE_NAMES
+            captable_workbook_path, sheet=TAB_CAPTABLE, names=CAP_TABLE_PICTURE_NAMES
         )
         insert_excel_into_placeholder(
             deck_path=output_path,
@@ -385,7 +390,7 @@ def assemble_earnings_update_deck(
             # un-gating them surfaced this immediately.
             slide_index=overview_at,
             placeholder_name=_CAP_TABLE_PLACEHOLDER,
-            sheet_name=CAP_TABLE_SHEET,
+            sheet_name=TAB_CAPTABLE,
             source_range=cap_table_picture_range(captable_workbook_path),
         )
     _verify_output(

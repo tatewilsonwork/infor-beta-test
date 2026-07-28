@@ -29,6 +29,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Emu, Inches
 
+from deal_workbook import TAB_CAPTABLE, TAB_OWNERSHIP
 from deck_repair import assert_converged, converge_deck
 from excel_to_powerpoint import insert_excel_into_placeholder
 from naming import safe_filename
@@ -51,7 +52,6 @@ from template_layout import (
     CAP_TABLE_OUTPUT_CCY_NAMES,
     CAP_TABLE_PICTURE_NAMES,
     CAP_TABLE_PICTURE_RANGE,
-    CAP_TABLE_SHEET,
     MARKER_COMPS,
     MARKER_COVER,
     MARKER_EARNINGS_SUMMARY,
@@ -70,7 +70,6 @@ from template_layout import (
     OWNERSHIP_INSIDERS_PICTURE_RANGE,
     OWNERSHIP_INSTITUTIONS_PICTURE_NAMES,
     OWNERSHIP_INSTITUTIONS_PICTURE_RANGE,
-    OWNERSHIP_SHEET,
     TemplateLayoutError,
     find_optional_slide_by_marker,
     find_slide_by_marker,
@@ -85,13 +84,19 @@ _FS_TITLE_SHAPE = "Title 6"
 _FS_METRIC_TILES = ["Rectangle 13", "Rectangle 12", "Rectangle 15", "Rectangle 14"]
 _FS_TILES_PER_SLIDE = len(_FS_METRIC_TILES)
 
+# Every workbook this module reads is the DEAL workbook, so its sheets are
+# addressed by `deal_workbook.TAB_*` — never by a `template_layout`
+# `*_SOURCE_SHEET`, which is the corresponding sheet name in the *source*
+# template (the cap table's is `Cap with Links` there, `captable` here). Reaching
+# for the source constant is the v0.5.45 bug; see the sheet-name note in
+# `template_layout`.
+
 # Overview-slide cap-table placeholder; the picture covers the capitalization
 # summary plus the Financial/Valuation metric rows (same range as the earnings
 # overview). The range is resolved from the workbook's
 # `infor_cap_picture_range` defined name — the constant is only the fallback
 # for a cap table built before the templates were named.
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
-_CAP_TABLE_SHEET = CAP_TABLE_SHEET
 
 # Insider-ownership slide. The left "Insiders" placeholder ('Rectangle 1') is
 # replaced by a picture of the ownership workbook's Select-Insiders block. The
@@ -101,7 +106,6 @@ _CAP_TABLE_SHEET = CAP_TABLE_SHEET
 # populated); otherwise it stays a Bloomberg placeholder. Both picture ranges
 # are resolved by defined name, like the cap table's.
 _OWNERSHIP_PLACEHOLDER = "Rectangle 1"
-_OWNERSHIP_SHEET = OWNERSHIP_SHEET
 _INSTITUTIONS_PLACEHOLDER = "Rectangle 3"
 
 
@@ -245,29 +249,43 @@ def _fill_risk_table(slide, content: PitchDeckContent) -> None:
 
 
 def _output_currency_letter(workbook_path) -> str:
-    """Derive the footnote currency token from the cap table's output currency.
+    """Derive the footnote currency token from the deal workbook's output currency.
 
-    Reads the cap table's output-currency cell, located by its
-    ``infor_cap_output_ccy`` defined name (``F5`` on ``Cap with Links`` in the
-    shipped template). USD / CAD map explicitly to the ``'US'`` / ``'C'`` dollar
-    letters (so the ``[x]$MM`` footnote token resolves to ``US$MM`` / ``C$MM``);
-    **any other code is returned as-is** and `fill_footnote_currency` renders
-    the ISO code without a dollar sign (``GBP MM``) — a non-dollar filer is
-    never silently mislabelled as C$. Falls back to ``C`` (the template default)
-    only when the cell is missing or unreadable, so a footnote never ships the
-    literal ``[x]``.
+    Reads the ``captable`` tab's output-currency cell, located by its
+    ``infor_cap_output_ccy`` defined name (``F5`` as shipped). USD / CAD map
+    explicitly to the ``'US'`` / ``'C'`` dollar letters (so the ``[x]$MM``
+    footnote token resolves to ``US$MM`` / ``C$MM``); **any other code is
+    returned as-is** and `fill_footnote_currency` renders the ISO code without a
+    dollar sign (``GBP MM``) — a non-dollar filer is never silently mislabelled
+    as C$. An empty or non-text cell falls back to ``C`` (the template default),
+    so a footnote never ships the literal ``[x]``.
+
+    A **missing tab** is a hard failure, not a fallback. Until v0.5.45 this read
+    ``wb[CAP_TABLE_SHEET] if … in wb.sheetnames else wb.active`` — and since
+    Phase D renamed the sheet, that condition was always false, so every pitch
+    build derived the client-facing footnote currency from whichever tab happened
+    to be active. Silently labelling a US filer's figures ``C$MM`` is worse than
+    failing the deck stage, so there is no sheet fallback here at all.
     """
+    from openpyxl import load_workbook
+
+    from template_layout import defined_name_ref
+
+    wb = load_workbook(workbook_path, data_only=True)
     try:
-        from openpyxl import load_workbook
-
-        from template_layout import defined_name_ref
-
-        wb = load_workbook(workbook_path, data_only=True)
-        ws = wb[CAP_TABLE_SHEET] if CAP_TABLE_SHEET in wb.sheetnames else wb.active
+        if TAB_CAPTABLE not in wb.sheetnames:
+            raise TemplateLayoutError(
+                f"{Path(workbook_path).name}: cannot read the footnote output "
+                f"currency — expected the {TAB_CAPTABLE!r} tab (have {wb.sheetnames}). "
+                f"The deal workbook is created at deal-init from "
+                f"INFOR Deal Workbook Template.xlsx; note the source template names "
+                f"this sheet 'Cap with Links' and the deal workbook renames it."
+            )
+        ws = wb[TAB_CAPTABLE]
         addr = defined_name_ref(ws, NAME_CAP_OUTPUT_CCY) or CAP_TABLE_OUTPUT_CCY_CELL
         code = str(ws[addr].value or "").strip().upper()
-    except Exception:
-        code = ""
+    finally:
+        wb.close()
     if not code:
         return "C"  # template default — the cell is empty/unreadable
     if code in {"USD", "US$", "US"}:
@@ -485,13 +503,13 @@ def assemble_pitch_deck(
     if captable_workbook_path is not None:
         verify_workbook_names(
             captable_workbook_path,
-            sheet=_CAP_TABLE_SHEET,
+            sheet=TAB_CAPTABLE,
             names=(*CAP_TABLE_OUTPUT_CCY_NAMES, *CAP_TABLE_PICTURE_NAMES),
         )
     if ownership_workbook_path is not None:
         verify_workbook_names(
             ownership_workbook_path,
-            sheet=_OWNERSHIP_SHEET,
+            sheet=TAB_OWNERSHIP,
             names=OWNERSHIP_INSIDERS_PICTURE_NAMES,
         )
 
@@ -694,10 +712,10 @@ def assemble_pitch_deck(
             output_path=output_path,
             slide_index=layout.overview,
             placeholder_name=_CAP_TABLE_PLACEHOLDER,
-            sheet_name=_CAP_TABLE_SHEET,
+            sheet_name=TAB_CAPTABLE,
             source_range=resolve_workbook_range(
                 captable_workbook_path,
-                sheet=_CAP_TABLE_SHEET,
+                sheet=TAB_CAPTABLE,
                 name=NAME_CAP_PICTURE_RANGE,
                 fallback=CAP_TABLE_PICTURE_RANGE,
             ),
@@ -717,10 +735,10 @@ def assemble_pitch_deck(
             output_path=output_path,
             slide_index=layout.ownership,
             placeholder_name=_OWNERSHIP_PLACEHOLDER,
-            sheet_name=_OWNERSHIP_SHEET,
+            sheet_name=TAB_OWNERSHIP,
             source_range=resolve_workbook_range(
                 ownership_workbook_path,
-                sheet=_OWNERSHIP_SHEET,
+                sheet=TAB_OWNERSHIP,
                 name=NAME_OWN_INSIDERS_PICTURE,
                 fallback=OWNERSHIP_INSIDERS_PICTURE_RANGE,
             ),
@@ -730,7 +748,7 @@ def assemble_pitch_deck(
             # pasting, then take the range from it.
             verify_workbook_names(
                 ownership_workbook_path,
-                sheet=_OWNERSHIP_SHEET,
+                sheet=TAB_OWNERSHIP,
                 names=OWNERSHIP_INSTITUTIONS_PICTURE_NAMES,
             )
             insert_excel_into_placeholder(
@@ -739,10 +757,10 @@ def assemble_pitch_deck(
                 output_path=output_path,
                 slide_index=layout.ownership,
                 placeholder_name=_INSTITUTIONS_PLACEHOLDER,
-                sheet_name=_OWNERSHIP_SHEET,
+                sheet_name=TAB_OWNERSHIP,
                 source_range=resolve_workbook_range(
                     ownership_workbook_path,
-                    sheet=_OWNERSHIP_SHEET,
+                    sheet=TAB_OWNERSHIP,
                     name=NAME_OWN_INSTITUTIONS_PICTURE,
                     fallback=OWNERSHIP_INSTITUTIONS_PICTURE_RANGE,
                 ),

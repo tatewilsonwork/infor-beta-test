@@ -79,24 +79,50 @@ sys.path.insert(0, str(SCRIPTS))
 
 OUTPUT_NAME = "INFOR Deal Workbook Template.xlsx"
 
+from deal_workbook import (  # noqa: E402 — after the sys.path insert above
+    TAB_BLOOMBERG_OUTPUT,
+    TAB_CAPTABLE,
+    TAB_COMPS,
+    TAB_OWNERSHIP,
+    TAB_PRECEDENTS,
+)
+from template_layout import (  # noqa: E402
+    CAP_TABLE_SOURCE_SHEET,
+    CAP_TABLE_TEMPLATE,
+    COMPS_SOURCE_SHEET,
+    COMPS_TEMPLATE,
+    OWNERSHIP_BBG_SOURCE_SHEET,
+    OWNERSHIP_SOURCE_SHEET,
+    OWNERSHIP_TEMPLATE,
+    PRECEDENTS_SOURCE_SHEET,
+    PRECEDENTS_TEMPLATE,
+)
+
 # (source template, source sheets to copy together, destination tab names).
+#
+# This table IS the rename — the single place a `*_SOURCE_SHEET` and a `TAB_*`
+# legitimately meet — so both sides come from their constants rather than from
+# literals. Spelling either side by hand here is how the two drift, and the
+# v0.5.45 outage was exactly that drift going unnoticed: `Cap with Links` ->
+# `captable` was recorded here and nowhere the assemblers could see.
+#
 # `Ownership` and `Bloomberg Output` are copied in ONE operation because the
 # Ownership sheet's XLOOKUP rows reference `Bloomberg Output`; copying them
 # separately would rebind that reference to the source workbook as an external
 # link — the failure mode the aggregator's order-dependent merge suffered.
 SHEET_PLAN: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
-    ("INFOR Cap Table Template.xlsx", ("Cap with Links",), ("captable",)),
+    (CAP_TABLE_TEMPLATE, (CAP_TABLE_SOURCE_SHEET,), (TAB_CAPTABLE,)),
     # `__snloffice` is CapIQ's very-hidden metadata sheet. It rides along in the
     # copy and is deleted from the assembled workbook afterwards (DROP_SHEETS):
     # copying `Comps` alone made Excel record an external-workbook link back to
     # the comps template, listing both of the source's sheets.
-    ("INFOR Comps Template.xlsx", ("__snloffice", "Comps"), ("__snloffice", "comps")),
+    (COMPS_TEMPLATE, ("__snloffice", COMPS_SOURCE_SHEET), ("__snloffice", TAB_COMPS)),
     (
-        "INFOR Ownership Template.xlsx",
-        ("Ownership", "Bloomberg Output"),
-        ("Ownership", "Bloomberg Output"),
+        OWNERSHIP_TEMPLATE,
+        (OWNERSHIP_SOURCE_SHEET, OWNERSHIP_BBG_SOURCE_SHEET),
+        (TAB_OWNERSHIP, TAB_BLOOMBERG_OUTPUT),
     ),
-    ("INFOR Precedents Template.xlsx", ("Precedents",), ("precedents",)),
+    (PRECEDENTS_TEMPLATE, (PRECEDENTS_SOURCE_SHEET,), (TAB_PRECEDENTS,)),
 )
 
 # CapIQ's very-hidden helper sheet — dropped, as the aggregator dropped it. No

@@ -37,7 +37,6 @@ from openpyxl.utils import range_boundaries
 
 from deal_workbook import TAB_COMPS, TabSpec, write_tab
 from template_layout import (
-    COMPS_SHEET,
     COMPS_TEMPLATE,
     COMPS_WRITE_NAMES,
     NAME_COMPS_GROUP_BLOCKS,
@@ -47,7 +46,6 @@ from template_layout import (
     verify_names,
 )
 
-_SHEET = COMPS_SHEET
 _MAX_VERTICALS = 3
 _MAX_DESCRIPTION_CHARS = 50  # column AA width ~50; longer overflows visually in the cell
 

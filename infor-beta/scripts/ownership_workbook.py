@@ -41,14 +41,20 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from deal_workbook import TAB_CAPTABLE, TAB_OWNERSHIP, TabSpec, write_tab
+from deal_workbook import (
+    TAB_BLOOMBERG_OUTPUT,
+    TAB_CAPTABLE,
+    TAB_OWNERSHIP,
+    TabSpec,
+    write_tab,
+)
 from openpyxl.comments import Comment
 from openpyxl.styles import Font
 from openpyxl.utils import range_boundaries
 
 from template_layout import (
     CAP_TABLE_SECTION_VII_NAMES,
-    CAP_TABLE_SHEET,
+    CAP_TABLE_SOURCE_SHEET,
     NAME_CAP_SHARE_INPUTS,
     NAME_OWN_BBG_HOLDER_BLOCK,
     NAME_OWN_BBG_LINK_BLOCK,
@@ -56,9 +62,7 @@ from template_layout import (
     NAME_OWN_TOTAL_SHARES,
     OWNERSHIP_BBG_HOLDER_NAMES,
     OWNERSHIP_BBG_LINK_NAMES,
-    OWNERSHIP_BBG_SHEET,
     OWNERSHIP_INSIDER_WRITE_NAMES,
-    OWNERSHIP_SHEET,
     OWNERSHIP_TEMPLATE,
     TemplateLayoutError,
     defined_name_ref,
@@ -67,7 +71,11 @@ from template_layout import (
     verify_names,
 )
 
-_SHEET = OWNERSHIP_SHEET
+# The tabs this module writes live in the DEAL workbook, so they are addressed by
+# `deal_workbook.TAB_*` and not by the ownership source template's sheet names
+# (identical strings today, but the cap table's are not — see the sheet-name note
+# in `template_layout`).
+_SHEET = TAB_OWNERSHIP
 _DATE_FORMAT = "yyyy-mm-dd"  # SEDI reports dates as ISO 'YYYY-MM-DD'
 
 
@@ -192,7 +200,7 @@ def read_basic_shares_from_cap_table(captable_path: Path | str) -> int | None:
         wb = load_workbook(Path(captable_path), data_only=False)
     except Exception:
         return None
-    for candidate in (TAB_CAPTABLE, CAP_TABLE_SHEET):
+    for candidate in (TAB_CAPTABLE, CAP_TABLE_SOURCE_SHEET):
         if candidate in wb.sheetnames:
             ws = wb[candidate]
             break
@@ -447,12 +455,12 @@ def _write_bloomberg_side(
     include_overrides: dict[str, int],
 ) -> None:
     """Fill 'Bloomberg Output' + the Ownership tab's institutional link rows."""
-    if OWNERSHIP_BBG_SHEET not in wb.sheetnames:
+    if TAB_BLOOMBERG_OUTPUT not in wb.sheetnames:
         raise KeyError(
-            f"sheet {OWNERSHIP_BBG_SHEET!r} not found in ownership template "
+            f"tab {TAB_BLOOMBERG_OUTPUT!r} not found in the deal workbook "
             f"(have {wb.sheetnames})"
         )
-    ws_bbg = wb[OWNERSHIP_BBG_SHEET]
+    ws_bbg = wb[TAB_BLOOMBERG_OUTPUT]
     ws_own = wb[_SHEET]
     # The export side is validated in read_bloomberg_export; this validates the
     # template side the rows land on — the 'Bloomberg Output' holder block the

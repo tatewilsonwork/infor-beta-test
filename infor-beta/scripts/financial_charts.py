@@ -66,6 +66,7 @@ from pathlib import Path
 
 from pptx import Presentation
 
+from deal_workbook import TAB_FINANCIAL_SUMMARY, TAB_LTM_METRICS
 from pptx_helpers import INFOR_ACCENTS
 from template_layout import (
     MARKER_BUILT_FINANCIAL_SUMMARY,
@@ -92,7 +93,11 @@ _VALUE_FORMAT = '$#,##0.0_);($#,##0.0);"--"'
 _AXIS_LINE_WIDTH_EMU = 12700
 
 # --- tab / slide geometry ----------------------------------------------------
-_SHEET_DEFAULT = "financial-summary"
+# From the constants, not spelled out: this stage reads the DEAL workbook, so its
+# tab names are `deal_workbook`'s. Both were literals duplicating those constants
+# until v0.5.45 — the same shape as that release's bug, where a tab name recorded
+# in one place and assumed in another drifted silently.
+_SHEET_DEFAULT = TAB_FINANCIAL_SUMMARY
 _HEADER_ROW = 5
 _FIRST_DATA_ROW = _HEADER_ROW + 1
 # Chart placeholder shape names on EVERY Financial Summary slide (the deck can
@@ -122,7 +127,7 @@ _CHART_H_CM = 2.51 * 2.54
 # the overview slide's wide/short "[Pie Chart Placeholder]" (Rectangle 4). The
 # data live on the same deal workbook the FS charts use, so this rides the
 # post-aggregation `financial-charts` stage rather than a parallel path.
-_PIE_SHEET_DEFAULT = "ltm-metrics"
+_PIE_SHEET_DEFAULT = TAB_LTM_METRICS
 _PIE_SECTION_LABEL = "LTM Revenue Overview"
 _PIE_TOTAL_LABEL = "Total"
 _PIE_SEGMENT_COL = 1  # column A — segment names

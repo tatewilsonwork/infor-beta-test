@@ -65,35 +65,30 @@ def _sample_content() -> EarningsUpdateContent:
     )
 
 
-def _write_sample_cap_table(path: Path) -> Path:
-    from template_layout import CAP_TABLE_SHEET, NAME_CAP_PICTURE_RANGE
-    from tests.conftest import stamp_defined_names
+def _write_sample_cap_table(deal_dir: Path) -> Path:
+    """The cap table the assembler is really handed: the deal workbook.
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = CAP_TABLE_SHEET
-    # The assembler resolves the picture range through this name and verifies it
-    # first, so a synthetic cap table has to carry it.
-    stamp_defined_names(ws, {NAME_CAP_PICTURE_RANGE: "B15:F40"})
-    ws["B15"] = "SampleCo Cap Table"
-    rows = {
-        15: ("Company Ticker:", "TSX:SMPL"),
-        16: ("Share Price (21-Apr-26)", "C$12.34"),
-        17: ("Basic Shares Outstanding", "100.0"),
-        18: ("Basic Market Cap", "C$1,234.0"),
-        21: ("Fully-Diluted Shares Outstanding", "104.0"),
-        22: ("Fully-Diluted Market Cap", "C$1,283.4"),
-        28: ("Net Debt", "C$200.0"),
-        31: ("Enterprise Value", "C$1,483.4"),
-        # B40 is the bottom row of the B15:F40 picture range the assembler
-        # resolves from `infor_cap_picture_range` and pastes.
-        40: ("EV / Adj. EBITDA", "10.0x"),
-    }
-    for row, (label, value) in rows.items():
-        ws.cell(row=row, column=2).value = label
-        ws.cell(row=row, column=6).value = value
-    wb.save(path)
-    return path
+    `earnings-update.yaml` passes `$stages.captable.workbook_path`, which since
+    Phase D is the deal workbook — one file, `captable` tab. So this builds it
+    with `init_deal_workbook`, the conductor's own deal-init call.
+
+    It used to be a synthetic `Workbook()` titled `Cap with Links` with the
+    picture-range name stamped on by hand — i.e. a copy of the SOURCE template's
+    shape. `build_deal_workbook_template.py` renames that sheet to `captable`, so
+    the fixture and the artefact disagreed, and this test stayed green through
+    the whole v0.5.45 outage. `test_assembler_deal_workbook_inputs` states the
+    general rule; the point here is that even the end-to-end render test must
+    start from the pipeline's own product.
+    """
+    from deal_workbook import init_deal_workbook
+
+    # No cell writes: the shipped `captable` tab already carries real cap-table
+    # content across `infor_cap_picture_range` (B15:F40) plus the defined names
+    # the assembler resolves, which is strictly more faithful than synthetic
+    # labels — and avoids writing into the template's merged cells.
+    return init_deal_workbook(
+        deal_dir=deal_dir, deliverable_type="earnings-update", deal_name="Project Test"
+    )
 
 
 def _assemble_sample_deck(tmp_path: Path, content: EarningsUpdateContent | None = None, **kwargs) -> Path:
@@ -369,7 +364,7 @@ def test_assemble_earnings_update_deck_inserts_cap_table_via_libreoffice(tmp_pat
     if find_soffice() is None:
         pytest.skip("LibreOffice not installed; it is the only range renderer")
 
-    workbook_path = _write_sample_cap_table(tmp_path / "cap-table.xlsx")
+    workbook_path = _write_sample_cap_table(tmp_path)
     deck_path = _assemble_sample_deck(tmp_path, captable_workbook_path=workbook_path)
 
     prs = Presentation(deck_path)

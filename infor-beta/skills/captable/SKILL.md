@@ -114,7 +114,9 @@ ws[resolve_name_cell(ws, NAME_CAP_TICKER)] = ticker   # NOT ws["F3"] = ticker
 
 If it raises, STOP: do not write any cell, and report the error message to the analyst (the shipped template and this skill's row map must be re-aligned).
 
-Update this cell in the `Cap with Links` sheet:
+Update this cell on the deal workbook's `captable` tab — the `ws` your `fill(wb, ws)` callback
+receives. (`Cap with Links` is what the *source* template calls this sheet; the deal workbook
+renames it, and the two are not interchangeable — see v0.5.45.)
 
 | Defined name | Cell (as shipped) | Value |
 |--------------|-------------------|-------|

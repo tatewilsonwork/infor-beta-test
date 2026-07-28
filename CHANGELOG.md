@@ -2,6 +2,53 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
+## [0.5.45] — 2026-07-28
+
+**Hotfix: both deck assemblers addressed the cap table by the source template's sheet name, so every build supplying a cap table failed its deck stage.** Filed at the end of v0.5.43 as found-but-not-fixed; this closes it, and closes the **test mechanism** that hid it — which is the larger half of the release.
+
+### The bug
+
+Phase D put every producer on one deal workbook, and `tools/build_deal_workbook_template.py` renames the cap-table sheet `Cap with Links` → `captable` (`deal_workbook.TAB_CAPTABLE`) when it assembles that workbook from the four source templates. Both assemblers kept addressing `template_layout.CAP_TABLE_SHEET` — the *source* name — while `earnings-update.yaml` and `pitch.yaml` pass the deal workbook as `captable_workbook_path`. The pre-flight raised `TemplateLayoutError: expected sheet 'Cap with Links' (have ['captable'])` and the deck stage died. Every earnings-update and pitch build with a cap table, since Phase D.
+
+Retargeted to `TAB_CAPTABLE`: the earnings assembler's import, `cap_table_picture_range`, its `verify_workbook_names` pre-flight and its `insert_excel_into_placeholder` sheet argument; the pitch assembler's import, its pre-flight, and both insertion arguments. The pitch assembler's `_CAP_TABLE_SHEET` / `_OWNERSHIP_SHEET` private aliases are gone — every site now reads `TAB_CAPTABLE` / `TAB_OWNERSHIP` directly, so there is no local spelling to drift. `ownership_workbook`'s Bloomberg writer moves to `TAB_BLOOMBERG_OUTPUT` / `TAB_OWNERSHIP` for the same reason (identical strings, but the constant now says *why* it is right).
+
+**A second defect, coupled to the first, that fixing the pre-flight alone would have unmasked.** `pitch_deck_assembler._output_currency_letter` read `wb[CAP_TABLE_SHEET] if CAP_TABLE_SHEET in wb.sheetnames else wb.active` — it did not raise. Since Phase D that condition was *always false*, so the client-facing `[x]$MM` footnote currency came from whichever tab happened to be active. On a real deal workbook that is `precedents`, whose `F5` holds the column header `Target` — so the footnote would have rendered **`TARGET MM`** on every pitch deck. It was masked only because the pre-flight raised first. The sheet fallback is deleted: the tab is resolved explicitly and a missing one raises `TemplateLayoutError`. The one fallback left is the documented one — an *empty* currency cell reads `C`, the template default, so a footnote never ships the literal `[x]`. An unreadable file now raises rather than silently labelling a client deck `C$MM` on no evidence.
+
+### The constants are spelled apart so this cannot recur quietly
+
+`CAP_TABLE_SHEET` survives as the source-template constant `tools/` needs, renamed **`CAP_TABLE_SOURCE_SHEET`** — and its three siblings with it (`OWNERSHIP_SOURCE_SHEET`, `OWNERSHIP_BBG_SOURCE_SHEET`, `COMPS_SOURCE_SHEET`, `PRECEDENTS_SOURCE_SHEET`). The suffix is the whole reminder: a `*_SOURCE_SHEET` names a sheet in a shipped source template; a `TAB_*` names a tab in the deal workbook. `COMPS_SOURCE_SHEET` / `TAB_COMPS` differ only in case, which openpyxl treats as a different sheet, so the pair was one rename away from the same outage. The only legitimate runtime reader of a source name is `ownership_workbook.read_basic_shares_from_cap_table`, which accepts a pre-Phase-D standalone cap table and tries both spellings deliberately.
+
+`tools/build_deal_workbook_template.py`'s `SHEET_PLAN` — the single place the two families legitimately meet, and the authority for the rename — now takes both sides from the constants instead of literals. `Cap with Links` → `captable` was recorded there and nowhere the assemblers could see it; that is the drift, in one table.
+
+### The coverage gap — why the suite was green through the whole outage
+
+Third regression of one class (v0.5.36 stale skip guard, v0.5.40 `summary_at` marker, this one). The common mechanism is not the individual mistake: **the assembler tests built their companion-workbook fixtures from a source template while production passes a pipeline artefact.** A rename inside the produced artefact therefore could not fail them.
+
+New **`scripts/tests/test_assembler_deal_workbook_inputs.py`** (8 tests) builds every input with `init_deal_workbook` — the conductor's own deal-init call — and asserts both assemblers consume it. Renderer-free by design: it spies on `insert_excel_into_placeholder` and stops the run there, so it gates on nothing environmental and asserts on the exact argument that was wrong. Five of the eight fail against the pre-fix code, four of them with the production `TemplateLayoutError`. It also carries a drift lock — neither assembler module may name a `*_SOURCE_SHEET` — and pins `TAB_CAPTABLE != CAP_TABLE_SOURCE_SHEET`, without which the rest could pass while proving nothing.
+
+Both existing end-to-end insertion fixtures moved onto `init_deal_workbook` too, since the sheet-name fix alone leaves the mechanism intact:
+
+- `test_earnings_update_assembler._write_sample_cap_table` and `test_slide_library_poc._write_sample_cap_table` were synthetic `Workbook()`s titled `Cap with Links` with the needed names stamped on by hand. They are the real deal workbook now, writing no cells beyond the pitch fixture's output currency — the shipped `captable` tab already carries real content across `infor_cap_picture_range`, which is more faithful than synthetic labels and avoids the template's merged cells.
+- `test_slide_library_poc._cap_table_with_currency` was the worst of them: a bare `Workbook()` titled `Cap with Links` with **no defined names at all**, so its USD/CAD/GBP/CHF mapping assertions exercised neither the tab lookup nor `infor_cap_output_ccy` and passed purely on the two fallbacks. It delegates to the deal-workbook fixture.
+
+### Audit for the same shape
+
+Found and fixed:
+
+- **`financial_charts`** held `_SHEET_DEFAULT = "financial-summary"` and `_PIE_SHEET_DEFAULT = "ltm-metrics"` as literals duplicating `TAB_FINANCIAL_SUMMARY` / `TAB_LTM_METRICS`. Same shape exactly — a deal-workbook tab name copied into a module that cannot see a rename. Now imported.
+- **`ownership_workbook.read_basic_shares_from_cap_table`** had tests for its legacy standalone branch only; the deal-workbook branch that production takes was uncovered. Added `test_read_basic_shares_reads_the_deal_workbook_tab`, which writes into the real `infor_cap_share_inputs` block wherever the template puts it.
+- **`test_excel_to_powerpoint._build_cacheless_cap_table`** titled its fixture `Cap with Links`. Nothing there depends on it (`sheet_name` is passed explicitly), so it was not a live defect — but leaving that literal in the suite after this release is a trap, so it reads `TAB_CAPTABLE` with a note saying why it does not matter.
+
+- **`skills/captable/SKILL.md`** told the agent to "update this cell in the `Cap with Links` sheet" nine lines after showing it `write_tab(deal_workbook, TAB_CAPTABLE, ...)`. Corrected to the `captable` tab, with the distinction stated.
+
+Cleared while there: `comps_workbook._SHEET` and `precedents_workbook._SHEET` were assigned from `COMPS_SHEET` / `PRECEDENTS_SHEET` and never read — dead since Phase D moved both onto `write_tab`, and both a rename away from looking load-bearing.
+
+Checked and correct as-is: `test_financial_charts`' main fixtures already use `init_deal_workbook`, and its hand-built workbooks feed pure chart helpers that take a worksheet directly. The Bloomberg `Summary View` fixtures model an **analyst-attached external export**, not a pipeline artefact, so a source-shaped fixture is right there. `test_template_layout`'s synthetic sheets test the layout helpers themselves with explicit sheet arguments.
+
+**Suite: 677 passed, 0 skipped** (668 before). No `CLAUDE.md` phase bullet — this is a hotfix alongside Phase H, not a phase.
+
+Rebased onto Phase H1, which had already taken `0.5.44`; no source overlap (H1 is `deal_init` / `deck_spec` / `intake_spec`, this is the assemblers and `template_layout`). Restores the `## [0.5.43]` heading H1 dropped — its removal had left the v0.5.43 body sitting inside the `0.5.44` entry, with the heading list jumping 0.5.44 → 0.5.42.
+
 ## [0.5.44] — 2026-07-28
 
 **Migration Phase H1 — one declarative `IntakeSpec` behind every analyst-intake rendering.** No behaviour change on a clean run: the dialogs, the checklists, the defaults echo and the text fallback all render what they rendered before, generated instead of hand-written.
@@ -39,6 +86,8 @@ Plus the invariants that had to survive — the `*_DIALOG_PLAN_INPUTS` header ke
 - The two prompt-token tests in `test_deck_spec.py` normalise whitespace before matching. The generated prompt is wrapped at a fixed width, so `"no slide options"` legitimately straddles a line break — wrapping is a rendering detail, the wording is what the test is about.
 - Analyst-facing wording is unchanged except where two renderings had to be reconciled into one string: the defaults echo's quarter line is labelled "Reporting vs comparison quarter" in both deliverables (was "LTM bridge quarters" for pitch, with the LTM reason moved into the line itself), and each default's prompt-list rule and developer-table rule are now the same sentence.
 - H2 (the inline `show_widget` form) is **not** started — it still has the open `visualize`-on-Cowork dependency question recorded in `docs/migration-plan.md`. H1 was specified to stand on its own, and does.
+
+## [0.5.43] — 2026-07-28
 
 **Phase C's sentinel tables deleted, and `CLAUDE.md` restructured around standing rules.** No deliverable-facing behaviour change on a clean run: the four shipped templates and the deal workbook carry every name the writers resolve, so every verification still passes.
 
