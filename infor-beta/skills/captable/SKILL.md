@@ -96,7 +96,7 @@ Do NOT create a standalone cap table or output data in any other format. Tell th
 All the writes below happen inside the `fill(wb, ws)` callback from Step 2, where `ws` is the
 `captable` tab. Never open the file directly and never save it yourself — `write_tab` does both.
 
-**Layout verification — REQUIRED before any write.** The cells named below are the shipped template's positions; resolve each one through its **defined name** rather than typing the address, so a re-saved template that shifted a row still writes to the right cell. Run the shared verification first — it checks the sentinel label beside each address, cross-checks that the defined name resolves to the same cell, and raises `TemplateLayoutError` naming what moved:
+**Layout verification — REQUIRED before any write.** The cells named below are the shipped template's positions; resolve each one through its **defined name** rather than typing the address, so a re-saved template that shifted a row still writes to the right cell. Run the shared verification first — it checks that every name you are about to resolve is present, and raises `TemplateLayoutError` listing any that are missing:
 
 ```python
 import sys

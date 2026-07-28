@@ -154,9 +154,9 @@ io.write({"workbook_path": str(workbook_path)})
 ```
 
 The builder validates the shape (≤3 verticals, ≤6 companies each, non-empty tickers,
-descriptions ≤50 chars), verifies the template's sentinel labels around the hardcoded block
-addresses before writing (shared `template_layout` map — a re-saved template with shifted rows
-raises `TemplateLayoutError` instead of writing blind), writes only the labels / tickers /
+descriptions ≤50 chars), verifies each vertical's label + block **defined name** resolves before
+writing (shared `template_layout` map — a tab that lost them raises `TemplateLayoutError` instead
+of writing blind), reads each vertical's row span off its block name, writes only the labels / tickers /
 descriptions, and leaves the CapIQ array formulas and statistic rows untouched.
 
 ---

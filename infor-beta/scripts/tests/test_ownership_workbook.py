@@ -134,15 +134,19 @@ def test_total_shares_none_leaves_f35_blank(tmp_path: Path):
 
 
 def _cap_table(path: Path, rows: dict[int, float]) -> Path:
+    from openpyxl.workbook.defined_name import DefinedName
+
+    from template_layout import CAP_TABLE_SHEET, NAME_CAP_SHARE_INPUTS
+
     wb = Workbook()
     ws = wb.active
-    ws.title = "Cap with Links"
-    # Section VII sentinel labels — read_basic_shares_from_cap_table verifies
-    # these anchors (template_layout) before summing the F168:F185 window.
-    ws["B166"] = "VII. BASIC SHARES OUTSTANDING"
-    ws["B167"] = "Description"
-    ws["F167"] = "Amount"
-    ws["B186"] = "Total Basic Shares Outstanding"
+    ws.title = CAP_TABLE_SHEET
+    # read_basic_shares_from_cap_table resolves the summing window through this
+    # name, and verifies it is present first — so a synthetic cap table has to
+    # carry it, exactly as the shipped template and the deal workbook do.
+    ws.defined_names.add(
+        DefinedName(NAME_CAP_SHARE_INPUTS, attr_text=f"'{CAP_TABLE_SHEET}'!$F$168:$F$185")
+    )
     for row, value in rows.items():
         ws.cell(row=row, column=6, value=value)  # column F
     wb.save(path)

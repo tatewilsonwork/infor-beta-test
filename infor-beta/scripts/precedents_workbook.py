@@ -53,13 +53,12 @@ from template_layout import (
     NAME_PREC_GROUP_BLOCKS,
     NAME_PREC_GROUP_LABELS,
     NAME_PREC_OUTPUT_CCY,
-    PRECEDENTS_BLOCK_ANCHORS,
-    PRECEDENTS_OUTPUT_CCY_ANCHORS,
     PRECEDENTS_SHEET,
     PRECEDENTS_TEMPLATE,
+    PRECEDENTS_WRITE_NAMES,
     resolve_name_cell,
     resolve_name_range,
-    verify_anchors,
+    verify_names,
 )
 
 _SHEET = PRECEDENTS_SHEET
@@ -321,15 +320,9 @@ def build_precedents_workbook(
 
 def _fill_precedents_tab(ws, groups: "list[PrecedentGroup]", output_currency: str) -> None:
     """Write the validated groups into the tab. Layout unchanged."""
-    # Verify the block/column sentinel anchors (row-4/5 headers + each group's
-    # 'Group Average' bound + the 'Output:' label) and cross-check that each
-    # defined name still resolves to the region its sentinel pins.
-    verify_anchors(
-        ws,
-        PRECEDENTS_OUTPUT_CCY_ANCHORS + PRECEDENTS_BLOCK_ANCHORS,
-        template=PRECEDENTS_TEMPLATE,
-        require_names=True,
-    )
+    # Verify the output-currency cell and every group's label + block name
+    # resolves before writing anything.
+    verify_names(ws, PRECEDENTS_WRITE_NAMES, template=PRECEDENTS_TEMPLATE)
 
     ws[resolve_name_cell(ws, NAME_PREC_OUTPUT_CCY, template=PRECEDENTS_TEMPLATE)] = output_currency
 

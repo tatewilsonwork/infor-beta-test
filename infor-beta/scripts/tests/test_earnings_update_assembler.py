@@ -66,9 +66,15 @@ def _sample_content() -> EarningsUpdateContent:
 
 
 def _write_sample_cap_table(path: Path) -> Path:
+    from template_layout import CAP_TABLE_SHEET, NAME_CAP_PICTURE_RANGE
+    from tests.conftest import stamp_defined_names
+
     wb = Workbook()
     ws = wb.active
-    ws.title = "Cap with Links"
+    ws.title = CAP_TABLE_SHEET
+    # The assembler resolves the picture range through this name and verifies it
+    # first, so a synthetic cap table has to carry it.
+    stamp_defined_names(ws, {NAME_CAP_PICTURE_RANGE: "B15:F40"})
     ws["B15"] = "SampleCo Cap Table"
     rows = {
         15: ("Company Ticker:", "TSX:SMPL"),
@@ -79,8 +85,8 @@ def _write_sample_cap_table(path: Path) -> Path:
         22: ("Fully-Diluted Market Cap", "C$1,283.4"),
         28: ("Net Debt", "C$200.0"),
         31: ("Enterprise Value", "C$1,483.4"),
-        # B40 pins the bottom of the B15:F40 picture range — the assembler
-        # verifies both sentinel anchors (template_layout) before pasting.
+        # B40 is the bottom row of the B15:F40 picture range the assembler
+        # resolves from `infor_cap_picture_range` and pastes.
         40: ("EV / Adj. EBITDA", "10.0x"),
     }
     for row, (label, value) in rows.items():

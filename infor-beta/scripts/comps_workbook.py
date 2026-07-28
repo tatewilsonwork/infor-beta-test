@@ -37,14 +37,14 @@ from openpyxl.utils import range_boundaries
 
 from deal_workbook import TAB_COMPS, TabSpec, write_tab
 from template_layout import (
-    COMPS_BLOCK_ANCHORS,
     COMPS_SHEET,
     COMPS_TEMPLATE,
+    COMPS_WRITE_NAMES,
     NAME_COMPS_GROUP_BLOCKS,
     NAME_COMPS_GROUP_LABELS,
     resolve_name_cell,
     resolve_name_range,
-    verify_anchors,
+    verify_names,
 )
 
 _SHEET = COMPS_SHEET
@@ -153,10 +153,9 @@ def build_comps_workbook(
                 )
 
     def _write(_wb, ws) -> None:
-        # Verify the vertical blocks' sentinel anchors (row-7 headers + the 'Group
-        # Average' row closing each block) AND that each block's defined name still
-        # resolves to the region its sentinel pins, before writing anything.
-        verify_anchors(ws, COMPS_BLOCK_ANCHORS, template=COMPS_TEMPLATE, require_names=True)
+        # Verify every vertical's label + block name resolves before writing
+        # anything, so a tab that lost them halts here rather than half-filled.
+        verify_names(ws, COMPS_WRITE_NAMES, template=COMPS_TEMPLATE)
 
         for vertical, (label_cell, rows) in zip(verticals, _vertical_slots(ws)):
             if len(vertical.companies) > len(rows):

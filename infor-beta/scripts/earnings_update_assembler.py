@@ -33,7 +33,7 @@ from pptx_helpers import (
 )
 from schemas import EarningsUpdateContent, SlidePlan
 from template_layout import (
-    CAP_TABLE_PICTURE_ANCHORS,
+    CAP_TABLE_PICTURE_NAMES,
     CAP_TABLE_PICTURE_RANGE,
     CAP_TABLE_SHEET,
     MARKER_CONTACT,
@@ -44,7 +44,7 @@ from template_layout import (
     NAME_CAP_PICTURE_RANGE,
     find_slide_by_marker,
     resolve_workbook_range,
-    verify_workbook_anchors,
+    verify_workbook_names,
 )
 
 # The five library entries the earnings deck keeps, in final deck order. Their
@@ -65,8 +65,8 @@ _KEEP_MARKERS = (
 
 # Earnings-summary slide cap-table placeholder. The picture range is resolved
 # from the workbook's `infor_cap_picture_range` defined name (shared with the
-# pitch assembler — same picture); the constant is the pre-Phase-C fallback for
-# a cap table built before the templates were named.
+# pitch assembler — same picture); the constant is only the shipped address, and
+# the pre-flight above requires the name, so it is not reachable in practice.
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
 
 
@@ -361,11 +361,11 @@ def assemble_earnings_update_deck(
         )
 
     if captable_workbook_path is not None:
-        # The picture range is read through its defined name, cross-checked
-        # against the sentinel anchors — a shifted cap table raises instead of
-        # pasting the wrong rows.
-        verify_workbook_anchors(
-            captable_workbook_path, sheet=CAP_TABLE_SHEET, anchors=CAP_TABLE_PICTURE_ANCHORS
+        # The picture range is read through its defined name — a cap table that
+        # lost the name raises instead of pasting whatever the shipped address
+        # happens to hold now.
+        verify_workbook_names(
+            captable_workbook_path, sheet=CAP_TABLE_SHEET, names=CAP_TABLE_PICTURE_NAMES
         )
         insert_excel_into_placeholder(
             deck_path=output_path,

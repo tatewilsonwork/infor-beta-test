@@ -47,25 +47,24 @@ from openpyxl.styles import Font
 from openpyxl.utils import range_boundaries
 
 from template_layout import (
-    CAP_TABLE_SECTION_VII_ANCHORS,
+    CAP_TABLE_SECTION_VII_NAMES,
     CAP_TABLE_SHEET,
     NAME_CAP_SHARE_INPUTS,
     NAME_OWN_BBG_HOLDER_BLOCK,
     NAME_OWN_BBG_LINK_BLOCK,
     NAME_OWN_INSIDER_BLOCK,
     NAME_OWN_TOTAL_SHARES,
-    OWNERSHIP_BBG_LINK_ANCHORS,
+    OWNERSHIP_BBG_HOLDER_NAMES,
+    OWNERSHIP_BBG_LINK_NAMES,
     OWNERSHIP_BBG_SHEET,
-    OWNERSHIP_BBG_TEMPLATE_ANCHORS,
-    OWNERSHIP_INSIDER_BLOCK_ANCHORS,
+    OWNERSHIP_INSIDER_WRITE_NAMES,
     OWNERSHIP_SHEET,
     OWNERSHIP_TEMPLATE,
-    OWNERSHIP_TOTAL_SHARES_ANCHORS,
     TemplateLayoutError,
     defined_name_ref,
     resolve_name_cell,
     resolve_name_range,
-    verify_anchors,
+    verify_names,
 )
 
 _SHEET = OWNERSHIP_SHEET
@@ -199,12 +198,12 @@ def read_basic_shares_from_cap_table(captable_path: Path | str) -> int | None:
             break
     else:
         ws = wb.active
-    # A readable-but-shifted cap table must raise, not silently sum the wrong
-    # window: verify the Section VII sentinels before reading the input rows.
-    verify_anchors(ws, CAP_TABLE_SECTION_VII_ANCHORS, template=Path(captable_path).name)
-    # The window itself comes from the cap table's `infor_cap_share_inputs`
+    # The summing window comes from the cap table's `infor_cap_share_inputs`
     # name (F168:F185 as shipped), so an inserted Section VII row is summed too.
-    block = defined_name_ref(ws, NAME_CAP_SHARE_INPUTS) or "F168:F185"
+    # Verify it is there first: a cap table that lost the name must raise rather
+    # than silently sum a hardcoded window that may no longer be Section VII.
+    verify_names(ws, CAP_TABLE_SECTION_VII_NAMES, template=Path(captable_path).name)
+    block = resolve_name_range(ws, NAME_CAP_SHARE_INPUTS, template=Path(captable_path).name)
     min_col, min_row, max_col, max_row = range_boundaries(block)
     total_millions = 0.0
     found = False
@@ -456,16 +455,11 @@ def _write_bloomberg_side(
     ws_bbg = wb[OWNERSHIP_BBG_SHEET]
     ws_own = wb[_SHEET]
     # The export side is validated in read_bloomberg_export; this validates the
-    # template side the rows land on — the 'Bloomberg Output' header row the
-    # holder rows are copied under, and the Ownership tab's pre-wired link rows
-    # (whose H/J columns are written and B/F/G neutralised below) — plus the
-    # name↔sentinel cross-check on both.
-    verify_anchors(
-        ws_bbg, OWNERSHIP_BBG_TEMPLATE_ANCHORS, template=OWNERSHIP_TEMPLATE, require_names=True
-    )
-    verify_anchors(
-        ws_own, OWNERSHIP_BBG_LINK_ANCHORS, template=OWNERSHIP_TEMPLATE, require_names=True
-    )
+    # template side the rows land on — the 'Bloomberg Output' holder block the
+    # holder rows are copied into, and the Ownership tab's pre-wired link rows
+    # (whose H/J columns are written and B/F/G neutralised below).
+    verify_names(ws_bbg, OWNERSHIP_BBG_HOLDER_NAMES, template=OWNERSHIP_TEMPLATE)
+    verify_names(ws_own, OWNERSHIP_BBG_LINK_NAMES, template=OWNERSHIP_TEMPLATE)
 
     # Both spans come from the template. They must stay the same length: the
     # Ownership tab's link rows are pre-wired one-to-one against the holder
@@ -595,15 +589,9 @@ def _fill_ownership_tab(
     bloomberg_include_overrides: dict[str, int] | None,
 ) -> None:
     """Write the insider block, the % denominator and (optionally) the BBG side."""
-    # Verify the template layout before writing: the insider block (header row
-    # 38 + the row-67 lower bound as shipped) and the % denominator, each
-    # cross-checked against the defined name the writes resolve through.
-    verify_anchors(
-        ws,
-        OWNERSHIP_INSIDER_BLOCK_ANCHORS + OWNERSHIP_TOTAL_SHARES_ANCHORS,
-        template=OWNERSHIP_TEMPLATE,
-        require_names=True,
-    )
+    # Verify the names the writes resolve through — the insider block and the %
+    # denominator — before touching a cell.
+    verify_names(ws, OWNERSHIP_INSIDER_WRITE_NAMES, template=OWNERSHIP_TEMPLATE)
 
     insider_rows = _row_span(ws, NAME_OWN_INSIDER_BLOCK)
     if len(insiders) > len(insider_rows):

@@ -194,9 +194,9 @@ For a **financial-institution** target, swap the metric inputs: use `net_income_
 / `tangible_book_value_link`.
 
 The builder validates the shape (≤2 groups, ≤6 transactions each, a positive TEV, 3-letter
-currency / HQ codes, numeric metrics, http(s) links), verifies the template's sentinel labels
-around the hardcoded block/column addresses before writing (shared `template_layout` map — a
-re-saved template with shifted rows raises `TemplateLayoutError` instead of writing blind),
+currency / HQ codes, numeric metrics, http(s) links), verifies the output-currency cell and each
+group's label + block **defined name** resolves before writing (shared `template_layout` map — a tab
+that lost them raises `TemplateLayoutError` instead of writing blind),
 writes only the inputs, and leaves the FX / ratio / statistic formulas untouched.
 
 ---
