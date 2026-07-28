@@ -23,7 +23,9 @@ Use `required` for stages where the analyst's review is a real-world checkpoint,
 - the assembled deck before QA
 - the final deck before it's shared externally
 
-**Shipped usage:** both shipped plans (`pitch.yaml`, `earnings-update.yaml`) mark the `deck` stage `required` — the pre-delivery gate. The assembled deck is built from untrusted external inputs (filings, exports, web data), so the analyst approves it before delivery. For pitch, `deck` is scheduled alone in its wave ahead of `financial-charts`, so the wave-boundary gate genuinely holds the charted deck; the earnings-update plan ends at `deck`, so its gate has no downstream wave to hold. Every other shipped stage is `informational`.
+**Shipped usage:** both shipped plans (`pitch.yaml`, `earnings-update.yaml`) mark the `deck` stage `required` — the pre-delivery gate, and the plugin's only one. The assembled deck is built from untrusted external inputs (filings, exports, web data), so the analyst approves it before delivery. `deck` is scheduled alone in its wave in both plans, so the wave-boundary gate genuinely holds what follows: the charted deck for pitch, the `deckcheck` falsification pass for both. Every other shipped stage is `informational`, `deckcheck` included — an advisory pass that could halt a run would have to be right about a target's financial statements.
+
+**A gate on an in-process stage behaves identically.** Since Phase F, `deck` is a transform: the driver assembles the deck itself instead of dispatching a sub-agent. The checkpoint is built from the stage's `outputs.json` by `complete_wave`, which cannot tell who wrote it, so the gate fires at the same boundary with the same locked dialog and holds the same downstream waves. Its `vision_review_path` output is the review of the slides the analyst is being asked to approve — surface it by name.
 
 ## `informational` (default)
 

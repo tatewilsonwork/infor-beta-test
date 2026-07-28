@@ -3,10 +3,16 @@
 Exercises the whole trip a wave makes: `prepare_wave` reference resolution
 (including the pydantic `Company` / `Path` serialization that once crashed a live
 run, and the optional-plan-input -> None softening), the rendered dispatch
-envelope, `complete_wave` output validation + checkpoint payloads, the composed
-`run_wave`, and the run summary. No Agent calls; everything runs off a hand-built
-run directory, with `run_wave`'s dispatch callback standing in for the model's
-`Task` calls.
+envelope, the Phase F transform/judgment split and `run_transforms`,
+`complete_wave` output validation + checkpoint payloads, the composed `run_wave`,
+and the run summary. No Agent calls; everything runs off a hand-built run
+directory, with `run_wave`'s dispatch callback standing in for the model's `Task`
+calls.
+
+Both stages of the test plan use **judgment** skills, and the transform wiring is
+driven through a stub registered in `stage_transforms.TRANSFORMS` — the driver is
+what these tests are about, and a real transform would assemble a deck. The four
+shipped transforms are exercised for real in `test_stage_transforms.py`.
 """
 
 import json
@@ -15,15 +21,19 @@ from pathlib import Path
 import pytest
 
 import conductor
+import stage_transforms
 from conductor import (
     APPROVE_LABEL,
     HALT_LABEL,
+    KIND_JUDGMENT,
+    KIND_TRANSFORM,
     complete_wave,
     load_plan,
     load_plan_inputs,
     plan_overview,
     prepare_wave,
     render_run_summary,
+    run_transforms,
     run_wave,
     write_plan_inputs,
     write_run_summary,
@@ -57,7 +67,7 @@ stages:
       - name: workbook_path
         type: Path
   - id: beta
-    skill: deck-assembler
+    skill: pitch-content
     checkpoint: required
     inputs:
       upstream: $stages.alpha.workbook_path
@@ -65,6 +75,10 @@ stages:
       - name: deck_path
         type: Path
 """
+
+#: The stage-2 skill, swapped for a registered stub when a test needs `beta` to be
+#: a transform. Kept as a name so the plan text and the patch cannot disagree.
+_STUB_SKILL = "stub-transform"
 
 # The real plugin root (so the stage-envelope template resolves deterministically
 # regardless of CLAUDE_PLUGIN_ROOT in the environment).
@@ -205,6 +219,125 @@ def test_prepare_wave_two_raises_when_prior_outputs_missing(run_dir: Path):
 def test_prepare_wave_out_of_range(run_dir: Path):
     with pytest.raises(IndexError):
         prepare_wave(run_dir, 3, plugin_root=_PLUGIN_ROOT)
+
+
+# ─── Transform / judgment split (Phase F) ────────────────────────────────────
+
+
+@pytest.fixture
+def transform_run_dir(run_dir: Path, monkeypatch) -> Path:
+    """The same plan, with `beta` re-skilled onto a registered stub transform."""
+    write_plan_snapshot(run_dir, _PLAN_YAML.replace("skill: pitch-content", f"skill: {_STUB_SKILL}"))
+
+    def _stub(io):
+        # A transform sees the same StageIO a sub-agent's `stage_io()` built: the
+        # three paths, and the resolved inputs read back off disk.
+        (io.stage_dir / "artefact.txt").write_text(io.inputs["upstream"], encoding="utf-8")
+        return {"deck_path": "/deals/artefacts/Pitch.pptx"}
+
+    monkeypatch.setitem(stage_transforms.TRANSFORMS, _STUB_SKILL, _stub)
+    return run_dir
+
+
+def test_prepare_wave_marks_a_transform_and_renders_no_envelope(transform_run_dir: Path):
+    """A transform has nothing to dispatch, so it carries no prompt."""
+    _finish(transform_run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+    dispatch = prepare_wave(transform_run_dir, 2, plugin_root=_PLUGIN_ROOT)
+
+    assert [s.kind for s in dispatch.stages] == [KIND_TRANSFORM]
+    assert dispatch.stages[0].prompt is None
+    assert dispatch.transforms and not dispatch.judgment
+    # The model must issue zero Task calls for this wave.
+    assert dispatch.prompts == []
+    # inputs.json is written exactly as for a dispatched stage.
+    assert json.loads((stage_dir(transform_run_dir, "beta") / "inputs.json").read_text())[
+        "upstream"
+    ] == "/deals/wb.xlsx"
+
+
+def test_a_judgment_stage_still_gets_its_envelope(run_dir: Path):
+    dispatch = prepare_wave(run_dir, 1, plugin_root=_PLUGIN_ROOT)
+    assert [s.kind for s in dispatch.stages] == [KIND_JUDGMENT]
+    assert len(dispatch.prompts) == 1
+
+
+def test_prepare_wave_runs_nothing(transform_run_dir: Path):
+    """Preparing resolves; it does not execute. A forgotten `run_transforms` must
+    surface as a halted wave, not as a stage that quietly looks done."""
+    _finish(transform_run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+    prepare_wave(transform_run_dir, 2, plugin_root=_PLUGIN_ROOT)
+
+    assert not (stage_dir(transform_run_dir, "beta") / "outputs.json").exists()
+    outcome = complete_wave(transform_run_dir, 2)
+    assert outcome.halt is True
+    assert "outputs.json" in outcome.results[0].error
+
+
+def test_run_transforms_executes_in_process_and_writes_outputs(transform_run_dir: Path):
+    _finish(transform_run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+    dispatch = prepare_wave(transform_run_dir, 2, plugin_root=_PLUGIN_ROOT)
+
+    results = run_transforms(dispatch)
+    assert [(r.stage_id, r.ok) for r in results] == [("beta", True)]
+    assert results[0].outputs == {"deck_path": "/deals/artefacts/Pitch.pptx"}
+    # It ran against the real StageIO: stage_dir resolved and the artefact landed.
+    assert (
+        stage_dir(transform_run_dir, "beta") / "artefact.txt"
+    ).read_text(encoding="utf-8") == "/deals/wb.xlsx"
+    # And `complete_wave` cannot tell who wrote outputs.json.
+    assert complete_wave(transform_run_dir, 2).ok
+
+
+def test_run_transforms_is_a_noop_on_a_wave_of_judgment_stages(run_dir: Path):
+    assert run_transforms(prepare_wave(run_dir, 1, plugin_root=_PLUGIN_ROOT)) == ()
+
+
+def test_a_raising_transform_becomes_a_stage_failure_not_a_crash(run_dir: Path, monkeypatch):
+    """The deck transform's one expected failure is `DeckNotConvergedError`, and it
+    has to reach the analyst as a halt with the shape named — not as a traceback out
+    of the driver, which would lose the stage log and the partial run."""
+    write_plan_snapshot(run_dir, _PLAN_YAML.replace("skill: pitch-content", f"skill: {_STUB_SKILL}"))
+
+    def _boom(io):
+        raise RuntimeError("Rectangle 3 still overflows by 0.31\" after 3 iteration(s)")
+
+    monkeypatch.setitem(stage_transforms.TRANSFORMS, _STUB_SKILL, _boom)
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+
+    results = run_transforms(prepare_wave(run_dir, 2, plugin_root=_PLUGIN_ROOT))
+    assert results[0].ok is False and "Rectangle 3" in results[0].error
+
+    outcome = complete_wave(run_dir, 2)
+    assert outcome.halt is True
+    assert "Rectangle 3" in outcome.checkpoints[0].surface
+    assert "FAILED" in outcome.checkpoints[0].surface
+
+
+def test_a_transform_returning_a_non_dict_fails_the_stage(run_dir: Path, monkeypatch):
+    write_plan_snapshot(run_dir, _PLAN_YAML.replace("skill: pitch-content", f"skill: {_STUB_SKILL}"))
+    monkeypatch.setitem(stage_transforms.TRANSFORMS, _STUB_SKILL, lambda io: "a deck path")
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+
+    results = run_transforms(prepare_wave(run_dir, 2, plugin_root=_PLUGIN_ROOT))
+    assert results[0].ok is False and "not a dict" in results[0].error
+
+
+def test_plan_overview_reports_the_dispatch_split(transform_run_dir: Path):
+    """The split is derived from the registry, so no prose can carry a stale copy."""
+    overview = plan_overview(transform_run_dir)
+    assert overview.transform_stages == ("beta",)
+    assert overview.judgment_stages == ("alpha",)
+    assert overview.dispatch_count == 1
+    narration = overview.narration()
+    assert "1 are dispatched as sub-agents; 1 run in-process" in narration
+    assert "in-process" in narration
+
+
+def test_wave_narration_names_both_halves(transform_run_dir: Path):
+    _finish(transform_run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+    text = prepare_wave(transform_run_dir, 2, plugin_root=_PLUGIN_ROOT).narration()
+    assert "`beta` run in-process" in text
+    assert "dispatched" not in text
 
 
 # ─── complete_wave ───────────────────────────────────────────────────────────
@@ -363,6 +496,122 @@ def test_run_wave_end_to_end_reaches_the_gate(run_dir: Path):
     assert second.gate is not None and second.gate.stage_id == "beta"
 
 
+# ─── The `deck` gate, with `deck` as a transform (Phase F exit criterion) ────
+
+#: Both shipped plans in miniature: a research root, a `required` gate alone in
+#: its own wave, and a downstream wave for that gate to hold. `beta` stands in for
+#: `deck` (an in-process transform) and `gamma` for `deckcheck`.
+_GATED_PLAN_YAML = f"""\
+deliverable_type: pitch
+description: gated test plan
+stages:
+  - id: alpha
+    skill: comps
+    checkpoint: informational
+    inputs:
+      company: $deal.subject_company
+    outputs:
+      - name: workbook_path
+        type: Path
+  - id: beta
+    skill: {_STUB_SKILL}
+    checkpoint: required
+    inputs:
+      upstream: $stages.alpha.workbook_path
+    outputs:
+      - name: deck_path
+        type: Path
+  - id: gamma
+    skill: deckcheck
+    checkpoint: informational
+    inputs:
+      deck_path: $stages.beta.deck_path
+    outputs:
+      - name: report_path
+        type: Path
+"""
+
+_STAGE_PAYLOADS = {
+    "alpha": {"workbook_path": "/deals/wb.xlsx"},
+    "gamma": {"report_path": "/deals/artefacts/deckcheck.md"},
+}
+
+
+@pytest.fixture
+def gated_run_dir(run_dir: Path, monkeypatch) -> Path:
+    write_plan_snapshot(run_dir, _GATED_PLAN_YAML)
+    monkeypatch.setitem(
+        stage_transforms.TRANSFORMS,
+        _STUB_SKILL,
+        lambda io: {"deck_path": "/deals/artefacts/Pitch.pptx"},
+    )
+    return run_dir
+
+
+def _drive(run_dir: Path, *, approve: bool) -> tuple[list[str], str | None]:
+    """The conductor skill's wave loop as code, answering every `required` gate.
+
+    Same sequence Step 5 of the skill performs — `prepare_wave`, `run_transforms`,
+    the `Task` calls, `complete_wave` — with the callback standing in for the model.
+    Returns the stage ids that were actually dispatched, and where it halted.
+    """
+    dispatched: list[str] = []
+
+    def dispatch(prepared):
+        for stage in prepared.judgment:
+            dispatched.append(stage.stage_id)
+            stage.outputs_path.write_text(json.dumps(_STAGE_PAYLOADS[stage.stage_id]))
+
+    for wave in range(1, plan_overview(run_dir).wave_count + 1):
+        outcome = run_wave(run_dir, wave, dispatch, plugin_root=_PLUGIN_ROOT)
+        if outcome.halt:
+            return dispatched, outcome.results[0].stage_id
+        gate = outcome.gate
+        if gate is not None and not approve:  # the analyst picked HALT_LABEL
+            return dispatched, gate.stage_id
+    return dispatched, None
+
+
+def test_the_required_gate_halts_the_run_when_the_analyst_rejects(gated_run_dir: Path):
+    """Rejecting the gate stops the downstream wave dead — `deck` being an
+    in-process transform changes nothing about that.
+
+    The gate is the plugin's only one, and it is the analyst's pre-delivery
+    approval of a deck built from untrusted external inputs. Phase F moved the
+    stage behind it from a sub-agent to a driver call, so this asserts the property
+    that move could have broken: the checkpoint still fires at the wave boundary,
+    and nothing downstream runs on a rejection.
+    """
+    dispatched, halted_at = _drive(gated_run_dir, approve=False)
+
+    assert halted_at == "beta"
+    assert dispatched == ["alpha"], "the wave after the rejected gate must not dispatch"
+    # `beta` itself ran — a gate holds the waves AFTER its own, never its own wave.
+    assert (stage_dir(gated_run_dir, "beta") / "outputs.json").exists()
+    # `gamma` never did: no inputs resolved, no outputs written.
+    assert not (stage_dir(gated_run_dir, "gamma") / "inputs.json").exists()
+    assert not (stage_dir(gated_run_dir, "gamma") / "outputs.json").exists()
+
+
+def test_the_required_gate_releases_the_downstream_wave_on_approval(gated_run_dir: Path):
+    dispatched, halted_at = _drive(gated_run_dir, approve=True)
+
+    assert halted_at is None
+    assert dispatched == ["alpha", "gamma"]
+    assert complete_wave(gated_run_dir, 3).ok
+
+
+def test_the_gate_on_a_transform_still_carries_the_locked_dialog(gated_run_dir: Path):
+    """The approval question is code-owned and identical whoever ran the stage."""
+    _drive(gated_run_dir, approve=False)
+    gate = complete_wave(gated_run_dir, 2).gate
+
+    assert gate is not None and gate.stage_id == "beta" and gate.mode == "required"
+    assert [o["label"] for o in gate.question["options"]] == [APPROVE_LABEL, HALT_LABEL]
+    assert "the remaining waves" in gate.question["question"]  # a wave is being held
+    assert "/deals/artefacts/Pitch.pptx" in gate.surface
+
+
 # ─── Reference pre-flight ────────────────────────────────────────────────────
 
 
@@ -412,7 +661,7 @@ def test_run_summary_lists_every_stage_and_collects_artefacts(run_dir: Path):
     md = render_run_summary(run_dir, notes=["Refresh the Capital IQ connector."])
     assert "Project OpenText" in md
     assert "**wave 1** `alpha` (`comps`): ok" in md
-    assert "**wave 2** `beta` (`deck-assembler`): ok" in md
+    assert "**wave 2** `beta` (`pitch-content`): ok" in md
     assert "- /deals/artefacts/Pitch.pptx" in md  # .pptx recognised as an artefact
     assert "- /deals/pitch-Project OpenText.xlsx" in md
     assert "Refresh the Capital IQ connector." in md
@@ -422,7 +671,7 @@ def test_run_summary_records_a_failed_stage(run_dir: Path):
     _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
     # beta never wrote outputs.json.
     md = render_run_summary(run_dir)
-    assert "`beta` (`deck-assembler`): FAILED" in md
+    assert "`beta` (`pitch-content`): FAILED" in md
 
 
 def test_write_run_summary_persists_summary_md(run_dir: Path):

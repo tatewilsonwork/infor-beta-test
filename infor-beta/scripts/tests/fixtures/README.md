@@ -193,7 +193,8 @@ of the Phase A exit criterion.
 
 Phase D deleted the PowerPoint-COM backend, so there is no second renderer to
 agree with and the test went with it. What it established is still load-bearing
-and is recorded in `docs/migration-plan.md`: the two engines do NOT lay text out
+and is recorded in the v0.5.35 / v0.5.39 `CHANGELOG.md` entries and as a standing
+rule in `CLAUDE.md`: the two engines do NOT lay text out
 identically even with the same font file, and LibreOffice is the **conservative**
 one — "fits under LibreOffice" implies "fits in PowerPoint", not the reverse.
 Phase B's `deck_repair` depends on that direction, and on the sharper Phase B

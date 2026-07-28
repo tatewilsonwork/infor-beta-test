@@ -64,6 +64,9 @@ plan_inputs:
     description: Optional analyst risk notes to steer acquirer risks and mitigants.
 
 stages:
+  # A Phase F in-process transform — one call to `build_pitch_deck_slide_plan`,
+  # run by the driver. `skill:` still names the classification's key
+  # (`stage_transforms.TRANSFORMS`), which is the only place the kind is declared.
   - id: wireframe
     skill: pitch-wireframe
     inputs:
@@ -239,16 +242,26 @@ stages:
       ownership_workbook_path: $stages.ownership.workbook_path
       financial_metric_labels: $stages.financial-summary.financial_metric_labels
       template_name: INFOR Slide Library.pptx
-      output_dir: $deal.deal_dir
+      # No `output_dir`: the deck goes to `<deal_dir>/artefacts/`, derived from the
+      # inputs path by `stage_io`. The old input existed for a direct invocation
+      # this stage no longer has, and an input nothing reads is a claim nothing
+      # keeps.
     outputs:
       - name: deck_path
         type: Path
         description: Absolute path to the generated .pptx deck (16-slide base, adjusted by the deck-spec slide mix).
+      - name: vision_review_path
+        type: Path
+        description: The vision review the gate points the analyst at — which slides to look at and why, plus every slide's render and each rasterised picture at native resolution. Geometry is already measured and repaired inside the assembler; this is the reading half.
     # Pre-delivery gate: the assembled deck is built from untrusted external
     # inputs (filings, exports, web data), so the analyst must approve it before
     # the final artefacts are produced. `deck` sits alone in its wave ahead of
     # `financial-charts`, so this wave-boundary gate genuinely holds the final
     # charted deck.
+    #
+    # A Phase F in-process transform: the driver assembles the deck itself rather
+    # than dispatching a sub-agent to retype the call. The gate is unaffected —
+    # checkpoints fire at the wave boundary off `outputs.json`, whoever wrote it.
     checkpoint: required
 
   # Financial Summary charts: build the deck's metric charts (one per metric row
@@ -269,11 +282,24 @@ stages:
     inputs:
       deal_workbook: $deal.deal_workbook
       deck_path: $stages.deck.deck_path
-      deal_dir: $deal.deal_dir
+      # No `deal_dir`: the QA renders go under this stage's own run directory,
+      # which `stage_io` derives from the inputs path.
     outputs:
       - name: deck_path
         type: Path
         description: The final pitch deck, with the Financial Summary charts inserted (same file, modified in place).
+      - name: charts_inserted
+        type: bool
+        description: False when there was no `financial-summary` tab to chart, or the charts were persisted to the workbook but could not be rendered into the deck — the FS placeholders stay. Declared so a skip is visible at the wave boundary.
+      - name: pie_inserted
+        type: bool
+        description: False when the `ltm-metrics` tab carried no "LTM Revenue Overview" block for the overview pie — the placeholder stays.
+      - name: chart_qa_dir
+        type: Path
+        description: Renders of the slides this stage changed (overview + every Financial Summary slide); null when no renderer was available.
+    # Also a Phase F in-process transform. This is the stage that must never
+    # re-assemble the deck — a re-assembly reverts filled tables to placeholders —
+    # and as a transform it has no `Task` tool to do it with at all.
     checkpoint: informational
 
   # Falsification pass (Phase G). Reads the rendered slide PNGs, the run's merged

@@ -1,6 +1,8 @@
 # Stage envelope — Agent prompt template
 
-The conductor renders this template once per stage and passes it as the prompt to the `Task` (Agent) tool. The sub-agent reads its inputs, does its work, and writes `outputs.json` before finishing. The conductor parses `outputs.json`, not the sub-agent's reply text.
+The conductor renders this template once per **judgment** stage and passes it as the prompt to the `Task` (Agent) tool. The sub-agent reads its inputs, does its work, and writes `outputs.json` before finishing. The conductor parses `outputs.json`, not the sub-agent's reply text.
+
+A **transform** stage gets no envelope (`PreparedStage.prompt is None`): since Phase F the driver calls its function directly through `stage_transforms`, so there is no prompt, no sub-agent and nothing to instruct. It reads the same `inputs.json` through the same `stage_io()` and writes the same `outputs.json`, which is why nothing downstream — reference resolution, wave scheduling, checkpoints — can tell the difference.
 
 Placeholders enclosed in `{{double_braces}}` are substituted by `conductor.render_stage_envelope` at render time.
 

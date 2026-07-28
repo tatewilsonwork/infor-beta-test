@@ -9,9 +9,9 @@ description: >
   any request that names a deliverable type rather than a single workflow step. The
   conductor handles deal-init (one set of G7 dialogs per codename), loads the plan YAML
   for the deliverable, collects plan-specific inputs via the locked interactive deck-spec
-  dialogs (AskUserQuestion), dispatches each stage to its skill via the Agent tool with a
-  file-based input / output handoff, and emits a run log under
-  ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
+  dialogs (AskUserQuestion), runs each deterministic stage in-process and dispatches each
+  judgment stage to its skill via the Agent tool with a file-based input / output handoff,
+  and emits a run log under ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
 allowed-tools: [Read, Write, Bash, Glob, Task, AskUserQuestion]
 ---
 
@@ -20,6 +20,8 @@ allowed-tools: [Read, Write, Bash, Glob, Task, AskUserQuestion]
 The conductor is a thin orchestrator: **dumb about banking, smart about orchestration**. It never produces a deliverable directly.
 
 Since Phase E the mechanics live in `scripts/conductor.py`, not in this file. **Your job is four things** — intake, issuing the `Task` calls the driver hands back, the checkpoint conversation, and the summary. Everything else is a function call with a return value, so it cannot be skipped on turn 40 of a long run.
+
+Since Phase F the second of those got smaller: a stage is either a **transform** (deterministic — the driver calls the function in-process) or **judgment** (research and drafting — a sub-agent with a real allow-list; `deckcheck` included). You dispatch the judgment stages only. `plan_overview(run_dir).narration()` reports the split for the plan in front of you; no number is written down here, because a written-down wave count went stale once already.
 
 The architectural backbone — DealContext schema, codename rules, deliverable types, three checkpoint modes — is locked in Obsidian note `12 — Locked Decisions`. Re-read note 12 H1–H8 before changing this skill's behaviour.
 
@@ -46,8 +48,8 @@ from deck_spec import (
 )
 from run_log import make_run_id, create_run_dir, write_plan_snapshot, write_stage_log
 from conductor import (      # the driver — everything mechanical
-    plan_overview, prepare_wave, complete_wave, write_plan_inputs, write_run_summary,
-    APPROVE_LABEL, HALT_LABEL,
+    plan_overview, prepare_wave, run_transforms, complete_wave,
+    write_plan_inputs, write_run_summary, APPROVE_LABEL, HALT_LABEL,
 )
 ```
 
@@ -93,12 +95,15 @@ write_plan_inputs(run_dir, plan_inputs)
 
 Stages run in dependency **waves** derived from the `$stages.*` references in each stage's inputs — the references *are* the DAG, and since Phase D that is the only rule (no hardcoded barriers). Post `plan_overview(run_dir).narration()` (stage list, plan inputs, gates, and the wave schedule) up front, then for each wave `n` in `1..overview.wave_count`:
 
-1. **`dispatch = prepare_wave(run_dir, n)`** — resolves every reference, writes each `inputs.json`, and returns one `PreparedStage` per stage with a rendered `prompt`.
-2. **Issue one `Task` call per stage, all in a single message** so the wave runs concurrently, passing each `stage.prompt` **verbatim** as the prompt. Wait for every sub-agent to return, then `write_stage_log(run_dir, stage_id, transcript)` for each.
-3. **`outcome = complete_wave(run_dir, n)`** — reads and validates every `outputs.json` (missing, malformed, an `error` key, or a missing declared output name all fail) and builds the checkpoint payloads.
-4. **Post `outcome.narration()`.** If `outcome.halt`, stop — do not start the next wave. If `outcome.gate` is not None, put `outcome.gate.question` to the analyst with `AskUserQuestion` and halt on `HALT_LABEL`.
+1. **`dispatch = prepare_wave(run_dir, n)`** — resolves every reference, writes each `inputs.json`, and returns one `PreparedStage` per stage. A **judgment** stage carries a rendered `prompt`; a **transform** carries none.
+2. **`run_transforms(dispatch)`** — executes the wave's in-process stages (`dispatch.transforms`) and writes their `outputs.json`. Returns one `TransformResult` each; a raising transform is recorded as a stage failure, not a crash. Call it for every wave — it is a no-op when the wave has none.
+3. **Issue one `Task` call per stage in `dispatch.judgment`, all in a single message** so the wave runs concurrently, passing each `stage.prompt` **verbatim** as the prompt. `dispatch.prompts` is the same list. A wave of nothing but transforms needs **no `Task` call at all** — waves 5 and 6 of the pitch plan are exactly that. Wait for every sub-agent to return, then `write_stage_log(run_dir, stage_id, transcript)` for each.
+4. **`outcome = complete_wave(run_dir, n)`** — reads and validates every `outputs.json`, whoever wrote it (missing, malformed, an `error` key, or a missing declared output name all fail), and builds the checkpoint payloads.
+5. **Post `outcome.narration()`.** If `outcome.halt`, stop — do not start the next wave. If `outcome.gate` is not None, put `outcome.gate.question` to the analyst with `AskUserQuestion` and halt on `HALT_LABEL`.
 
-A `required` gate is evaluated at the **wave boundary**, so it holds the downstream waves, not its own wave-mates. Both shipped plans gate on `deck`, which is scheduled alone in its wave — see `references/checkpoint-behaviour.md`.
+**Transform vs judgment is not yours to decide.** `stage_transforms.TRANSFORMS` is the one place the classification lives; `prepare_wave` reads it. Never dispatch a `Task` for a stage in `dispatch.transforms`, and never hand-run a judgment stage's work yourself.
+
+A `required` gate is evaluated at the **wave boundary**, so it holds the downstream waves, not its own wave-mates. Both shipped plans gate on `deck`, which is scheduled alone in its wave — see `references/checkpoint-behaviour.md`. `deck` is a transform, which changes nothing about the gate: the checkpoint is built from `outputs.json` and fires identically. Its `vision_review_path` output is the review of the slides the analyst is being asked to approve — **name it in the surface** so they open it before answering.
 
 ## Step 6 — Summary
 
