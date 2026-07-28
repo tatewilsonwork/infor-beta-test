@@ -127,6 +127,170 @@ def test_render_selected_slides_returns_png_paths(tmp_path: Path):
         assert p.stat().st_size > 0
 
 
+# ─── Converted-PDF cache (Phase C) ───────────────────────────────────────────
+# Correctness first: the cache must key on CONTENT, must not serve a stale PDF
+# for changed content, and must be switchable off.
+
+
+@pytest.fixture
+def private_cache(tmp_path: Path, monkeypatch):
+    """Give this test its own render cache directory.
+
+    The suite points every process at ONE shared cache (see `conftest.py`), so a
+    test that cleared it would be deleting PDFs the other five workers are
+    reading — wasteful at best, and a genuine race at worst. Isolating is both
+    safer and a better test: the cache starts empty either way.
+    """
+    cache = tmp_path / "render-cache"
+    monkeypatch.setenv(slide_render.CACHE_DIR_ENV_VAR, str(cache))
+    monkeypatch.setattr(slide_render, "_CACHE_DIR", None)
+    monkeypatch.setattr(slide_render, "_PDF_CACHE", {})
+    return cache
+
+
+def _one_slide_deck(path: Path, text: str) -> Path:
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    box = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+    box.text_frame.text = text
+    prs.save(str(path))
+    return path
+
+
+def test_digest_ignores_zip_timestamps_but_not_content(tmp_path: Path):
+    """The key that makes the cache useful.
+
+    python-pptx stamps each zip member with the save time, so two decks built
+    from identical content differ byte-for-byte. Hashing the members' names and
+    payloads sees them as the same deck — which is what lets a regenerated probe
+    deck hit the cache. Different content must still miss.
+    """
+    import time as _time
+
+    a = _one_slide_deck(tmp_path / "a.pptx", "same words")
+    _time.sleep(2)  # push the zip timestamp into a different second
+    b = _one_slide_deck(tmp_path / "b.pptx", "same words")
+    c = _one_slide_deck(tmp_path / "c.pptx", "different words")
+
+    assert a.read_bytes() != b.read_bytes(), "expected differing zip timestamps"
+    assert slide_render._deck_digest(a) == slide_render._deck_digest(b)
+    assert slide_render._deck_digest(a) != slide_render._deck_digest(c)
+    assert slide_render._deck_digest(tmp_path / "not-a-zip.pptx") is None
+
+
+@pytest.mark.skipif(not _libreoffice_available(), reason="LibreOffice not installed")
+def test_identical_content_is_converted_once(tmp_path: Path, private_cache):
+    pytest.importorskip("pypdfium2", reason="LibreOffice backend needs pypdfium2")
+    conversions: list[Path] = []
+    real = slide_render._convert_to_pdf
+
+    def counting(soffice, deck, tmp_dir):
+        conversions.append(deck)
+        return real(soffice, deck, tmp_dir)
+
+    original, slide_render._convert_to_pdf = slide_render._convert_to_pdf, counting
+    try:
+        a = _one_slide_deck(tmp_path / "a.pptx", "cache me")
+        b = _one_slide_deck(tmp_path / "b.pptx", "cache me")  # same content, new file
+        c = _one_slide_deck(tmp_path / "c.pptx", "do not cache me")
+        first = render_deck_to_png(a, tmp_path / "o1")
+        second = render_deck_to_png(b, tmp_path / "o2")
+        third = render_deck_to_png(c, tmp_path / "o3")
+    finally:
+        slide_render._convert_to_pdf = original
+
+    assert len(conversions) == 2, "identical content must convert once; new content must convert"
+    # Served from cache, but still a real render of the right page.
+    for paths in (first, second, third):
+        assert len(paths) == 1 and paths[0].stat().st_size > 0
+    assert first[0].read_bytes() == second[0].read_bytes()
+
+
+@pytest.mark.skipif(not _libreoffice_available(), reason="LibreOffice not installed")
+def test_cache_can_be_switched_off(tmp_path: Path, monkeypatch, private_cache):
+    pytest.importorskip("pypdfium2", reason="LibreOffice backend needs pypdfium2")
+    monkeypatch.setenv(slide_render.CACHE_ENV_VAR, "0")
+    conversions: list[Path] = []
+    real = slide_render._convert_to_pdf
+
+    def counting(soffice, deck, tmp_dir):
+        conversions.append(deck)
+        return real(soffice, deck, tmp_dir)
+
+    original, slide_render._convert_to_pdf = slide_render._convert_to_pdf, counting
+    try:
+        deck = _one_slide_deck(tmp_path / "a.pptx", "no cache")
+        render_deck_to_png(deck, tmp_path / "o1")
+        render_deck_to_png(deck, tmp_path / "o2")
+    finally:
+        slide_render._convert_to_pdf = original
+
+    assert len(conversions) == 2
+
+
+def test_cache_is_shared_between_processes(tmp_path: Path, monkeypatch):
+    """A PDF one process published is served to the next.
+
+    This is what makes the distributed suite worthwhile: the six workers would
+    otherwise each convert the blank library and its attribution probe deck.
+    Simulated here by publishing into the shared directory, then clearing only
+    the in-process index — which is exactly what a second process sees.
+    """
+    shared = tmp_path / "shared-cache"
+    monkeypatch.setenv(slide_render.CACHE_DIR_ENV_VAR, str(shared))
+    monkeypatch.setattr(slide_render, "_CACHE_DIR", None)
+    monkeypatch.setattr(slide_render, "_PDF_CACHE", {})
+
+    pdf = tmp_path / "converted.pdf"
+    pdf.write_bytes(b"%PDF-1.4 stub")
+    slide_render._cache_store("deadbeef", pdf)
+    assert (shared / "deadbeef.pdf").is_file()
+    assert not list(shared.glob("*.part")), "the staging file must not be left behind"
+
+    # A fresh process: same directory, empty in-process index.
+    monkeypatch.setattr(slide_render, "_PDF_CACHE", {})
+    conversions = []
+
+    def must_not_convert(soffice, deck, tmp_dir):
+        conversions.append(deck)
+        raise AssertionError("should have been served from the shared cache")
+
+    monkeypatch.setattr(slide_render, "_convert_to_pdf", must_not_convert)
+    monkeypatch.setattr(slide_render, "_deck_digest", lambda deck: "deadbeef")
+    assert slide_render._pdf_for("soffice", tmp_path / "any.pptx", tmp_path) == shared / "deadbeef.pdf"
+    assert conversions == []
+
+
+def test_a_shared_cache_dir_is_not_deleted_by_a_process_that_joined_it(tmp_path, monkeypatch):
+    # Only the creator cleans up; a worker must not remove the directory its
+    # siblings are still reading.
+    shared = tmp_path / "shared-cache"
+    monkeypatch.setenv(slide_render.CACHE_DIR_ENV_VAR, str(shared))
+    monkeypatch.setattr(slide_render, "_CACHE_DIR", None)
+    monkeypatch.setattr(slide_render, "_CACHE_DIR_IS_OURS", False)
+    assert slide_render._cache_dir() == shared
+    assert slide_render._CACHE_DIR_IS_OURS is False
+
+    monkeypatch.setattr(slide_render, "_CACHE_DIR", None)
+    monkeypatch.delenv(slide_render.CACHE_DIR_ENV_VAR)
+    private = slide_render._cache_dir()
+    assert private != shared and slide_render._CACHE_DIR_IS_OURS is True
+
+
+def test_cache_eviction_is_bounded(tmp_path: Path, monkeypatch, private_cache):
+    monkeypatch.setattr(slide_render, "_CACHE_MAX_ENTRIES", 3)
+    for i in range(6):
+        pdf = tmp_path / f"{i}.pdf"
+        pdf.write_bytes(b"%PDF-1.4 stub")
+        slide_render._cache_store(f"digest{i}", pdf)
+    assert len(slide_render._PDF_CACHE) <= 3
+    for path in slide_render._PDF_CACHE.values():
+        assert path.is_file(), "a surviving entry must still be on disk"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerPoint COM is Windows-only")
 def test_powerpoint_com_render_still_works(tmp_path: Path):
     """The opt-in path stays reachable until Phase D deletes it."""

@@ -66,7 +66,12 @@ from pptx import Presentation
 
 from excel_to_powerpoint import excel_com_app  # the ONLY Excel-COM instance owner
 from pptx_helpers import INFOR_ACCENTS
-from template_layout import OVERVIEW_SLIDE_INDEX
+from template_layout import (
+    MARKER_BUILT_FINANCIAL_SUMMARY,
+    MARKER_BUILT_OVERVIEW,
+    find_slide_by_marker,
+    find_slides_by_marker,
+)
 
 # --- INFOR chart constants ---------------------------------------------------
 _BAR_RGB_HEX = "46566E"  # RGB(70, 86, 110) as openpyxl RRGGBB
@@ -171,11 +176,12 @@ _PIE_LEGEND_X = 0.61
 _PIE_LEGEND_Y = 0.02
 _PIE_LEGEND_W = 0.38
 _PIE_LEGEND_H = 0.96
-# Overview slide in the assembled pitch deck (slides[6] after the earnings slide
-# at raw library index 7 is deleted) — the shared template_layout constant, so
-# this module and pitch_deck_assembler cannot drift apart.
-_OVERVIEW_SLIDE_INDEX = OVERVIEW_SLIDE_INDEX
-_PIE_PLACEHOLDER = "Rectangle 4"
+# The overview slide is FOUND, not indexed. Through v0.5.39 this module and
+# `pitch_deck_assembler` shared a `OVERVIEW_SLIDE_INDEX = 6` constant, which was
+# only correct because the pitch flow happens to delete a slide after it. The
+# slide is now located by the very placeholder this stage is about to fill —
+# the same self-discovery the Financial Summary slides already used.
+_PIE_PLACEHOLDER = MARKER_BUILT_OVERVIEW.shape_name  # 'Rectangle 4'
 # Placeholder box: 4.51" x 1.77" (wide and short) — size the exported pie to the
 # same aspect so the stretched picture is not distorted.
 _PIE_W_PT = 4.51 * 72
@@ -480,19 +486,12 @@ def _find_financial_summary_slides(deck_path: Path) -> list[int]:
     shape (``Rectangle 17``), which is present until this stage replaces it with
     the chart picture. Raises when none is found — the deck was already charted
     or is not an assembled pitch deck.
+
+    The scan itself now lives in `template_layout.find_slides_by_marker`, which
+    generalised this function in Phase C; the local wrapper keeps the
+    deck-specific error message.
     """
-    prs = Presentation(deck_path)
-
-    def _is_marker(shape) -> bool:
-        return (
-            shape.name == _FS_MARKER_PLACEHOLDER
-            and getattr(shape, "has_text_frame", False)
-            and "[Placeholder for Metric #1 Chart]" in shape.text
-        )
-
-    indexes = [
-        i for i, slide in enumerate(prs.slides) if any(_is_marker(s) for s in slide.shapes)
-    ]
+    indexes = find_slides_by_marker(Presentation(deck_path), MARKER_BUILT_FINANCIAL_SUMMARY)
     if not indexes:
         raise ValueError(
             f"no Financial Summary chart placeholders ({_FS_MARKER_PLACEHOLDER!r}) found "
@@ -510,7 +509,7 @@ def render_ltm_revenue_pie_into_deck(
     deck_path: Path | str,
     combined_workbook_path: Path | str,
     sheet_name: str = _PIE_SHEET_DEFAULT,
-    slide_index: int = _OVERVIEW_SLIDE_INDEX,
+    slide_index: int | None = None,
     placeholder_name: str = _PIE_PLACEHOLDER,
     output_path: Path | str | None = None,
 ) -> Path | None:
@@ -519,6 +518,10 @@ def render_ltm_revenue_pie_into_deck(
     The pie is built on the combined workbook's ``ltm-metrics`` tab (its "LTM
     Revenue Overview" block carries literal segment × LTM-revenue values) and
     dropped into the overview slide's "[Pie Chart Placeholder]" (``Rectangle 4``).
+
+    ``slide_index`` defaults to ``None``, meaning "find the overview slide by
+    that placeholder" — the deck tells this stage where its overview slide is,
+    rather than the two agreeing on a number.
 
     Returns the output deck path, or ``None`` when the slide keeps its placeholder
     — either because the combined workbook has no ``ltm-metrics`` tab / no "LTM
@@ -558,9 +561,16 @@ def render_ltm_revenue_pie_into_deck(
         return None
 
     out = Path(output_path).resolve() if output_path is not None else deck
+    target = (
+        slide_index
+        if slide_index is not None
+        else find_slide_by_marker(
+            Presentation(deck), MARKER_BUILT_OVERVIEW, template=deck.name
+        )
+    )
     return insert_pngs_into_placeholders(
         deck_path=deck,
-        slide_index=slide_index,
+        slide_index=target,
         pngs_by_placeholder={placeholder_name: png},
         output_path=out,
     )

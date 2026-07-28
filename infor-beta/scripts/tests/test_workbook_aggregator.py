@@ -334,7 +334,7 @@ def test_relink_failure_keeps_sources(tmp_path: Path, monkeypatch, capsys):
     # externally-bound links; deleting the sources would make that permanent.
     monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
     monkeypatch.setattr(
-        workbook_aggregator, "_relink_cross_tab_openpyxl", lambda wb, tabs: False
+        workbook_aggregator, "_relink_cross_tab_openpyxl", lambda wb, tabs, addr=None: False
     )
     a = _make_workbook(tmp_path / "fs.xlsx", {"FS": [[1]]})
     b = _make_workbook(tmp_path / "ltm.xlsx", {"LTM": [[2]]})
@@ -376,7 +376,7 @@ def test_win32_com_failure_fallback_keeps_sources(tmp_path: Path, monkeypatch, c
     # gone), but the full-fidelity sources must survive for a retry.
     monkeypatch.setattr("workbook_aggregator.sys.platform", "win32")
 
-    def com_boom(sources, output_path, theme):
+    def com_boom(sources, output_path, theme, relink_addresses=None):
         raise RuntimeError("Excel COM workbook aggregation failed: no Excel")
 
     monkeypatch.setattr(workbook_aggregator, "_combine_via_com", com_boom)

@@ -34,7 +34,10 @@ Three structural consequences of building blind, all of which this plan removes:
   sheet renames, the v0.5.33 source-deletion gate.
 - 441 lines of sentinel tables (`template_layout.py`) guarding dozens of
   hardcoded cell addresses and slide indices — `_KEEP_LIBRARY_INDICES` alone has
-  needed three manual migrations.
+  needed three manual migrations. *(Addressed in Phase C: the addresses and
+  indices are gone, replaced by defined names and marker shapes. The sentinel
+  tables remain for one release as the cross-check that proves the migration was
+  faithful, then get deleted.)*
 
 ## Ordering principle
 
@@ -332,7 +335,7 @@ startup-abort exposure roughly threefold. Deliberately not done here: it changes
 `insert_excel_into_placeholder`'s contract and both assemblers, which is
 gold-plating a path with a scheduled deletion date.
 
-## Phase C — Name-based template addressing
+## Phase C — Name-based template addressing ✅ shipped 2026-07-28 (v0.5.40)
 
 Safe now — Phase B catches breakage.
 
@@ -350,6 +353,64 @@ Safe now — Phase B catches breakage.
 
 **Payoff worth naming:** after C, an analyst can re-save a template or insert a
 library slide without a code migration.
+
+### What shipped
+
+27 `infor_`-prefixed, **worksheet-scoped** names across the four templates
+(cap table 9, ownership 6, comps 7, precedents 5), registered in
+`template_layout.TEMPLATE_NAMED_RANGES` — derived from the same `CellAnchor`
+declarations the writers and the sentinel checks read, so the registry and the
+stamped file cannot drift. `precedents_input_ccy` ships as
+`infor_prec_output_ccy`: the cell is labelled "Output:" and the aggregator
+relinks it to the cap table's *output* currency, so the name follows the
+artefact rather than the plan's shorthand.
+
+Added by **`tools/add_template_named_ranges.py`** — re-runnable prep tooling,
+COM-free, exempt from Phase D. It rewrites only `xl/workbook.xml` and copies
+every other zip entry's payload through byte-for-byte; verified after stamping
+that exactly one entry differs per template. Neither of the two obvious routes
+was used, and the reasons are measured, not assumed: **openpyxl** keeps the
+defined names but silently drops `xl/printerSettings1.bin`, and **Excel COM**
+would rewrite the whole file through Excel with the Cap IQ add-in loaded. Excel
+is still the *oracle* (`--verify-excel`), and it was self-tested against two
+deliberately damaged copies to prove it can fire.
+
+The sentinel tables are **kept for this release** as the cross-check, per step 2.
+`verify_anchors` now fails when a name and its sentinel disagree about where a
+cell is. **Follow-up release: delete the sentinel tables** — that is the debt
+this cross-check exists to retire, and nothing else in the phase is outstanding.
+
+Step 3 went further than replacing three call sites: `_PitchLayout`'s index
+arithmetic is gone entirely, replaced by marker lookups over the finished slide
+mix, so constructing the layout *is* the verification pass it used to precede.
+`MARKER_BUILT_*` markers were needed because the library markers key off titles
+that assembly overwrites — a post-fill lookup keys off the deferred placeholders
+instead.
+
+### Suite runtime, added to the phase after measuring Phase B
+
+712s → 137–247s across six green runs (median 168s; four of the six inside
+the ~3-minute target). Converted PDFs are cached by deck
+*content* (hashing zip members, not file bytes — python-pptx stamps save times,
+so byte-hashing would miss every generated deck); each process gets a private
+LibreOffice profile (which also fixes concurrent conversions — 2 of 4 failed
+sharing the default profile); and the suite runs `-n 6 --dist loadgroup` with one
+render cache shared across workers. `-n 6` beat `-n auto`/20 (159s vs 232s):
+every worker carries a fixed library-baseline render, so more workers thrash.
+
+Two defects fell out of making it concurrent, both fixed at source: both
+renderers were holding the **caller's** file open (PowerPoint denies other
+readers; LibreOffice drops a `.~lock`), which surfaced as a bogus
+`PackageNotFoundError` because `zipfile.is_zipfile` swallows the `OSError` — they
+now render a private copy, which also cleared the PowerPoint-COM flake this phase
+had accepted. And one fill-logic test was running the converge loop because it
+called the assembler directly instead of the module's `converge=False` helper.
+
+**Remaining variance is the box, not the change:** the same single conversion of
+the same fixture measured 3.4s in one session and 8.7s in another. Squeezing
+further would mean restructuring `verify_deck`'s two-conversion flow — the deck
+render, then the attribution probe deck that depends on its results — which is
+Phase B's oracle and was deliberately left alone.
 
 ## Phase D — One workbook, one backend
 

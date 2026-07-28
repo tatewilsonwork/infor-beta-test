@@ -37,9 +37,10 @@ The pitch pair is the most recent pitch run and matches the current code. The
 earnings-update pair is the most recent earnings-update run there is — no EU run
 has happened since v0.5.5, so it predates 29 releases. Its **structure is still
 current** (5 slides: cover → overview → earnings summary → disclaimer → contact,
-which is what today's `_KEEP_LIBRARY_INDICES` produces), but treat any *content*
-detail as v0.5.5 behaviour, not as a specification. If an EU run happens before
-Phase B lands, replace this pair and update this file.
+which is what the earnings assembler's five kept library entries still produce —
+found by marker since v0.5.40, previously the `_KEEP_LIBRARY_INDICES` tuple), but
+treat any *content* detail as v0.5.5 behaviour, not as a specification. If an EU
+run happens, replace this pair and update this file.
 
 Both subject companies are public issuers and every figure traces to a public
 filing — but these are still INFOR client work product. Do not copy them

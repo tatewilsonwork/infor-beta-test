@@ -49,11 +49,19 @@ merge base is a blank workbook (no cap table) or the openpyxl fallback runs.
 Cross-tab links: once every workbook is one file, a relink pass rewrites the
 skills' standalone scalar handoffs into live cross-tab formulas, so the
 analyst's combined workbook stays internally linked — the cap table's LTM
-Revenue / Adj. EBITDA cells (`D47`/`D48`) point at the `ltm-metrics` bridge
-totals, the ownership % denominator (`F35`) points at the cap table's basic
-shares, and the comps (`F3`) / precedents (`C2`) output-currency cells point at
-the cap table's output currency (`F5`) so the whole workbook shows one currency.
-See `_relink_cross_tab_openpyxl` / `_relink_cross_tab_com`.
+Revenue / Adj. EBITDA cells point at the `ltm-metrics` bridge totals, the
+ownership % denominator points at the cap table's basic shares, and the comps /
+precedents output-currency cells point at the cap table's output currency so
+the whole workbook shows one currency. See `_relink_cross_tab_openpyxl` /
+`_relink_cross_tab_com`.
+
+Those cells are located by the **defined names on the source workbooks**
+(`infor_ltm_revenue_valuation`, `infor_own_total_shares`, …), resolved by
+`_verify_relink_layout` into a `_RelinkAddresses` before either backend runs.
+Deliberately resolved on the sources and not on the merged file: neither merge
+path reliably carries a sheet's defined names across (the COM sheet-copy is
+inconsistent, and the openpyxl path rebuilds sheets cell by cell), so the
+combined workbook is the one place the names cannot be trusted.
 
 Hyperlinks + comments: the openpyxl merge copies each cell's hyperlink and
 comment alongside its value and style (`_copy_sheet`), so the precedents source
@@ -77,7 +85,7 @@ import sys
 import tempfile
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
@@ -90,10 +98,19 @@ from template_layout import (
     CAP_TABLE_SHEET,
     COMPS_OUTPUT_CCY_ANCHORS,
     COMPS_SHEET,
+    NAME_BASIC_SHARES,
+    NAME_CAP_OUTPUT_CCY,
+    NAME_COMPS_OUTPUT_CCY,
+    NAME_FX_RATE,
+    NAME_LTM_EBITDA_VALUATION,
+    NAME_LTM_REVENUE_VALUATION,
+    NAME_OWN_TOTAL_SHARES,
+    NAME_PREC_OUTPUT_CCY,
     OWNERSHIP_SHEET,
     OWNERSHIP_TOTAL_SHARES_ANCHORS,
     PRECEDENTS_OUTPUT_CCY_ANCHORS,
     PRECEDENTS_SHEET,
+    defined_name_ref,
     verify_anchors,
 )
 
@@ -282,7 +299,7 @@ def combine_workbooks(
     # pass through (the sources are still openpyxl-readable .xlsx files here).
     # A re-saved template with shifted rows would otherwise make the relink
     # write its cross-tab formulas into the wrong cells — a silent wrong number.
-    _verify_relink_layout(kept)
+    relink_addresses = _verify_relink_layout(kept)
 
     out_dir = Path(output_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -292,7 +309,7 @@ def combine_workbooks(
     used_openpyxl = False
     if sys.platform == "win32":
         try:
-            relink_ok = _combine_via_com(kept, output_path, theme)
+            relink_ok = _combine_via_com(kept, output_path, theme, relink_addresses)
         except RuntimeError as exc:
             print(
                 f"[workbook-aggregator] Excel COM merge failed ({exc}); falling "
@@ -300,10 +317,10 @@ def combine_workbooks(
                 "not survive).",
                 file=sys.stderr,
             )
-            relink_ok = _combine_via_openpyxl(kept, output_path, theme)
+            relink_ok = _combine_via_openpyxl(kept, output_path, theme, relink_addresses)
             used_openpyxl = True
     else:
-        relink_ok = _combine_via_openpyxl(kept, output_path, theme)
+        relink_ok = _combine_via_openpyxl(kept, output_path, theme, relink_addresses)
         used_openpyxl = True
 
     # The openpyxl merge writes formula strings with NO cached values, so the
@@ -598,19 +615,28 @@ _LTM_EBITDA_LABELS = ("(=) LTM Adj. EBITDA", "(=) LTM EBITDA")
 _FS_SKILL = "financial-summary"
 _LTM_SKILL = "ltm-metrics"
 _FS_LTM_REF_SHEET = "ltm-metrics"  # the sheet token the financial-summary links use
-_CAP_LTM_REVENUE_CELL = "D47"   # cap table LTM Revenue (millions, F5 currency)
-_CAP_LTM_EBITDA_CELL = "D48"    # cap table LTM Adj. EBITDA
-_CAP_BASIC_SHARES_CELL = "F17"  # cap table basic shares outstanding (millions)
-_OWN_DENOM_CELL = "F35"         # ownership % denominator (full units)
 _OWN_SHARES_SCALE = 1_000_000   # cap table is in millions; ownership is full units
 
-# Output-currency cells that should mirror the cap table's output currency (F5)
-# rather than each skill's standalone literal, so the combined workbook shows one
-# consistent currency (and updating F5 flows through). Maps producing-skill -> the
-# cell on that skill's tab. They are restyled to match the cap table's F5
-# (Palatino 9, blue) since the bare comps template cell is Calibri 11.
-_CAP_OUTPUT_CCY_CELL = "F5"
-_OUTPUT_CCY_LINKS = {"comps": "F3", "precedents": "C2"}
+# The relinked cells are resolved from each SOURCE workbook's defined names by
+# the pre-flight below, not hardcoded here — see `_RelinkAddresses`. The
+# fallbacks are the shipped-template addresses, used when a source predates
+# Phase C. Deliberately resolved on the sources rather than on the combined
+# workbook: a merge (COM sheet-copy or the openpyxl cell-by-cell rebuild) does
+# not reliably carry a sheet's defined names, so the combined file is the one
+# place the names cannot be trusted.
+_CAP_LTM_REVENUE_CELL = "D47"   # cap table LTM Revenue (millions, output currency)
+_CAP_LTM_EBITDA_CELL = "D48"    # cap table LTM Adj. EBITDA
+_CAP_BASIC_SHARES_CELL = "F17"  # cap table basic shares outstanding (millions)
+_CAP_FX_CELL = "F7"             # cap table FX rate the LTM formulas multiply by
+_CAP_OUTPUT_CCY_CELL = "F5"     # cap table output currency
+_OWN_DENOM_CELL = "F35"         # ownership % denominator (full units)
+_OUTPUT_CCY_FALLBACKS = {"comps": "F3", "precedents": "C2"}
+
+# The output-currency cells mirror the cap table's output currency rather than
+# each skill's standalone literal, so the combined workbook shows one consistent
+# currency (and updating it flows through). They are restyled to match the cap
+# table's cell (Palatino 9, blue) since the bare comps template cell is
+# Calibri 11.
 _OUTPUT_CCY_LINK_FONT = ("Palatino Linotype", 9.0, "0000FF")  # name, size, aRGB-less hex
 
 # Shared relink-failure trace. Best-effort by design — a relink failure must not
@@ -638,23 +664,47 @@ def _relink_source_sheet(wb, preferred: str):
     return wb.active
 
 
-def _verify_relink_layout(kept: list[tuple[str, Path]]) -> None:
-    """Verify the relinked cells' sentinel anchors on the source workbooks.
+@dataclass
+class _RelinkAddresses:
+    """Where the relinked cells live, read off the SOURCE workbooks.
+
+    Defaults are the shipped-template addresses; `_verify_relink_layout`
+    overwrites each one it can resolve from that workbook's defined name. The
+    merged workbook is never asked — see the constants above for why.
+    """
+
+    cap_ltm_revenue: str = _CAP_LTM_REVENUE_CELL
+    cap_ltm_ebitda: str = _CAP_LTM_EBITDA_CELL
+    cap_basic_shares: str = _CAP_BASIC_SHARES_CELL
+    cap_fx: str = _CAP_FX_CELL
+    cap_output_ccy: str = _CAP_OUTPUT_CCY_CELL
+    own_denominator: str = _OWN_DENOM_CELL
+    output_ccy: dict = field(default_factory=lambda: dict(_OUTPUT_CCY_FALLBACKS))
+
+
+def _verify_relink_layout(kept: list[tuple[str, Path]]) -> _RelinkAddresses:
+    """Verify the relinked cells on the source workbooks, and resolve them.
 
     Runs BEFORE either merge backend, so the Excel-COM and openpyxl paths share
     one verification (the sources are plain .xlsx files here; nothing has been
     merged or deleted yet, so raising loses no work). Only the relinks that
     will actually fire are checked: every relink is keyed off the cap table, and
-    each partner tab adds its own cells — captable+ltm-metrics ⇒ D47/D48 (and
-    the F7 FX rate the written formulas multiply by), captable+ownership ⇒
-    F17 → F35, captable+comps ⇒ F5 → F3, captable+precedents ⇒ F5 → C2.
-    Raises TemplateLayoutError when a template's layout has shifted.
+    each partner tab adds its own cells — captable+ltm-metrics ⇒ the two LTM
+    valuation cells (and the FX rate the written formulas multiply by),
+    captable+ownership ⇒ basic shares → the ownership denominator,
+    captable+comps / captable+precedents ⇒ output currency → that tab's
+    currency cell.
+
+    Each check pairs a sentinel with its defined name, so a template whose name
+    and label disagree raises here. Returns the resolved addresses for the
+    relink passes; raises TemplateLayoutError when a layout has shifted.
     """
     from openpyxl import load_workbook
 
+    addresses = _RelinkAddresses()
     skills = {skill for skill, _ in kept}
     if "captable" not in skills:
-        return  # every relink is keyed off the cap table
+        return addresses  # every relink is keyed off the cap table
 
     cap_anchors = []
     if "ltm-metrics" in skills:
@@ -664,27 +714,47 @@ def _verify_relink_layout(kept: list[tuple[str, Path]]) -> None:
     if "comps" in skills or "precedents" in skills:
         cap_anchors.append(CAP_TABLE_OUTPUT_CCY_ANCHOR)
 
+    cap_names = {
+        "cap_ltm_revenue": NAME_LTM_REVENUE_VALUATION,
+        "cap_ltm_ebitda": NAME_LTM_EBITDA_VALUATION,
+        "cap_basic_shares": NAME_BASIC_SHARES,
+        "cap_fx": NAME_FX_RATE,
+        "cap_output_ccy": NAME_CAP_OUTPUT_CCY,
+    }
     partner_checks = {
-        "ownership": (OWNERSHIP_SHEET, OWNERSHIP_TOTAL_SHARES_ANCHORS),
-        "comps": (COMPS_SHEET, COMPS_OUTPUT_CCY_ANCHORS),
-        "precedents": (PRECEDENTS_SHEET, PRECEDENTS_OUTPUT_CCY_ANCHORS),
+        "ownership": (OWNERSHIP_SHEET, OWNERSHIP_TOTAL_SHARES_ANCHORS, NAME_OWN_TOTAL_SHARES),
+        "comps": (COMPS_SHEET, COMPS_OUTPUT_CCY_ANCHORS, NAME_COMPS_OUTPUT_CCY),
+        "precedents": (
+            PRECEDENTS_SHEET, PRECEDENTS_OUTPUT_CCY_ANCHORS, NAME_PREC_OUTPUT_CCY,
+        ),
     }
     for skill, path in kept:
         if skill == "captable" and cap_anchors:
             wb = load_workbook(path, data_only=False)
             try:
-                verify_anchors(
-                    _relink_source_sheet(wb, CAP_TABLE_SHEET), cap_anchors, template=path.name
-                )
+                ws = _relink_source_sheet(wb, CAP_TABLE_SHEET)
+                verify_anchors(ws, cap_anchors, template=path.name)
+                for attr, name in cap_names.items():
+                    resolved = defined_name_ref(ws, name)
+                    if resolved is not None:
+                        setattr(addresses, attr, resolved)
             finally:
                 wb.close()
         elif skill in partner_checks:
-            preferred, anchors = partner_checks[skill]
+            preferred, anchors, name = partner_checks[skill]
             wb = load_workbook(path, data_only=False)
             try:
-                verify_anchors(_relink_source_sheet(wb, preferred), anchors, template=path.name)
+                ws = _relink_source_sheet(wb, preferred)
+                verify_anchors(ws, anchors, template=path.name)
+                resolved = defined_name_ref(ws, name)
+                if resolved is not None:
+                    if skill == "ownership":
+                        addresses.own_denominator = resolved
+                    else:
+                        addresses.output_ccy[skill] = resolved
             finally:
                 wb.close()
+    return addresses
 
 
 def _quote_sheet(name: str) -> str:
@@ -760,7 +830,9 @@ def _find_label_row_openpyxl(ws, prefixes) -> int | None:
     return None
 
 
-def _relink_cross_tab_openpyxl(combined, skill_to_tab: dict[str, str]) -> bool:
+def _relink_cross_tab_openpyxl(
+    combined, skill_to_tab: dict[str, str], addr: _RelinkAddresses | None = None
+) -> bool:
     """Wire the cap table's LTM cells + ownership denominator to sibling tabs.
 
     No-op unless the relevant tabs exist. The LTM bridge total rows are dynamic
@@ -774,6 +846,7 @@ def _relink_cross_tab_openpyxl(combined, skill_to_tab: dict[str, str]) -> bool:
     completed, False on failure (with a stderr trace) so the caller can gate
     source deletion on it.
     """
+    addr = addr or _RelinkAddresses()
     try:
         cap = skill_to_tab.get("captable")
         ltm = skill_to_tab.get("ltm-metrics")
@@ -785,22 +858,22 @@ def _relink_cross_tab_openpyxl(combined, skill_to_tab: dict[str, str]) -> bool:
             ebitda = _find_label_row_openpyxl(ltm_ws, _LTM_EBITDA_LABELS)
             q = _quote_sheet(ltm)
             if rev is not None:
-                combined[cap][_CAP_LTM_REVENUE_CELL] = f"={q}!B{rev}*F7"
+                combined[cap][addr.cap_ltm_revenue] = f"={q}!B{rev}*{addr.cap_fx}"
             if ebitda is not None:
-                combined[cap][_CAP_LTM_EBITDA_CELL] = f"={q}!B{ebitda}*F7"
+                combined[cap][addr.cap_ltm_ebitda] = f"={q}!B{ebitda}*{addr.cap_fx}"
         if cap in names and own in names:
-            combined[own][_OWN_DENOM_CELL] = (
-                f"={_quote_sheet(cap)}!{_CAP_BASIC_SHARES_CELL}*{_OWN_SHARES_SCALE}"
+            combined[own][addr.own_denominator] = (
+                f"={_quote_sheet(cap)}!{addr.cap_basic_shares}*{_OWN_SHARES_SCALE}"
             )
         if cap in names:
             from openpyxl.styles import Font
 
             name, size, color = _OUTPUT_CCY_LINK_FONT
-            for skill, cell_ref in _OUTPUT_CCY_LINKS.items():
+            for skill, cell_ref in addr.output_ccy.items():
                 tab = skill_to_tab.get(skill)
                 if tab in names:
                     cell = combined[tab][cell_ref]
-                    cell.value = f"={_quote_sheet(cap)}!{_CAP_OUTPUT_CCY_CELL}"
+                    cell.value = f"={_quote_sheet(cap)}!{addr.cap_output_ccy}"
                     cell.font = Font(name=name, size=size, color=color)
 
         _relink_financial_summary_openpyxl(combined, skill_to_tab)
@@ -824,11 +897,14 @@ def _find_label_row_com(ws, prefixes) -> int | None:
     return None
 
 
-def _relink_cross_tab_com(combined, skill_to_tab: dict[str, str]) -> bool:
+def _relink_cross_tab_com(
+    combined, skill_to_tab: dict[str, str], addr: _RelinkAddresses | None = None
+) -> bool:
     """COM counterpart of `_relink_cross_tab_openpyxl`; best-effort (never raises
     — a relink failure must not lose the successfully merged workbook). Returns
     True when the pass completed, False on failure (with a stderr trace) so the
     caller can gate source deletion on it."""
+    addr = addr or _RelinkAddresses()
     try:
         cap = skill_to_tab.get("captable")
         ltm = skill_to_tab.get("ltm-metrics")
@@ -841,22 +917,22 @@ def _relink_cross_tab_com(combined, skill_to_tab: dict[str, str]) -> bool:
             cap_ws = combined.Worksheets(cap)
             q = _quote_sheet(ltm)
             if rev is not None:
-                cap_ws.Range(_CAP_LTM_REVENUE_CELL).Formula = f"={q}!B{rev}*F7"
+                cap_ws.Range(addr.cap_ltm_revenue).Formula = f"={q}!B{rev}*{addr.cap_fx}"
             if ebitda is not None:
-                cap_ws.Range(_CAP_LTM_EBITDA_CELL).Formula = f"={q}!B{ebitda}*F7"
+                cap_ws.Range(addr.cap_ltm_ebitda).Formula = f"={q}!B{ebitda}*{addr.cap_fx}"
         if cap in names and own in names:
-            combined.Worksheets(own).Range(_OWN_DENOM_CELL).Formula = (
-                f"={_quote_sheet(cap)}!{_CAP_BASIC_SHARES_CELL}*{_OWN_SHARES_SCALE}"
+            combined.Worksheets(own).Range(addr.own_denominator).Formula = (
+                f"={_quote_sheet(cap)}!{addr.cap_basic_shares}*{_OWN_SHARES_SCALE}"
             )
         if cap in names:
             name, size, hex_color = _OUTPUT_CCY_LINK_FONT
             r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
             bgr = r + (g << 8) + (b << 16)  # Excel Font.Color is a BGR-packed long
-            for skill, cell_ref in _OUTPUT_CCY_LINKS.items():
+            for skill, cell_ref in addr.output_ccy.items():
                 tab = skill_to_tab.get(skill)
                 if tab in names:
                     rng = combined.Worksheets(tab).Range(cell_ref)
-                    rng.Formula = f"={_quote_sheet(cap)}!{_CAP_OUTPUT_CCY_CELL}"
+                    rng.Formula = f"={_quote_sheet(cap)}!{addr.cap_output_ccy}"
                     rng.Font.Name = name
                     rng.Font.Size = size
                     rng.Font.Color = bgr
@@ -912,7 +988,10 @@ def _rename_and_clean_base(combined, skill: str, used_names: set, skill_to_tab: 
 
 
 def _combine_via_com(
-    sources: list[tuple[str, Path]], output_path: Path, theme_path: Path | None = None
+    sources: list[tuple[str, Path]],
+    output_path: Path,
+    theme_path: Path | None = None,
+    relink_addresses: "_RelinkAddresses | None" = None,
 ) -> bool:
     """Merge with Excel COM, preserving formulas, links, charts, and formatting.
 
@@ -1013,7 +1092,7 @@ def _combine_via_com(
                         combined.Sheets(name).Delete()
 
                 # Wire the combined workbook's cross-tab links (best-effort).
-                relink_ok = _relink_cross_tab_com(combined, skill_to_tab)
+                relink_ok = _relink_cross_tab_com(combined, skill_to_tab, relink_addresses)
 
                 # Stamp the INFOR brand theme so the combined workbook keeps INFOR
                 # colours/fonts even when the base is a blank workbook (no cap table).
@@ -1060,7 +1139,10 @@ def _combine_via_com(
 
 
 def _combine_via_openpyxl(
-    sources: list[tuple[str, Path]], output_path: Path, theme_path: Path | None = None
+    sources: list[tuple[str, Path]],
+    output_path: Path,
+    theme_path: Path | None = None,
+    relink_addresses: "_RelinkAddresses | None" = None,
 ) -> bool:
     """Best-effort merge with openpyxl. CapIQ links and charts do NOT survive.
 
@@ -1088,7 +1170,7 @@ def _combine_via_openpyxl(
 
     if not combined.sheetnames:
         combined.create_sheet(title="Sheet")
-    relink_ok = _relink_cross_tab_openpyxl(combined, skill_to_tab)
+    relink_ok = _relink_cross_tab_openpyxl(combined, skill_to_tab, relink_addresses)
 
     # Stamp the INFOR brand theme (a fresh openpyxl Workbook carries the default
     # Office theme, so copied cells' theme-colour refs would otherwise resolve

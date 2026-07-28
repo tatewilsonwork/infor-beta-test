@@ -84,23 +84,28 @@ ls -lh "$OUTPUT"
 
 Open the copied file with openpyxl (NOT data_only — preserve all formulas).
 
-**Layout verification — REQUIRED before any write.** The workflow below addresses the template by hardcoded cells (F3/F5/F7/F16, D47/D48, the Section rows). Verify the copied template still matches that layout via the shared helper — it checks the sentinel labels next to each address and raises `TemplateLayoutError` naming what moved if the template was re-saved with shifted rows:
+**Layout verification — REQUIRED before any write.** The cells named below are the shipped template's positions; resolve each one through its **defined name** rather than typing the address, so a re-saved template that shifted a row still writes to the right cell. Run the shared verification first — it checks the sentinel label beside each address, cross-checks that the defined name resolves to the same cell, and raises `TemplateLayoutError` naming what moved:
 
 ```python
 import sys, os
 sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
-from template_layout import verify_cap_table_before_write
+from template_layout import (
+    NAME_CAP_TICKER, NAME_CAP_OUTPUT_CCY, NAME_FX_RATE, NAME_SHARE_PRICE,
+    NAME_LTM_REVENUE_VALUATION, NAME_LTM_EBITDA_VALUATION,
+    resolve_name_cell, verify_cap_table_before_write,
+)
 
 verify_cap_table_before_write(ws)  # raises TemplateLayoutError if the layout shifted — STOP and tell the analyst
+ws[resolve_name_cell(ws, NAME_CAP_TICKER)] = ticker   # NOT ws["F3"] = ticker
 ```
 
 If it raises, STOP: do not write any cell, and report the error message to the analyst (the shipped template and this skill's row map must be re-aligned).
 
 Update this cell in the `Cap with Links` sheet:
 
-| Cell | Value |
-|------|-------|
-| F3 | CapIQ ticker exactly as provided (e.g., `NasdaqGS:MSFT`) |
+| Defined name | Cell (as shipped) | Value |
+|--------------|-------------------|-------|
+| `infor_cap_ticker` | F3 | CapIQ ticker exactly as provided (e.g., `NasdaqGS:MSFT`) |
 
 **Do not modify these header cells:** F4, F5, F10, F11, or any formula cell. Cell F6 already contains a `=TODAY()-1` formula — leave it untouched.
 
@@ -124,9 +129,20 @@ import sys, os
 sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
 from comment_citations import append_source_to_comment
 
-append_source_to_comment(ws["F7"], "https://<fx-source-page>", "<YYYY-MM-DD>")   # FX rate source
-append_source_to_comment(ws["F16"], "https://<quote-source-page>", "<YYYY-MM-DD>")  # share price source
+from template_layout import NAME_FX_RATE, NAME_SHARE_PRICE, resolve_name_cell
+
+fx = ws[resolve_name_cell(ws, NAME_FX_RATE)]           # 'F7' as shipped
+price = ws[resolve_name_cell(ws, NAME_SHARE_PRICE)]    # 'F16' as shipped
+append_source_to_comment(fx, "https://<fx-source-page>", "<YYYY-MM-DD>")      # FX rate source
+append_source_to_comment(price, "https://<quote-source-page>", "<YYYY-MM-DD>")  # share price source
 ```
+
+Throughout this skill, a cell named in the tables below is the address the
+**shipped** template uses. Where a defined name exists for it
+(`infor_fx_rate`, `infor_share_price`, `infor_cap_output_ccy`,
+`infor_ltm_revenue_valuation`, `infor_ltm_ebitda_valuation`,
+`infor_basic_shares`, `infor_cap_ticker`), resolve through the name — the
+addresses are written out only so the arithmetic below reads clearly.
 
 Use the actual page URL you read the value from and the retrieval date (today, from `currentDate`). The helper preserves the existing comment text (the CapIQ formula) and author, adding the citation as a new final line; the workbook aggregator carries the whole comment into the combined workbook. Also note the source and as-of date for each in the Step 8 summary.
 
@@ -224,10 +240,17 @@ The Financial Metrics block reads its **LTM** column from `D47` (Revenue) and `D
 **Case A — LTM values supplied (`ltm_revenue` / `ltm_adj_ebitda` in `$STAGE_INPUTS`).** These arrive in the filing's reporting currency, in millions. Convert to the Output currency the same way the rest of the template does — by **multiplying by F7** (Output per Input/filing currency; F7 is `1.0` when the filing currency equals F5, so this is a safe no-op then). Write each as a formula embedding the figure so the conversion stays auditable, and apply blue font (it is an authored hardcoded-derived value, like the Section IV OTM rows):
 
 ```python
+from template_layout import (
+    NAME_FX_RATE, NAME_LTM_EBITDA_VALUATION, NAME_LTM_REVENUE_VALUATION, resolve_name_cell,
+)
+
+fx = resolve_name_cell(ws, NAME_FX_RATE)  # 'F7' as shipped
 if ltm_revenue is not None:
-    c = ws["D47"]; c.value = f"={ltm_revenue}*F7"; c.font = BLUE  # Palatino-9 blue (see Color coding)
+    c = ws[resolve_name_cell(ws, NAME_LTM_REVENUE_VALUATION)]   # 'D47' as shipped
+    c.value = f"={ltm_revenue}*{fx}"; c.font = BLUE  # Palatino-9 blue (see Color coding)
 if ltm_adj_ebitda is not None:
-    c = ws["D48"]; c.value = f"={ltm_adj_ebitda}*F7"; c.font = BLUE
+    c = ws[resolve_name_cell(ws, NAME_LTM_EBITDA_VALUATION)]    # 'D48' as shipped
+    c.value = f"={ltm_adj_ebitda}*{fx}"; c.font = BLUE
 ```
 
 **Case B — no LTM values (direct invocation / no `ltm-metrics` stage).** Restore the CapIQ LTM formulas so the cap table still auto-populates in Excel with the CapIQ add-in. Do **not** color these blue (they are formula cells):

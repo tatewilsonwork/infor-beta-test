@@ -22,6 +22,7 @@ size; disclaimer/contact remain the last two slides.
 from __future__ import annotations
 
 import math
+from functools import partial
 from pathlib import Path
 
 from pptx import Presentation
@@ -50,8 +51,9 @@ from template_layout import (
     CAP_TABLE_PICTURE_ANCHORS,
     CAP_TABLE_PICTURE_RANGE,
     CAP_TABLE_SHEET,
-    MARKER_COVER,
     MARKER_COMPS,
+    MARKER_COVER,
+    MARKER_EARNINGS_SUMMARY,
     MARKER_FINANCIAL_SUMMARY,
     MARKER_KIH,
     MARKER_MARKET_ENTRY,
@@ -59,36 +61,22 @@ from template_layout import (
     MARKER_OWNERSHIP,
     MARKER_PRECEDENTS,
     MARKER_RISKS,
-    OVERVIEW_SLIDE_INDEX,
+    NAME_CAP_OUTPUT_CCY,
+    NAME_CAP_PICTURE_RANGE,
+    NAME_OWN_INSIDERS_PICTURE,
+    NAME_OWN_INSTITUTIONS_PICTURE,
     OWNERSHIP_INSIDERS_PICTURE_ANCHORS,
     OWNERSHIP_INSIDERS_PICTURE_RANGE,
     OWNERSHIP_INSTITUTIONS_PICTURE_ANCHORS,
     OWNERSHIP_INSTITUTIONS_PICTURE_RANGE,
     OWNERSHIP_SHEET,
-    verify_library_slide,
-    verify_slide_marker,
+    TemplateLayoutError,
+    find_optional_slide_by_marker,
+    find_slide_by_marker,
+    find_slides_by_marker,
+    resolve_workbook_range,
     verify_workbook_anchors,
 )
-
-# Zero-based index of the earnings-summary entry inserted into the shared
-# 17-slide library. The pitch deck does not use it, so it is dropped on open,
-# restoring the 16-slide pitch ordering the layout math below assumes.
-_EARNINGS_LIBRARY_SLIDE_INDEX = 7
-
-# Clone/delete targets in the RAW 17-slide library (before the earnings slide
-# is dropped). Extra market-entry / Financial Summary slides are cloned BEFORE
-# the delete so python-pptx allocates fresh, non-colliding slide part names.
-# Each raw index is verified against its template_layout marker before it is
-# cloned or deleted, so a re-ordered library raises TemplateLayoutError.
-_LIBRARY_FINANCIAL_SUMMARY_INDEX = 8
-_LIBRARY_MARKET_ENTRY_INDEX = 14
-
-# Fixed deck indices after the earnings slide is dropped. Only slides BEFORE
-# the Financial Summary section have fixed indices — everything after it is
-# computed per-deck by `_pitch_layout` (the FS section can hold 1-2 slides and
-# the Key Investment Highlights slide can be omitted). The overview index is
-# shared with financial_charts via template_layout.OVERVIEW_SLIDE_INDEX.
-_FINANCIAL_SUMMARY_FIRST_INDEX = 7 # slide 8 — first Financial Summary slide
 
 # Financial Summary slide title shape + the four metric-label tiles it carries
 # (each cloned FS slide has the same shape names).
@@ -96,25 +84,24 @@ _FS_TITLE_SHAPE = "Title 6"
 _FS_METRIC_TILES = ["Rectangle 13", "Rectangle 12", "Rectangle 15", "Rectangle 14"]
 _FS_TILES_PER_SLIDE = len(_FS_METRIC_TILES)
 
-# Slide 7 cap-table placeholder; the picture covers the capitalization summary
-# plus the Financial/Valuation metric rows (same range as the earnings overview;
-# the range + its sentinel anchors live in template_layout).
+# Overview-slide cap-table placeholder; the picture covers the capitalization
+# summary plus the Financial/Valuation metric rows (same range as the earnings
+# overview). The range is resolved from the workbook's
+# `infor_cap_picture_range` defined name — the constant is only the fallback
+# for a cap table built before the templates were named.
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
 _CAP_TABLE_SHEET = CAP_TABLE_SHEET
-_CAP_TABLE_RANGE = CAP_TABLE_PICTURE_RANGE
 
 # Insider-ownership slide. The left "Insiders" placeholder ('Rectangle 1') is
 # replaced by a picture of the ownership workbook's Select-Insiders block. The
 # right "Institutions" placeholder ('Rectangle 3') is replaced by the
 # Select-Institutions block (top-12 + subtotal + Other Shareholders + Total)
 # when the ownership stage ingested a Bloomberg export (Bloomberg Output C14
-# populated); otherwise it stays a Bloomberg placeholder. The slide follows the
-# Financial Summary section, so its deck index comes from `_pitch_layout`.
+# populated); otherwise it stays a Bloomberg placeholder. Both picture ranges
+# are resolved by defined name, like the cap table's.
 _OWNERSHIP_PLACEHOLDER = "Rectangle 1"
 _OWNERSHIP_SHEET = OWNERSHIP_SHEET
-_OWNERSHIP_RANGE = OWNERSHIP_INSIDERS_PICTURE_RANGE
 _INSTITUTIONS_PLACEHOLDER = "Rectangle 3"
-_INSTITUTIONS_RANGE = OWNERSHIP_INSTITUTIONS_PICTURE_RANGE
 
 
 def _bullet_tuple(bullet) -> tuple[str, int]:
@@ -259,21 +246,25 @@ def _fill_risk_table(slide, content: PitchDeckContent) -> None:
 def _output_currency_letter(workbook_path) -> str:
     """Derive the footnote currency token from the cap table's output currency.
 
-    Reads the cap table's output-currency cell (``F5`` on ``Cap with Links``).
-    USD / CAD map explicitly to the ``'US'`` / ``'C'`` dollar letters (so the
-    ``[x]$MM`` footnote token resolves to ``US$MM`` / ``C$MM``); **any other
-    code is returned as-is** and `fill_footnote_currency` renders the ISO code
-    without a dollar sign (``GBP MM``) — a non-dollar filer is never silently
-    mislabelled as C$. Falls back to ``C`` (the template default) only when the
-    cell is missing or unreadable, so a footnote never ships the literal
-    ``[x]``.
+    Reads the cap table's output-currency cell, located by its
+    ``infor_cap_output_ccy`` defined name (``F5`` on ``Cap with Links`` in the
+    shipped template). USD / CAD map explicitly to the ``'US'`` / ``'C'`` dollar
+    letters (so the ``[x]$MM`` footnote token resolves to ``US$MM`` / ``C$MM``);
+    **any other code is returned as-is** and `fill_footnote_currency` renders
+    the ISO code without a dollar sign (``GBP MM``) — a non-dollar filer is
+    never silently mislabelled as C$. Falls back to ``C`` (the template default)
+    only when the cell is missing or unreadable, so a footnote never ships the
+    literal ``[x]``.
     """
     try:
         from openpyxl import load_workbook
 
+        from template_layout import defined_name_ref
+
         wb = load_workbook(workbook_path, data_only=True)
-        ws = wb["Cap with Links"] if "Cap with Links" in wb.sheetnames else wb.active
-        code = str(ws["F5"].value or "").strip().upper()
+        ws = wb[CAP_TABLE_SHEET] if CAP_TABLE_SHEET in wb.sheetnames else wb.active
+        addr = defined_name_ref(ws, NAME_CAP_OUTPUT_CCY) or CAP_TABLE_OUTPUT_CCY_ANCHOR.target
+        code = str(ws[addr].value or "").strip().upper()
     except Exception:
         code = ""
     if not code:
@@ -392,57 +383,46 @@ def _fill_market_entry_targets(
 
 
 class _PitchLayout:
-    """Computed zero-based deck indices for a configurable pitch slide mix.
+    """Zero-based deck indices for a configurable pitch slide mix, **discovered**.
 
-    The prefix (cover .. overview, indices 0-6) is fixed; everything after the
-    Financial Summary section shifts with ``n_financial_summary`` and the
-    optional Key Investment Highlights slide. Disclaimer/contact follow the
-    market-entry section.
+    Until v0.5.39 this class did arithmetic — ``self.ownership = 7 + nfs``,
+    ``self.market_entry_first = 11 + nfs + (1 if kih else 0)`` — over a fixed
+    prefix, so the shared library growing by one slide moved every constant.
+    Now each slide is located by its marker shape on the finished slide mix.
+    The arithmetic is gone; the class is the discovered result.
+
+    Constructed AFTER the clones and deletes, while the markers are still
+    intact (nothing is filled until the layout is known). Every lookup insists
+    on exactly one match, so this doubles as the verification pass it replaced:
+    a re-ordered library raises `TemplateLayoutError` here rather than
+    misplacing content.
     """
 
-    def __init__(self, *, n_financial_summary: int, include_investment_highlights: bool, n_market_entry: int):
-        if n_financial_summary < 1:
-            raise ValueError("the deck needs at least one Financial Summary slide")
-        self.n_financial_summary = n_financial_summary
-        self.include_investment_highlights = include_investment_highlights
-        self.n_market_entry = n_market_entry
-        nfs = n_financial_summary
-        self.financial_summary = list(range(_FINANCIAL_SUMMARY_FIRST_INDEX, _FINANCIAL_SUMMARY_FIRST_INDEX + nfs))
-        self.ownership = 7 + nfs
-        self.risks = 8 + nfs
-        self.comps = 9 + nfs
-        self.precedents = 10 + nfs
-        self.investment_highlights = 11 + nfs if include_investment_highlights else None
-        self.market_entry_first = 11 + nfs + (1 if include_investment_highlights else 0)
-        self.total = self.market_entry_first + n_market_entry + 2  # + disclaimer/contact
-
-
-def _verify_layout_slides(prs, layout: "_PitchLayout", template_name: str) -> None:
-    """Verify every slide the layout math targets is the concept it expects.
-
-    Runs once the slide mix is final (after clones + deletes), before any fill
-    or insertion — the computed indices are exactly where a re-ordered library
-    would silently misplace content. Raises TemplateLayoutError on mismatch.
-    """
-    checks: list[tuple[int, object]] = [
-        (0, MARKER_COVER),
-        (OVERVIEW_SLIDE_INDEX, MARKER_OVERVIEW),
-    ]
-    checks += [(idx, MARKER_FINANCIAL_SUMMARY) for idx in layout.financial_summary]
-    checks += [
-        (layout.ownership, MARKER_OWNERSHIP),
-        (layout.risks, MARKER_RISKS),
-        (layout.comps, MARKER_COMPS),
-        (layout.precedents, MARKER_PRECEDENTS),
-    ]
-    if layout.investment_highlights is not None:
-        checks.append((layout.investment_highlights, MARKER_KIH))
-    checks += [
-        (layout.market_entry_first + j, MARKER_MARKET_ENTRY)
-        for j in range(layout.n_market_entry)
-    ]
-    for idx, marker in checks:
-        verify_slide_marker(prs.slides[idx], marker, template=template_name, slide_index=idx)
+    def __init__(self, prs, *, template_name: str, expected_total: int):
+        find = partial(find_slide_by_marker, prs, template=template_name)
+        self.cover = find(MARKER_COVER)
+        self.overview = find(MARKER_OVERVIEW)
+        self.financial_summary = find_slides_by_marker(prs, MARKER_FINANCIAL_SUMMARY)
+        if not self.financial_summary:
+            raise TemplateLayoutError(
+                f"{template_name}: the deck needs at least one Financial Summary slide, "
+                f"but none carries the {MARKER_FINANCIAL_SUMMARY.shape_name!r} marker"
+            )
+        self.ownership = find(MARKER_OWNERSHIP)
+        self.risks = find(MARKER_RISKS)
+        self.comps = find(MARKER_COMPS)
+        self.precedents = find(MARKER_PRECEDENTS)
+        self.investment_highlights = find_optional_slide_by_marker(
+            prs, MARKER_KIH, template=template_name
+        )
+        self.market_entry = find_slides_by_marker(prs, MARKER_MARKET_ENTRY)
+        self.n_financial_summary = len(self.financial_summary)
+        self.n_market_entry = len(self.market_entry)
+        # The expected count still comes from the caller's own clone/delete
+        # bookkeeping, derived from the library's live slide count — so the
+        # check stays meaningful (it catches a clone or delete that went wrong)
+        # without re-hardcoding a deck size.
+        self.total = expected_total
 
 
 def assemble_pitch_deck(
@@ -534,11 +514,6 @@ def assemble_pitch_deck(
         if content.market_entry_targets
         else 1
     )
-    layout = _PitchLayout(
-        n_financial_summary=n_financial_summary,
-        include_investment_highlights=include_kih,
-        n_market_entry=n_market_entry,
-    )
     if financial_metric_labels and len(financial_metric_labels) != _FS_TILES_PER_SLIDE * n_financial_summary:
         raise ValueError(
             f"financial_metric_labels holds {len(financial_metric_labels)} names but the "
@@ -548,60 +523,74 @@ def assemble_pitch_deck(
 
     prs = Presentation(template)
 
-    # Verify every raw-library slide that is about to be cloned or deleted by
-    # index — a re-ordered or re-saved library raises TemplateLayoutError here
-    # instead of cloning/deleting the wrong slide.
-    verify_library_slide(prs, _LIBRARY_MARKET_ENTRY_INDEX, template=template.name)
-    verify_library_slide(prs, _LIBRARY_FINANCIAL_SUMMARY_INDEX, template=template.name)
-    verify_library_slide(prs, _EARNINGS_LIBRARY_SLIDE_INDEX, template=template.name)
+    # Locate the clone/delete targets by marker. Each lookup insists on exactly
+    # one match in the blank library, so a re-ordered or re-saved library raises
+    # TemplateLayoutError here instead of cloning or deleting the wrong slide.
+    market_entry_at = find_slide_by_marker(prs, MARKER_MARKET_ENTRY, template=template.name)
+    financial_summary_at = find_slide_by_marker(
+        prs, MARKER_FINANCIAL_SUMMARY, template=template.name
+    )
+    earnings_at = find_slide_by_marker(prs, MARKER_EARNINGS_SUMMARY, template=template.name)
+
+    # The deck's final slide count, derived from the library's own size rather
+    # than a written-down total: every library entry survives except the
+    # earnings slide (pitch does not use it) and — when the plan omits it — Key
+    # Investment Highlights, plus one extra slide per additional market-entry
+    # and Financial Summary section slide.
+    expected_total = (
+        len(prs.slides)
+        - 1                                 # the earnings-summary slide, always dropped
+        - (0 if include_kih else 1)
+        + (n_market_entry - 1)
+        + (n_financial_summary - 1)
+    )
 
     # Grow the market-entry section (two targets per slide) and the Financial
     # Summary section (four metrics per slide) by cloning their library slides.
     # Clone BEFORE dropping the earnings slide so python-pptx allocates fresh,
-    # non-colliding slide part names; market-entry first so its raw index is
-    # still valid when the FS clones shift everything after index 8.
+    # non-colliding slide part names; market-entry first, because the FS clones
+    # are inserted earlier in the deck and would shift its index.
     for _ in range(n_market_entry - 1):
-        clone_slide_after(prs, _LIBRARY_MARKET_ENTRY_INDEX)
+        clone_slide_after(prs, market_entry_at)
     for _ in range(n_financial_summary - 1):
-        clone_slide_after(prs, _LIBRARY_FINANCIAL_SUMMARY_INDEX)
+        clone_slide_after(prs, financial_summary_at)
 
-    # The shared library carries the earnings-update slide at index 7. Drop it
-    # so the remaining slides keep the canonical pitch ordering.
-    delete_slide(prs, _EARNINGS_LIBRARY_SLIDE_INDEX)
+    # The shared library carries the earnings-update slide; the pitch deck does
+    # not use it. (Its index is unaffected by the clones above, which both land
+    # after it.)
+    delete_slide(prs, earnings_at)
 
-    # Drop the Key Investment Highlights slide when the plan omits it. Done
-    # after the earnings delete, at its computed post-delete index — verified
-    # first, so a shifted library can't delete the wrong slide.
+    # Drop the Key Investment Highlights slide when the plan omits it — located
+    # by marker on the post-delete deck, so no index arithmetic is involved.
     if not include_kih:
-        kih_index = 11 + n_financial_summary
-        verify_slide_marker(
-            prs.slides[kih_index], MARKER_KIH, template=template.name, slide_index=kih_index
-        )
-        delete_slide(prs, kih_index)
+        delete_slide(prs, find_slide_by_marker(prs, MARKER_KIH, template=template.name))
 
-    # With the slide mix final, verify every slide the layout math targets
-    # before anything is filled or inserted.
-    _verify_layout_slides(prs, layout, template.name)
+    # The slide mix is final: discover every index the fill needs. Constructing
+    # the layout IS the verification pass — each lookup requires exactly one
+    # matching slide.
+    layout = _PitchLayout(prs, template_name=template.name, expected_total=expected_total)
 
-    # Slide 1 — cover: client name/date only.
-    slide1 = prs.slides[0]
+    # Cover — client name/date only.
+    slide1 = prs.slides[layout.cover]
     title = find_shape(slide1, "Title 1")
     _replace_first_line(title, content.client_name, ["Internal Discussion Materials", ""])
     for shape in slide1.shapes:
         if shape.name == "Subtitle 2" and "[Date]" in _shape_text(shape):
             set_text(shape, [content.presentation_date])
 
-    # Slide 2 — flexible executive summary bullets.
-    slide2 = prs.slides[1]
+    # Executive summary — flexible bullets. Fixed offsets from the cover: the
+    # exec-summary, credentials and divider slides carry no marker of their own
+    # (nothing distinguishes them but position in the library's front matter).
+    slide2 = prs.slides[layout.cover + 1]
     _write_flexible_bullets(
         find_shape(slide2, "Content Placeholder 7"),
         content.executive_summary_bullets,
     )
 
-    # Slides 3–5 are static credentials. Do not touch.
+    # The three credentials slides after it are static. Do not touch.
 
-    # Slide 6 — section divider labels.
-    slide6 = prs.slides[5]
+    # Section divider labels — the last front-matter slide before the overview.
+    slide6 = prs.slides[layout.overview - 1]
     rects = _rounded_rectangles(slide6)
     for idx, rect in enumerate(rects):
         if idx < len(content.section_labels):
@@ -609,13 +598,13 @@ def assemble_pitch_deck(
         else:
             set_text(rect, [""])
 
-    # Slide 7 — public company overview. The cap table is pasted into the
-    # 'Rectangle 3' placeholder after save (when a workbook is supplied); the
-    # revenue pie stays a deferred placeholder. The bullets box is sized to the
-    # band above the 'LTM Revenue Breakdown' header and gets an explicit
-    # autofit fontScale when over-long, so the copy cannot render into the pie
-    # section (PowerPoint ignores a scale-less autofit on open).
-    slide7 = prs.slides[OVERVIEW_SLIDE_INDEX]
+    # Public company overview. The cap table is pasted into the 'Rectangle 3'
+    # placeholder after save (when a workbook is supplied); the revenue pie
+    # stays a deferred placeholder. The bullets box is sized to the band above
+    # the 'LTM Revenue Breakdown' header and gets an explicit autofit fontScale
+    # when over-long, so the copy cannot render into the pie section
+    # (PowerPoint ignores a scale-less autofit on open).
+    slide7 = prs.slides[layout.overview]
     set_text(find_shape(slide7, "Title 6"), [f"Introduction to {content.client_name}"])
     overview_shape = find_shape(slide7, "TextBox 9")
     _write_flexible_bullets(overview_shape, content.company_overview_bullets)
@@ -666,10 +655,10 @@ def assemble_pitch_deck(
 
     # Market-entry targets, two per slide. The section was grown above; fill
     # each slide with its pair and title it '(N of M)'.
-    for j in range(n_market_entry):
+    for j, me_index in enumerate(layout.market_entry):
         pair = content.market_entry_targets[2 * j : 2 * j + 2]
         _fill_market_entry_targets(
-            prs.slides[layout.market_entry_first + j],
+            prs.slides[me_index],
             row_labels=content.market_entry_row_labels,
             targets=pair,
             market=content.market_entry_market,
@@ -693,18 +682,24 @@ def assemble_pitch_deck(
             converge_deck(output_path, library=template, out_dir=out_dir / ".qa"),
         )
 
-    # Paste the generated cap table into slide 7's placeholder (mirrors the
-    # earnings overview insertion). Done after save so the picture write re-opens
-    # and re-saves the finished deck.
+    # Paste the generated cap table into the overview slide's placeholder
+    # (mirrors the earnings overview insertion). Done after save so the picture
+    # write re-opens and re-saves the finished deck. The picture range comes
+    # from the workbook's own `infor_cap_picture_range` name.
     if captable_workbook_path is not None:
         insert_excel_into_placeholder(
             deck_path=output_path,
             workbook_path=captable_workbook_path,
             output_path=output_path,
-            slide_index=OVERVIEW_SLIDE_INDEX,
+            slide_index=layout.overview,
             placeholder_name=_CAP_TABLE_PLACEHOLDER,
             sheet_name=_CAP_TABLE_SHEET,
-            source_range=_CAP_TABLE_RANGE,
+            source_range=resolve_workbook_range(
+                captable_workbook_path,
+                sheet=_CAP_TABLE_SHEET,
+                name=NAME_CAP_PICTURE_RANGE,
+                fallback=CAP_TABLE_PICTURE_RANGE,
+            ),
         )
 
     # Paste the insider-ownership table into the ownership slide's left
@@ -722,11 +717,16 @@ def assemble_pitch_deck(
             slide_index=layout.ownership,
             placeholder_name=_OWNERSHIP_PLACEHOLDER,
             sheet_name=_OWNERSHIP_SHEET,
-            source_range=_OWNERSHIP_RANGE,
+            source_range=resolve_workbook_range(
+                ownership_workbook_path,
+                sheet=_OWNERSHIP_SHEET,
+                name=NAME_OWN_INSIDERS_PICTURE,
+                fallback=OWNERSHIP_INSIDERS_PICTURE_RANGE,
+            ),
         )
         if _ownership_has_bloomberg(ownership_workbook_path):
-            # The Select-Institutions picture range is read blind — verify its
-            # sentinel anchors before pasting.
+            # Sentinel-check the Select-Institutions block before pasting, then
+            # take the range from its defined name.
             verify_workbook_anchors(
                 ownership_workbook_path,
                 sheet=_OWNERSHIP_SHEET,
@@ -739,7 +739,12 @@ def assemble_pitch_deck(
                 slide_index=layout.ownership,
                 placeholder_name=_INSTITUTIONS_PLACEHOLDER,
                 sheet_name=_OWNERSHIP_SHEET,
-                source_range=_INSTITUTIONS_RANGE,
+                source_range=resolve_workbook_range(
+                    ownership_workbook_path,
+                    sheet=_OWNERSHIP_SHEET,
+                    name=NAME_OWN_INSTITUTIONS_PICTURE,
+                    fallback=OWNERSHIP_INSTITUTIONS_PICTURE_RANGE,
+                ),
             )
             institutions_inserted = True
 

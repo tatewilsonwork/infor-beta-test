@@ -43,24 +43,40 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Font
+from openpyxl.utils import range_boundaries
 
 from template_layout import (
     CAP_TABLE_SECTION_VII_ANCHORS,
     CAP_TABLE_SHEET,
+    NAME_CAP_SHARE_INPUTS,
+    NAME_OWN_BBG_HOLDER_BLOCK,
+    NAME_OWN_BBG_LINK_BLOCK,
+    NAME_OWN_INSIDER_BLOCK,
+    NAME_OWN_TOTAL_SHARES,
     OWNERSHIP_BBG_LINK_ANCHORS,
+    OWNERSHIP_BBG_SHEET,
     OWNERSHIP_BBG_TEMPLATE_ANCHORS,
     OWNERSHIP_INSIDER_BLOCK_ANCHORS,
+    OWNERSHIP_SHEET,
     OWNERSHIP_TEMPLATE,
     OWNERSHIP_TOTAL_SHARES_ANCHORS,
+    TemplateLayoutError,
+    defined_name_ref,
+    resolve_name_cell,
+    resolve_name_range,
     verify_anchors,
 )
 
-_SHEET = "Ownership"
-_DATA_FIRST_ROW = 39
-_DATA_LAST_ROW = 65  # rows 39-65 -> 27 insider slots
-_MAX_INSIDERS = _DATA_LAST_ROW - _DATA_FIRST_ROW + 1
-_TOTAL_SHARES_CELL = "F35"
+_SHEET = OWNERSHIP_SHEET
 _DATE_FORMAT = "yyyy-mm-dd"  # SEDI reports dates as ISO 'YYYY-MM-DD'
+
+
+def _row_span(ws, name: str) -> range:
+    """The row span of a named block on ``ws`` (1-based, inclusive)."""
+    _, first, _, last = range_boundaries(
+        resolve_name_range(ws, name, template=OWNERSHIP_TEMPLATE)
+    )
+    return range(first, last + 1)
 
 _COL_SEDI_NAME = "B"
 _COL_BASIC = "F"
@@ -75,11 +91,12 @@ _COL_INCLUDE = "H"
 # rows 68-185 are pre-wired against C14:C131 (name), L (position), N (filing
 # date), so writing the export's rows into the same coordinates links the
 # Select-Institutions block up with no formula work.
-_BBG_SHEET = "Bloomberg Output"
+# These two pin the ANALYST'S EXPORT, not our template: they are the Bloomberg
+# add-in's own Summary View layout, so no defined name of ours applies. The
+# template side (where the rows land, and the Ownership tab's link rows) is
+# resolved from `infor_own_bbg_holder_block` / `infor_own_bbg_link_block`.
 _BBG_HEADER_ROW = 13
 _BBG_FIRST_ROW = 14
-_BBG_LAST_ROW = 131  # C14:C131 -> 118 holder slots (Ownership rows 68-185)
-_MAX_BBG_HOLDERS = _BBG_LAST_ROW - _BBG_FIRST_ROW + 1
 # Columns copied per holder row (col B keeps the template's own 1-118 numbering).
 _BBG_COPY_COLS = (
     "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q",
@@ -88,8 +105,6 @@ _BBG_COPY_COLS = (
 _BBG_INFO_CELLS = ("E7", "E9", "I9", "E11", "I11")  # name, ticker, view, sort by, order
 # Row-13 headers used to recognise / validate the BBG Summary View layout.
 _BBG_EXPECTED_HEADERS = {"C": "Holder Name", "L": "Position", "N": "Filing Date", "R": "Insider Status"}
-_OWN_BBG_FIRST_ROW = 68
-_OWN_BBG_LAST_ROW = 185
 
 
 def _blue(cell) -> Font:
@@ -178,15 +193,21 @@ def read_basic_shares_from_cap_table(captable_path: Path | str) -> int | None:
         return None
     ws = wb[CAP_TABLE_SHEET] if CAP_TABLE_SHEET in wb.sheetnames else wb.active
     # A readable-but-shifted cap table must raise, not silently sum the wrong
-    # window: verify the Section VII sentinels before reading F168:F185.
+    # window: verify the Section VII sentinels before reading the input rows.
     verify_anchors(ws, CAP_TABLE_SECTION_VII_ANCHORS, template=Path(captable_path).name)
+    # The window itself comes from the cap table's `infor_cap_share_inputs`
+    # name (F168:F185 as shipped), so an inserted Section VII row is summed too.
+    block = defined_name_ref(ws, NAME_CAP_SHARE_INPUTS) or "F168:F185"
+    min_col, min_row, max_col, max_row = range_boundaries(block)
     total_millions = 0.0
     found = False
-    for row in range(168, 186):  # Section VII basic-share inputs (rows 168-185)
-        value = ws[f"F{row}"].value
-        if isinstance(value, (int, float)):
-            total_millions += float(value)
-            found = True
+    for row in ws.iter_rows(
+        min_row=min_row, max_row=max_row, min_col=min_col, max_col=max_col
+    ):
+        for cell in row:
+            if isinstance(cell.value, (int, float)):
+                total_millions += float(cell.value)
+                found = True
     if not found or total_millions <= 0:
         return None
     return round(total_millions * 1_000_000)
@@ -419,27 +440,48 @@ def _write_bloomberg_side(
     adjusted_overrides: dict[str, str],
     include_overrides: dict[str, int],
 ) -> None:
-    """Fill 'Bloomberg Output' + the Ownership tab's H/J columns (rows 68-185)."""
-    if _BBG_SHEET not in wb.sheetnames:
-        raise KeyError(f"sheet {_BBG_SHEET!r} not found in ownership template (have {wb.sheetnames})")
-    ws_bbg = wb[_BBG_SHEET]
+    """Fill 'Bloomberg Output' + the Ownership tab's institutional link rows."""
+    if OWNERSHIP_BBG_SHEET not in wb.sheetnames:
+        raise KeyError(
+            f"sheet {OWNERSHIP_BBG_SHEET!r} not found in ownership template "
+            f"(have {wb.sheetnames})"
+        )
+    ws_bbg = wb[OWNERSHIP_BBG_SHEET]
     ws_own = wb[_SHEET]
     # The export side is validated in read_bloomberg_export; this validates the
     # template side the rows land on — the 'Bloomberg Output' header row the
     # holder rows are copied under, and the Ownership tab's pre-wired link rows
-    # 68–185 (whose H/J columns are written and B/F/G neutralised below).
-    verify_anchors(ws_bbg, OWNERSHIP_BBG_TEMPLATE_ANCHORS, template=OWNERSHIP_TEMPLATE)
-    verify_anchors(ws_own, OWNERSHIP_BBG_LINK_ANCHORS, template=OWNERSHIP_TEMPLATE)
+    # (whose H/J columns are written and B/F/G neutralised below) — plus the
+    # name↔sentinel cross-check on both.
+    verify_anchors(
+        ws_bbg, OWNERSHIP_BBG_TEMPLATE_ANCHORS, template=OWNERSHIP_TEMPLATE, require_names=True
+    )
+    verify_anchors(
+        ws_own, OWNERSHIP_BBG_LINK_ANCHORS, template=OWNERSHIP_TEMPLATE, require_names=True
+    )
+
+    # Both spans come from the template. They must stay the same length: the
+    # Ownership tab's link rows are pre-wired one-to-one against the holder
+    # rows, so a template that resized one and not the other is a layout error.
+    bbg_rows = _row_span(ws_bbg, NAME_OWN_BBG_HOLDER_BLOCK)
+    own_rows = _row_span(ws_own, NAME_OWN_BBG_LINK_BLOCK)
+    if len(bbg_rows) != len(own_rows):
+        raise TemplateLayoutError(
+            f"{OWNERSHIP_TEMPLATE}: the Bloomberg holder block holds {len(bbg_rows)} rows "
+            f"but the Ownership tab's link block holds {len(own_rows)} — they are wired "
+            f"one-to-one and must match."
+        )
 
     holders = export.holders
-    if len(holders) > _MAX_BBG_HOLDERS:
+    if len(holders) > len(bbg_rows):
         print(
             f"ownership: Bloomberg export has {len(holders)} holders; the template "
-            f"holds {_MAX_BBG_HOLDERS} (C{_BBG_FIRST_ROW}:C{_BBG_LAST_ROW}) — writing the "
-            "first 118 (the Summary View is sorted by position, so the tail is smallest)",
+            f"holds {len(bbg_rows)} (rows {bbg_rows[0]}-{bbg_rows[-1]}) — writing the "
+            f"first {len(bbg_rows)} (the Summary View is sorted by position, so the "
+            "tail is smallest)",
             file=sys.stderr,
         )
-        holders = holders[:_MAX_BBG_HOLDERS]
+        holders = holders[: len(bbg_rows)]
 
     for coord, value in export.info.items():
         ws_bbg[coord] = value
@@ -447,7 +489,7 @@ def _write_bloomberg_side(
     matches = match_bloomberg_to_sedi([h.name for h in holders], sedi_names)
 
     for offset, holder in enumerate(holders):
-        bbg_row = _BBG_FIRST_ROW + offset
+        bbg_row = bbg_rows[offset]
         for col, value in holder.values.items():
             cell = ws_bbg[f"{col}{bbg_row}"]
             cell.value = value
@@ -455,7 +497,7 @@ def _write_bloomberg_side(
             if fmt and fmt != "General":
                 cell.number_format = fmt
 
-        own_row = _OWN_BBG_FIRST_ROW + offset
+        own_row = own_rows[offset]
         include = include_overrides.get(holder.name, 0 if holder.name in matches else 1)
         if include != 1:
             include_cell = ws_own[f"{_COL_INCLUDE}{own_row}"]
@@ -477,7 +519,7 @@ def _write_bloomberg_side(
     # stays numeric: an un-fed 'Bloomberg Output' XLOOKUP evaluates to #N/A,
     # which would poison LARGE($I$68:$I$185, k). Clearing B/F/G and zeroing H
     # leaves I (=H*F) at 0.
-    for own_row in range(_OWN_BBG_FIRST_ROW + len(holders), _OWN_BBG_LAST_ROW + 1):
+    for own_row in own_rows[len(holders) :]:
         for col in (_COL_SEDI_NAME, _COL_BASIC, _COL_DATE):
             ws_own[f"{col}{own_row}"] = None
         ws_own[f"{_COL_INCLUDE}{own_row}"] = 0
@@ -510,11 +552,6 @@ def build_ownership_workbook(
     computed SEDI-duplicate exclusion for individual rows.
     """
     insiders = [_normalize(i) for i in insiders]
-    if len(insiders) > _MAX_INSIDERS:
-        raise ValueError(
-            f"ownership template holds {_MAX_INSIDERS} insider rows "
-            f"({_DATA_FIRST_ROW}-{_DATA_LAST_ROW}); got {len(insiders)} current insiders"
-        )
 
     template = Path(template_path)
     if not template.exists():
@@ -527,17 +564,24 @@ def build_ownership_workbook(
     if _SHEET not in wb.sheetnames:
         raise KeyError(f"sheet {_SHEET!r} not found in ownership template (have {wb.sheetnames})")
     ws = wb[_SHEET]
-    # Verify the template layout before writing the hardcoded addresses blind:
-    # the insider block rows 39–65 (header row 38 + the row-67 lower bound) and
-    # the F35 % denominator.
+    # Verify the template layout before writing: the insider block (header row
+    # 38 + the row-67 lower bound as shipped) and the % denominator, each
+    # cross-checked against the defined name the writes resolve through.
     verify_anchors(
         ws,
         OWNERSHIP_INSIDER_BLOCK_ANCHORS + OWNERSHIP_TOTAL_SHARES_ANCHORS,
         template=OWNERSHIP_TEMPLATE,
+        require_names=True,
     )
 
-    for offset, insider in enumerate(insiders):
-        row = _DATA_FIRST_ROW + offset
+    insider_rows = _row_span(ws, NAME_OWN_INSIDER_BLOCK)
+    if len(insiders) > len(insider_rows):
+        raise ValueError(
+            f"ownership template holds {len(insider_rows)} insider rows "
+            f"({insider_rows[0]}-{insider_rows[-1]}); got {len(insiders)} current insiders"
+        )
+
+    for row, insider in zip(insider_rows, insiders):
         name_cell = ws[f"{_COL_SEDI_NAME}{row}"]
         name_cell.value = insider.sedi_name
         name_cell.font = _blue(name_cell)
@@ -558,9 +602,9 @@ def build_ownership_workbook(
         adj_cell.font = _blue(adj_cell)
 
     if total_shares_outstanding is not None:
-        total_cell = ws[_TOTAL_SHARES_CELL]
+        total_cell = ws[resolve_name_cell(ws, NAME_OWN_TOTAL_SHARES, template=OWNERSHIP_TEMPLATE)]
         total_cell.value = int(total_shares_outstanding)
-        # Leave F35's font untouched — the template ships it Palatino (bold), and
+        # Leave the cell's font untouched — the template ships it Palatino (bold), and
         # the aggregator later relinks it to the cap table's basic shares. Setting
         # a bare Font here would reset it to Calibri 11.
         total_cell.comment = Comment(
