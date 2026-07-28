@@ -75,6 +75,7 @@ unambiguous in a dirty namespace on their own merits: the comps template carries
 from __future__ import annotations
 
 import argparse
+import pathlib
 import re
 import shutil
 import sys
@@ -259,8 +260,10 @@ def verify_with_excel(paths_and_names) -> list[str]:
        below what was there before stamping (nothing was repair-stripped), and
        every new name resolves to the address the code expects.
     """
-    sys.path.insert(0, str(SCRIPTS))
-    from excel_to_powerpoint import excel_com_app
+    # `excel_to_powerpoint.excel_com_app` is gone (Phase D deleted every COM path
+    # from the shipped plugin). COM now lives only in `tools/`, with one owner.
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    from _excel_com import excel_com_app
 
     problems: list[str] = []
     before = _repair_logs()

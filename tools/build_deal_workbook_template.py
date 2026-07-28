@@ -70,6 +70,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from _excel_com import disable_autosave, excel_com_app
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / "infor-beta" / "scripts"
 TEMPLATES = REPO_ROOT / "infor-beta" / "templates"
@@ -140,90 +142,6 @@ def _xll_formulas(path: Path) -> dict[tuple[str, str], str]:
     return out
 
 
-#: Excel's type library — `{00020813-…}` v1.9 covers Excel 2016 / 2019 / 365.
-#: Older majors/minors are tried in turn so this is not pinned to one install.
-_EXCEL_TYPELIB = "{00020813-0000-0000-C000-000000000046}"
-_EXCEL_TYPELIB_VERSIONS = ((1, 9), (1, 8), (1, 7), (1, 6))
-
-
-def _early_bound_excel():
-    """A FRESH Excel process driven through **early-bound** COM wrappers.
-
-    Both halves are load-bearing, and both were established by measurement here
-    rather than assumed, because every wrong combination fails *silently* — the
-    same failure class as the `Chart.Paste` clipboard no-op (v0.5.25).
-
-    **Early binding**, because late-bound `Worksheet.Copy` mis-marshals its
-    optional arguments. Measured on the shipped templates with a plain
-    `DispatchEx`:
-
-      - ``Worksheets("name").Copy(After=dest.Sheets(n))`` — the keyword did not
-        marshal at all, so Excel saw a bare ``Copy()``, which is documented to
-        put the copy in a **brand-new workbook**. It did (`Book2`): `dest` was
-        untouched and the build was quietly wrong.
-      - ``Worksheets("name").Copy(dest.Sheets(1))`` (positional `Before`) — the
-        copy vanished entirely; `dest` unchanged, no new workbook.
-      - ``Worksheets(["a","b"]).Copy(dest.Sheets(1))`` — worked, but only for
-        two or more sheets: a one-element list collapses back to the broken
-        `Worksheet` overload.
-
-    With the type library generated first, every one of those spellings works,
-    so the copy is written the obvious way. `_assert_early_bound` refuses to
-    proceed on a dynamic wrapper — a silent mis-copy is far worse than a stop.
-
-    **`DispatchEx`, not `Dispatch`/`EnsureDispatch`**, because those reuse an
-    existing instance out of the running-object table. That is not hypothetical:
-    during this phase's development an `EnsureDispatch` attached to a wedged
-    automation Excel left over from an earlier probe and every call returned
-    `0x800ac472`. `DispatchEx` always makes its own process — which is also what
-    keeps the Cap IQ add-in out (see the module docstring).
-    """
-    import win32com.client
-    from win32com.client import gencache
-
-    for major, minor in _EXCEL_TYPELIB_VERSIONS:
-        try:
-            gencache.EnsureModule(_EXCEL_TYPELIB, 0, major, minor)
-            break
-        except Exception:  # noqa: BLE001 — try the next version
-            continue
-
-    excel = win32com.client.DispatchEx("Excel.Application")
-    _assert_early_bound(excel)
-    return excel
-
-
-def _assert_early_bound(excel) -> None:
-    """Stop unless `excel` is an early-bound wrapper.
-
-    A dynamic (`CDispatch`) wrapper does not raise on the copy calls below — it
-    silently puts the sheet somewhere else. There is no safe way to continue.
-    """
-    kind = type(excel).__name__
-    if kind == "CDispatch":
-        raise SystemExit(
-            "Excel COM is bound dynamically, and late-bound Worksheet.Copy "
-            "silently copies to the wrong workbook. Generate the type library "
-            "first:\n"
-            "    python -c \"from win32com.client import gencache; "
-            f"gencache.EnsureModule('{_EXCEL_TYPELIB}', 0, 1, 9)\"\n"
-            "then re-run. (Delete %LOCALAPPDATA%\\Temp\\gen_py if it is stale.)"
-        )
-
-
-def _disable_autosave(workbook) -> None:
-    """Turn AutoSave off for an open workbook, where the property exists.
-
-    Second line of defence behind staging the sources outside OneDrive. Older
-    Excel builds have no `AutoSaveOn`, and it raises on a workbook Excel does not
-    consider cloud-backed, so a failure here is not interesting.
-    """
-    try:
-        workbook.AutoSaveOn = False
-    except Exception:  # noqa: BLE001, S110 — absent or not applicable
-        pass
-
-
 def _copy_sheets(src, sheets: tuple[str, ...], dest) -> None:
     """Copy `sheets` from `src` onto the end of `dest`.
 
@@ -232,7 +150,7 @@ def _copy_sheets(src, sheets: tuple[str, ...], dest) -> None:
     copying them separately would rebind that reference to the source workbook
     as an external link — the failure mode the aggregator's order-dependent
     merge suffered. Correct marshalling of the `After` keyword depends on the
-    early binding `_early_bound_excel` guarantees.
+    early binding `_excel_com.excel_com_app` guarantees.
 
     A **very-hidden** sheet is silently left out of a multi-sheet copy (measured:
     asking for `__snloffice` + `Comps` delivered only `Comps`), so any such sheet
@@ -249,8 +167,6 @@ def _copy_sheets(src, sheets: tuple[str, ...], dest) -> None:
 
 def build(output: Path) -> None:
     """Assemble the deal-workbook template with an add-in-free automation Excel."""
-    import pythoncom
-
     missing = [t for t, _s, _d in SHEET_PLAN if not (TEMPLATES / t).is_file()]
     if missing:
         raise SystemExit(f"source template(s) not found: {', '.join(missing)}")
@@ -279,17 +195,8 @@ def build(output: Path) -> None:
 
 def _build_from(staged: dict[str, Path], output: Path) -> None:
     """Assemble `output` from the STAGED template copies (never the originals)."""
-    import pythoncom
-
-    pythoncom.CoInitialize()
-    excel = None
-    try:
-        excel = _early_bound_excel()
-        excel.Visible = False
-        excel.DisplayAlerts = False
+    with excel_com_app(purpose="deal-workbook template assembly") as excel:
         excel.ScreenUpdating = False
-        excel.AskToUpdateLinks = False
-
         dest = excel.Workbooks.Add()
         try:
             # Belt and braces: the automation instance does not load the SNL
@@ -301,7 +208,7 @@ def _build_from(staged: dict[str, Path], output: Path) -> None:
                 before = {dest.Sheets(i).Name for i in range(1, dest.Sheets.Count + 1)}
                 src = excel.Workbooks.Open(str(staged[template]), UpdateLinks=0)
                 try:
-                    _disable_autosave(src)
+                    disable_autosave(src)
                     _copy_sheets(src, sheets, dest)
                 finally:
                     src.Close(SaveChanges=False)
@@ -335,13 +242,6 @@ def _build_from(staged: dict[str, Path], output: Path) -> None:
             dest.SaveAs(str(output), FileFormat=51)  # xlOpenXMLWorkbook
         finally:
             dest.Close(SaveChanges=False)
-    finally:
-        if excel is not None:
-            try:
-                excel.Quit()
-            except Exception as exc:  # noqa: BLE001
-                print(f"  Excel Quit raised: {exc}", file=sys.stderr)
-        pythoncom.CoUninitialize()
 
 
 def _strip_orphan_external_links(output: Path) -> int:
@@ -538,41 +438,29 @@ def _external_refs(path: Path) -> list[str]:
 
 
 def _verify_with_excel(output: Path) -> list[str]:
-    """Excel oracle: open the built template; fail on any repair record.
+    """Excel oracle: open the built template; fail if Excel will not have it.
 
     Same oracle `add_template_named_ranges.py --verify-excel` uses, and for the
-    same reason: openpyxl reads a file Excel might still refuse.
+    same reason: openpyxl reads a file Excel might still refuse. Opened as a copy
+    in a temp dir, so AutoSave cannot write back to the repo.
     """
-    import pythoncom
-
     problems: list[str] = []
-    pythoncom.CoInitialize()
-    excel = None
     try:
-        excel = _early_bound_excel()
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        with tempfile.TemporaryDirectory() as tmp:
-            probe = Path(tmp) / output.name
-            shutil.copyfile(output, probe)
-            wb = excel.Workbooks.Open(str(probe), UpdateLinks=0, CorruptLoad=0)
-            try:
-                names = {n.Name for n in wb.Names}
-                for required in ("CIQWBGuid", "CIQWBInfo"):
-                    if required not in names:
-                        problems.append(f"Excel: {required!r} absent after open")
-                print(f"  Excel opened it: {wb.Sheets.Count} sheets, {len(names)} names")
-            finally:
-                wb.Close(SaveChanges=False)
+        with excel_com_app(purpose="deal-workbook template verification") as excel:
+            with tempfile.TemporaryDirectory() as tmp:
+                probe = Path(tmp) / output.name
+                shutil.copyfile(output, probe)
+                wb = excel.Workbooks.Open(str(probe), UpdateLinks=0, CorruptLoad=0)
+                try:
+                    names = {n.Name for n in wb.Names}
+                    for required in ("CIQWBGuid", "CIQWBInfo"):
+                        if required not in names:
+                            problems.append(f"Excel: {required!r} absent after open")
+                    print(f"  Excel opened it: {wb.Sheets.Count} sheets, {len(names)} names")
+                finally:
+                    wb.Close(SaveChanges=False)
     except Exception as exc:  # noqa: BLE001
         problems.append(f"Excel could not open the built template: {exc}")
-    finally:
-        if excel is not None:
-            try:
-                excel.Quit()
-            except Exception:  # noqa: BLE001, S110
-                pass
-        pythoncom.CoUninitialize()
     return problems
 
 

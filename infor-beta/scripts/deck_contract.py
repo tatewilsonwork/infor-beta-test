@@ -269,7 +269,8 @@ _CLAIM_PAD_IN = 0.02
 # fixtures and no inter-shape gap.
 _OVERFLOW_GAP_IN = 0.12
 
-# Grayscale below this is ink. Matches `test_render_parity._ink_bbox_norm`, so a
+# Grayscale below this is ink. Matches the threshold the retired render-parity
+# test used (deleted in Phase D with the second backend it compared against), so a
 # geometric finding here means the same thing as a parity measurement there.
 _INK_MAX_LUMA = 250
 
