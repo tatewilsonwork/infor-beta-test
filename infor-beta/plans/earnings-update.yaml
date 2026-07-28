@@ -24,6 +24,10 @@ plan_inputs:
     description: Absolute path to the Bloomberg EEO screenshot (image file).
 
 stages:
+  # A Phase F in-process transform — one call to
+  # `build_earnings_update_slide_plan`, run by the driver. `skill:` still names the
+  # classification's key (`stage_transforms.TRANSFORMS`), the only place the kind
+  # is declared.
   - id: wireframe
     skill: earningsupdate-wireframe
     inputs:
@@ -95,15 +99,24 @@ stages:
       content_bundle_path: $stages.content.content_bundle_path
       captable_workbook_path: $stages.captable.workbook_path
       template_name: INFOR Slide Library.pptx
-      output_dir: $deal.deal_dir
+      # No `output_dir`: the deck goes to `<deal_dir>/artefacts/`, derived from the
+      # inputs path by `stage_io`. The old input existed for a direct invocation
+      # this stage no longer has.
     outputs:
       - name: deck_path
         type: Path
         description: Absolute path to the generated earnings update .pptx deck with the cap table inserted.
+      - name: vision_review_path
+        type: Path
+        description: The vision review the gate points the analyst at — which slides to look at and why, plus every slide's render and each rasterised picture at native resolution. Geometry is already measured and repaired inside the assembler; this is the reading half.
     # Pre-delivery gate: the assembled deck is built from untrusted external
     # inputs (filings, EEO snip, web data), so the analyst must approve it
     # before delivery. `deck` sits alone in its wave ahead of `deckcheck`, so
     # this gate genuinely holds the falsification pass behind it.
+    #
+    # A Phase F in-process transform: the driver assembles the deck itself rather
+    # than dispatching a sub-agent to retype the call. The gate is unaffected —
+    # checkpoints fire at the wave boundary off `outputs.json`, whoever wrote it.
     checkpoint: required
 
   # Falsification pass (Phase G). Reads the rendered slide PNGs, the run's merged

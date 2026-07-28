@@ -83,7 +83,7 @@ The template is resolved **in Python** in Step 10 as
 dispatch envelope passes as the first argument, and the same primary location
 `find_template.sh` searches. (Resolving it in Python, rather than via
 `TEMPLATE=$(bash find_template.sh …)`, avoids the Git-Bash `/c/…` path that `pathlib` mis-reads on
-Windows; this matches the `deck-assembler` / `comps` skills.) The deal workbook path is
+Windows; this matches the `comps` skill and the in-process deck assembler.) The deal workbook path is
 `io.inputs["deal_workbook"]`.
 
 **Do not build the workbook by hand or in any other format.** If the template can't be found, stop

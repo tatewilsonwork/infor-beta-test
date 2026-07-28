@@ -14,10 +14,10 @@ The canonical architecture record lives in Obsidian at `Hermes-L1/INFOR Platform
 
 A single Claude Code plugin, `infor-beta`, containing:
 
-- A **conductor meta-skill** that consumes a deliverable spec (pitch, earnings update, overview) and orchestrates sub-skills via the `Agent` tool.
-- **Specialised skills** for data tables (comps, precedents, cap tables, ownership), modelling, writing, wireframing (typed `SlidePlan`), chart building, and QA.
-- A **slide library** of reusable `.pptx` entries the conductor and `deck-assembler` clone and fill.
-- A **typed I/O contract** so skills compose without prompt glue.
+- A **conductor meta-skill** that consumes a deliverable spec (pitch, earnings update, overview), dispatches the plan's judgment stages via the `Agent` tool, and runs its deterministic stages in-process.
+- **Specialised skills** for data tables (comps, precedents, cap tables, ownership), modelling, writing, and QA — plus **in-process transforms** for wireframing (typed `SlidePlan`), deck assembly, and chart building.
+- A **slide library** of reusable `.pptx` entries the deck assembler clones and fills.
+- A **typed I/O contract** so stages compose without prompt glue.
 
 ## Layout
 
@@ -26,9 +26,10 @@ A single Claude Code plugin, `infor-beta`, containing:
 infor-beta/
 ├── commands/                      Slash commands (/pitch, /earnings-update) — full conductor
 │                                   deck builds with the company name as the argument
-├── skills/                        One directory per skill
-│   └── <skill-name>/
-│       ├── SKILL.md               Workflow + frontmatter (name, description, allowed-tools)
+├── skills/                        One directory per DISPATCHED skill. A stage the
+│   └── <skill-name>/               conductor runs in-process has no directory here —
+│       ├── SKILL.md               see scripts/stage_transforms.py.
+│       │                          Workflow + frontmatter (name, description, allowed-tools)
 │       └── references/            Progressive-disclosure detail loaded on demand
 ├── plans/                         Conductor plan YAMLs (earnings-update, pitch, overview)
 ├── scripts/                       Shared helpers + tests
@@ -38,7 +39,6 @@ infor-beta/
 │                                   deal-init; the four source .xlsx templates it is
 │                                   assembled FROM; INFORFG.thmx).
 │                                   A per-entry templates/slide-library/ is future work.
-docs/migration-plan.md             Phased plan from the v0.5.34 architecture to the target one
 tools/                             Repo maintenance tooling — NOT shipped, and the only place
                                     Excel COM survives (see the Office rules below)
 README.md
@@ -56,9 +56,9 @@ Load-bearing decisions made before any code was written. Full record in Obsidian
 
 **Reproducibility** — Directional audit only: the analyst audits the deliverable. **No** `pins.json`, prompt-hash capture, or per-deal model pinning. Per-stage run logs + source citations on the artefact are sufficient.
 
-**Orchestration** — The conductor is a Claude Code meta-skill dispatching via the `Agent` tool. No standalone service, no MCP migration. Medium human-in-the-loop: confirmation gates at major stage boundaries, autonomous later via configuration flip. Three checkpoint modes: `required`, `informational`, `silent`.
+**Orchestration** — The conductor is a Claude Code meta-skill dispatching **judgment** stages via the `Agent` tool and running **transform** stages in-process. No standalone service, no MCP migration. Medium human-in-the-loop: confirmation gates at major stage boundaries, autonomous later via configuration flip. Three checkpoint modes: `required`, `informational`, `silent`.
 
-**Skill contract** — Skills emit typed output; composing skills consume typed input. The wireframe skills emit a typed `SlidePlan` (markdown view kept for analyst readability). `brand-guidelines` is a **library** consumed by `deck-assembler` and `deckcheck`, not a plan stage. Earnings updates are delivered solely via `plans/earnings-update.yaml` — the standalone monolith skill was removed.
+**Skill contract** — Stages emit typed output; composing stages consume typed input. The wireframe stages emit a typed `SlidePlan` (markdown view kept for analyst readability). `brand-guidelines` is a **library** consumed by the deck assembler and `deckcheck`, not a plan stage. Earnings updates are delivered solely via `plans/earnings-update.yaml` — the standalone monolith skill was removed.
 
 **Slide library** — Multiple entries per slide concept × layout combination. No parameterised `variants:` field; one `.pptx` per entry. Realistic size 40–80 entries at v1, enumerable via a categorised README. Today the only library file is `templates/INFOR Slide Library.pptx` (17 slides).
 
@@ -66,20 +66,22 @@ Load-bearing decisions made before any code was written. Full record in Obsidian
 
 **Operational** — Deal directory `~/Documents/INFOR Deals/<codename>/`. Concurrent deals are supported, scoped by codename. Single plugin version in three files.
 
-## v1 skill portfolio
+## v1 stage portfolio
 
-**Refactored from the old repo:** `comps`, `precedents`, `buyerslist`, `captable`, `lbo-model`, `deck-writing`, wireframe (typed; `earningsupdate-wireframe` + `pitch-wireframe`), `deckcheck`, `brand-guidelines` (→ library).
+Every plan stage is one of two kinds, and the kind decides where it lives.
 
-**New:** `deck-assembler`, `ownership` (SEDI insiders + Bloomberg institutions; Canadian public targets), `financial-summary` (chart-ready data tab; single source of truth for the deck's metrics), `financial-charts`, `ltm-metrics`, plus not-yet-built `valuation`, `company-profile-public`, `company-profile-private`, `industry-research`.
+**Judgment — a dispatched sub-agent with a real tool allow-list, one `skills/<name>/SKILL.md` each.** Refactored from the old repo: `comps`, `precedents`, `buyerslist`, `captable`, `lbo-model`, `deck-writing`, `deckcheck`, `brand-guidelines` (→ library). New: `ownership` (SEDI insiders + Bloomberg institutions; Canadian public targets), `financial-summary` (chart-ready data tab; single source of truth for the deck's metrics), `ltm-metrics`, plus not-yet-built `valuation`, `company-profile-public`, `company-profile-private`, `industry-research`.
 
-**Conductor plans:** `earnings-update.yaml` (6 stages / 4 waves), `pitch.yaml` (16-slide library deck, 11 stages / 7 waves), `overview.yaml` (stub). Both numbers are parsed and checked against the scheduler by `test_contributor_brief_wave_counts_match_the_scheduler` — edit the plan and this line fails until it agrees.
+**Transform — deterministic, run in-process by the conductor, no SKILL.md and no directory under `skills/`.** The two wireframes (`pitch-wireframe`, `earningsupdate-wireframe`), the deck assembler (`deck-assembler`), and the Financial Summary charts (`financial-charts`). `scripts/stage_transforms.py` holds all four and the registry that classifies them.
+
+**Conductor plans:** `earnings-update.yaml` (6 stages / 4 waves), `pitch.yaml` (16-slide library deck, 11 stages / 7 waves), `overview.yaml` (stub). Both numbers are parsed and checked against the scheduler by `test_contributor_brief_wave_counts_match_the_scheduler` — edit the plan and this line fails until it agrees. How many of those stages are *dispatched* is deliberately **not** written here: `plan_overview(...).narration()` derives it from the registry, and the README's prose copy is locked by `test_readme_dispatch_counts_match_the_transform_registry`.
 
 **Out of scope:** management presentations, diligence support, research pipelines.
 
 ## Conventions
 
 ### Skill naming
-No trailing `-infor` suffix. A skill specific to one deliverable is prefixed by it: `pitch-*`, `earningsupdate-*`. General-purpose skills take a plain name (`captable`, `ltm-metrics`, `deck-assembler`, `conductor`). The `name:` frontmatter must equal the directory name.
+No trailing `-infor` suffix. A stage specific to one deliverable is prefixed by it: `pitch-*`, `earningsupdate-*`. General-purpose stages take a plain name (`captable`, `ltm-metrics`, `deck-assembler`, `conductor`). For a **dispatched** skill the `name:` frontmatter must equal the directory name; a **transform** has no frontmatter, so its plan `skill:` string must equal its key in `stage_transforms.TRANSFORMS`.
 
 ### Versioning — one plugin version, three files
 One version for the whole plugin, in exactly three places: `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, `pyproject.toml` (`[project] version`).
@@ -152,9 +154,13 @@ from comment_citations import (  # the cell-comment VIEW of a record, appended t
     cite_cell,                 # a whole FigureProvenance -> its cell's comment
 )
 from conductor import (  # the conductor driver — everything mechanical about running a plan
-    plan_overview, prepare_wave, complete_wave, run_wave, write_plan_inputs, write_run_summary,
+    plan_overview, prepare_wave, run_transforms, complete_wave, run_wave,
+    write_plan_inputs, write_run_summary, KIND_TRANSFORM, KIND_JUDGMENT,
 )
-from stage_io import stage_io  # a dispatched stage's handoff: THREE ARGV PATHS, never env vars
+from stage_io import stage_io  # a stage's handoff: THREE ARGV PATHS, never env vars
+from stage_transforms import (  # the transform/judgment registry — the ONLY place the kind lives
+    TRANSFORMS, is_transform, run_transform, render_vision_review,
+)
 from template_layout import (  # the templates' layout map: defined names + slide markers
     TemplateLayoutError,
     verify_names, verify_workbook_names, verify_cap_table_before_write,  # pre-flight before any write
@@ -221,12 +227,16 @@ Nothing in the plugin or the test suite spawns Office any more; only `tools/buil
 - **SKILL.md example commands use obviously-synthetic placeholders** (`NYSE:AAAA`, "Example Target Inc.", 999.9) so an agent cannot ship the example verbatim past format validation. Don't "improve" one into a real ticker or a real deal.
 
 ### The conductor contract
+- **Every stage is a TRANSFORM or a JUDGMENT stage, and `stage_transforms.TRANSFORMS` is the only place that is declared.** A transform is deterministic, so the driver calls the function in-process — no `Task`, no sub-agent, no SKILL.md. A judgment stage researches, drafts, or argues, so it stays a dispatched sub-agent with a real allow-list. The plan YAML carries no annotation for the kind; add one and there are two sources of truth. Reclassifying a stage means moving code between `stage_transforms.py` and a `skills/<name>/SKILL.md`, in the same change.
+- **A transform is not a shortcut past anything.** It writes the same `inputs.json` / `outputs.json` through the same `stage_io`, keeps its `$stages` edges, and reports at the same wave boundary — so a `required` gate downstream of a transform behaves identically, which is what `test_the_required_gate_halts_the_run_when_the_analyst_rejects` locks. Never let a transform skip the run log, resolve its own inputs, or write straight to the deal directory.
+- **A raising transform must become a stage failure, never a driver crash.** `run_transforms` writes `{"error": …}` exactly as a sub-agent's `io.fail(...)` would, so a `DeckNotConvergedError` reaches the analyst as a legible halt naming the shape and the depth. A traceback out of the driver loses the checkpoint and the partial run.
+- **Deleting a stage's SKILL.md deletes whatever that prose made mandatory — find it and re-home it.** Two of the four Phase F transforms ended in an analyst-facing QA section that was genuine judgment, and nothing would have failed if it had simply gone: the deck's "read the slides" pass is now a written vision review the `required` gate points at (`vision_review_path`), and `financial-charts`' chart check is now the declared `charts_inserted` / `pie_inserted` booleans plus rendered QA slides. Prose obligations are invisible to tests; account for them explicitly.
 - **Stage handoff is three argv paths** (`stage_io.stage_io`), never env vars — the `Task` tool cannot set them, and the old `export` block failed *silently* (an unset `DEAL_DIR` writes a client deliverable to whatever cwd the shell had). Two drift locks scan every dispatched skill doc for a reappearing export or `os.environ` handoff.
-- **A stage emits every declared output key**, using `null` rather than omission, so `$stages` resolution reaches a downstream fallback instead of halting the run.
-- **The `$stages.*` references *are* the dependency DAG.** There is no `depends_on` field, and since Phase D no hardcoded barrier either — `plan_schedule` derives every edge from a real reference.
+- **A stage emits every declared output key**, using `null` rather than omission, so `$stages` resolution reaches a downstream fallback instead of halting the run. That binds a transform's return dict to its plan `outputs:` block — `test_every_transform_emits_every_output_its_plan_declares` checks the pairing.
+- **The `$stages.*` references *are* the dependency DAG** — for a transform exactly as for a sub-agent. There is no `depends_on` field, no hardcoded barrier since Phase D, and "the driver runs it" is not an ordering: `plan_schedule` derives every edge from a real reference, and an in-process stage that stopped declaring its inputs would become "run whenever".
 - **Every analyst-facing question is declared once, in an `IntakeSpec`**, and every rendering — the `AskUserQuestion` dialogs, the attachment checklist, the defaults echo, the text fallback — is *generated* from it (`intake_spec.py`; the specs live in `deal_init.INIT_INTAKE` and `deck_spec.PITCH_INTAKE` / `EARNINGS_UPDATE_INTAKE`). Never hand-write a second rendering of a question, an option label, or a default rule: the locked-questionnaire principle is that every run asks the same thing, and a hand-written text prompt drifted from the dialogs it was supposed to mirror with nothing failing. Tests assert each renderer returns exactly what the generator produces.
 - **Checkpoints fire at wave boundaries**, so a `required` gate holds the waves *after* its own, not its wave-mates. `deck` is `required` in both shipped plans — and it is the plugin's *only* gate; everything else, `deckcheck` included, is `informational`.
-- **`financial-charts` must never dispatch another skill via `Task`.** It runs after the deck is assembled, so re-assembling reverts filled tables to placeholders. It must call `render_financial_summary_charts_into_deck` / `render_ltm_revenue_pie_into_deck` — never hand-roll a chart with matplotlib or any other library.
+- **`financial-charts` must never re-assemble the deck.** It runs after the deck is assembled, so re-assembling reverts filled tables to placeholders. It must call `render_financial_summary_charts_into_deck` / `render_ltm_revenue_pie_into_deck` — never hand-roll a chart with matplotlib or any other library — and must chain the pie onto the deck the FS step returned, not the input path. As a transform it has no `Task` tool to dispatch with at all; the rule used to be enforced by omitting `Task` from its allow-list, and is now structural.
 - Plans are validated at load (`validate_plan_references`): a `$stages`/`$plan_inputs` reference to something undeclared is rejected up front, listing every problem at once.
 
 ### Tests

@@ -6,14 +6,17 @@ prose the model may skip on turn 40 of a long run. What is left to the model is
 exactly four things:
 
 1. the intake conversation (deal-init + the locked deck-spec dialogs),
-2. issuing the `Task` calls :func:`prepare_wave` hands back,
+2. issuing the `Task` calls :func:`prepare_wave` hands back — for the **judgment**
+   stages only, since Phase F the driver runs the deterministic ones itself
+   (:func:`run_transforms`; the classification lives in `stage_transforms`),
 3. the checkpoint conversation :func:`complete_wave` hands back, and
 4. the end-of-run summary, off the skeleton :func:`render_run_summary` returns.
 
-    conductor.py plan          <run_dir>         # deliverable, stages, wave schedule
-    conductor.py prepare-wave  <run_dir> <wave>  # resolve + write inputs, print envelopes
-    conductor.py complete-wave <run_dir> <wave>  # read + validate outputs, print checkpoints
-    conductor.py summary       <run_dir>         # write summary.md, print it
+    conductor.py plan           <run_dir>         # deliverable, stages, wave schedule
+    conductor.py prepare-wave   <run_dir> <wave>  # resolve + write inputs, print envelopes
+    conductor.py run-transforms <run_dir> <wave>  # execute the wave's in-process stages
+    conductor.py complete-wave  <run_dir> <wave>  # read + validate outputs, print checkpoints
+    conductor.py summary        <run_dir>         # write summary.md, print it
 
 `<wave>` is 1-based, matching the conductor's "wave 1 / wave 2 / …" narration.
 
@@ -33,7 +36,14 @@ models (`model_dump(mode="json")`), `Path`, and sets — so the `json.dumps`-on-
 This module owns no banking logic and makes no Agent calls. Sub-agent dispatch
 stays with the model, because a `Task` call is not something a Python function can
 issue; :func:`run_wave` composes the whole round trip for callers that *can*
-dispatch programmatically (the tests here, and Phase F's in-process transforms).
+dispatch programmatically (the tests here).
+
+Phase F took the deterministic stages out of that loop entirely. A stage whose
+skill is in `stage_transforms.TRANSFORMS` is executed here, in-process, by
+:func:`run_transforms` — no envelope, no `Task`, no sub-agent context. Everything
+else about it is unchanged: it still writes `inputs.json` and `outputs.json`, still
+carries its `$stages` edges into the wave schedule, and still reports through
+:func:`complete_wave`, so a `required` gate downstream of it behaves identically.
 """
 
 from __future__ import annotations
@@ -48,6 +58,7 @@ from pathlib import Path
 
 import yaml
 
+import stage_transforms
 from deal_init import load_deal_context
 from plan_refs import resolve_refs, validate_plan_references
 from plan_schedule import compute_waves
@@ -59,8 +70,16 @@ from run_log import (
     write_summary,
 )
 from schemas import Plan
+from stage_io import stage_io
 
 PLAN_INPUTS_NAME = "plan_inputs.json"
+
+#: A stage's execution kind, decided by `stage_transforms.TRANSFORMS` and nothing
+#: else. `transform` means the driver calls a function; `judgment` means the model
+#: dispatches a sub-agent. The plan YAML carries no annotation for this — one
+#: registry, so a plan and the classification cannot disagree.
+KIND_TRANSFORM = "transform"
+KIND_JUDGMENT = "judgment"
 
 #: Resolved inputs are rendered into the dispatch envelope verbatim up to this
 #: size, so a sub-agent can see what it was given without reading a file. Past
@@ -157,6 +176,7 @@ class PlanOverview:
     run_dir: Path
     waves: tuple[tuple[str, ...], ...]
     stage_skills: dict[str, str]
+    stage_kinds: dict[str, str]
     required_plan_inputs: tuple[str, ...]
     optional_plan_inputs: tuple[str, ...]
     required_checkpoints: tuple[str, ...]
@@ -169,10 +189,31 @@ class PlanOverview:
     def wave_count(self) -> int:
         return len(self.waves)
 
+    @property
+    def transform_stages(self) -> tuple[str, ...]:
+        """Stage ids the driver runs in-process, in plan order."""
+        return tuple(
+            sid for w in self.waves for sid in w if self.stage_kinds[sid] == KIND_TRANSFORM
+        )
+
+    @property
+    def judgment_stages(self) -> tuple[str, ...]:
+        """Stage ids the model dispatches as sub-agents, in plan order."""
+        return tuple(sid for w in self.waves for sid in w if self.stage_kinds[sid] == KIND_JUDGMENT)
+
+    @property
+    def dispatch_count(self) -> int:
+        """How many `Task` calls the whole run costs. Derived, never written down."""
+        return len(self.judgment_stages)
+
     def narration(self) -> str:
         """The one-paragraph plan summary + wave schedule, ready to post."""
         stages = ", ".join(
-            f"`{sid}` (skill: `{self.stage_skills[sid]}`)" for w in self.waves for sid in w
+            f"`{sid}` (skill: `{self.stage_skills[sid]}`"
+            + (", in-process" if self.stage_kinds[sid] == KIND_TRANSFORM else "")
+            + ")"
+            for w in self.waves
+            for sid in w
         )
         schedule = " → ".join(
             f"[{i}] " + ", ".join(f"`{sid}`" for sid in w) + (" (parallel)" if len(w) > 1 else "")
@@ -182,6 +223,8 @@ class PlanOverview:
         gates = ", ".join(f"`{n}`" for n in self.required_checkpoints) or "none"
         return (
             f"Plan for `{self.deliverable_type}` has {self.stage_count} stages: {stages}. "
+            f"{self.dispatch_count} are dispatched as sub-agents; "
+            f"{len(self.transform_stages)} run in-process. "
             f"Plan inputs required: {required}. Required checkpoints: {gates}.\n\n"
             f"{self.wave_count} waves: {schedule}."
         )
@@ -199,6 +242,10 @@ def plan_overview(run_dir: Path | str) -> PlanOverview:
         run_dir=run_dir,
         waves=tuple(tuple(w) for w in compute_waves(plan)),
         stage_skills={s.id: s.skill for s in plan.stages},
+        stage_kinds={
+            s.id: KIND_TRANSFORM if stage_transforms.is_transform(s.skill) else KIND_JUDGMENT
+            for s in plan.stages
+        },
         required_plan_inputs=tuple(s.name for s in plan.plan_inputs if s.required),
         optional_plan_inputs=tuple(s.name for s in plan.plan_inputs if not s.required),
         required_checkpoints=tuple(s.id for s in plan.stages if s.checkpoint == "required"),
@@ -293,11 +340,17 @@ def render_stage_envelope(
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class PreparedStage:
-    """One stage of a wave, resolved and ready to dispatch."""
+    """One stage of a wave, resolved and ready to run.
+
+    `kind` decides *how*: a `judgment` stage carries a rendered `prompt` for the
+    model to pass to `Task`; a `transform` carries `prompt=None` because there is
+    nothing to dispatch — :func:`run_transforms` calls it directly.
+    """
 
     stage_id: str
     skill: str
     checkpoint: str
+    kind: str
     inputs: dict
     inputs_path: Path
     outputs_path: Path
@@ -306,21 +359,41 @@ class PreparedStage:
 
 @dataclass(frozen=True)
 class WaveDispatch:
-    """What the model needs in order to issue one wave's `Task` calls."""
+    """One wave, resolved: what the driver runs and what the model dispatches."""
 
     wave: int
     total_waves: int
     stages: tuple[PreparedStage, ...]
+    plugin_root: Path
+
+    @property
+    def transforms(self) -> tuple[PreparedStage, ...]:
+        """The stages :func:`run_transforms` executes in-process."""
+        return tuple(s for s in self.stages if s.kind == KIND_TRANSFORM)
+
+    @property
+    def judgment(self) -> tuple[PreparedStage, ...]:
+        """The stages the model dispatches as sub-agents."""
+        return tuple(s for s in self.stages if s.kind == KIND_JUDGMENT)
 
     @property
     def prompts(self) -> list[str]:
-        """The rendered envelopes, in dispatch order. Issue them in ONE message."""
-        return [s.prompt for s in self.stages if s.prompt is not None]
+        """The rendered envelopes, in dispatch order. Issue them in ONE message.
+
+        Judgment stages only — a transform has no envelope, so a wave of nothing
+        but transforms yields an empty list and the model issues no `Task` at all.
+        """
+        return [s.prompt for s in self.judgment if s.prompt is not None]
 
     def narration(self) -> str:
-        ids = ", ".join(f"`{s.stage_id}`" for s in self.stages)
-        parallel = " (dispatched in parallel)" if len(self.stages) > 1 else ""
-        return f"Wave {self.wave} of {self.total_waves}: {ids}{parallel}."
+        parts = []
+        if self.judgment:
+            ids = ", ".join(f"`{s.stage_id}`" for s in self.judgment)
+            parts.append(f"{ids} dispatched" + (" in parallel" if len(self.judgment) > 1 else ""))
+        if self.transforms:
+            ids = ", ".join(f"`{s.stage_id}`" for s in self.transforms)
+            parts.append(f"{ids} run in-process")
+        return f"Wave {self.wave} of {self.total_waves}: {'; '.join(parts)}."
 
 
 def prepare_wave(
@@ -334,8 +407,14 @@ def prepare_wave(
     Reads prior waves' outputs so `$stages.*` references resolve; lets unsupplied
     optional plan inputs resolve to None (via `optional_plan_inputs`); writes each
     stage's inputs.json through `run_log.write_stage_inputs` (pydantic/`Path`-safe);
-    and renders each stage's dispatch envelope with the absolute handoff paths and
-    the resolved inputs baked into the prompt body.
+    and renders each **judgment** stage's dispatch envelope with the absolute
+    handoff paths and the resolved inputs baked into the prompt body.
+
+    A transform stage is prepared identically — same resolution, same inputs.json —
+    and simply carries no envelope. Preparing runs nothing: :func:`run_transforms`
+    is the separate, explicit step, so "resolve the wave" stays free of side
+    effects and a forgotten call halts loudly in :func:`complete_wave` (the stage
+    wrote no outputs.json) rather than silently skipping work.
     """
     run_dir = Path(run_dir)
     plan = load_plan(run_dir)
@@ -365,15 +444,19 @@ def prepare_wave(
             optional_plan_inputs=optional,
         )
         inputs_path = write_stage_inputs(run_dir, sid, resolved)
+        transform = stage_transforms.is_transform(stage.skill)
         prepared.append(
             PreparedStage(
                 stage_id=sid,
                 skill=stage.skill,
                 checkpoint=str(stage.checkpoint),
+                kind=KIND_TRANSFORM if transform else KIND_JUDGMENT,
                 inputs=resolved,
                 inputs_path=inputs_path,
                 outputs_path=(stage_dir(run_dir, sid) / "outputs.json").resolve(),
-                prompt=render_stage_envelope(
+                prompt=None
+                if transform
+                else render_stage_envelope(
                     plan,
                     stage,
                     ctx=ctx,
@@ -383,7 +466,70 @@ def prepare_wave(
                 ),
             )
         )
-    return WaveDispatch(wave=wave, total_waves=len(waves), stages=tuple(prepared))
+    return WaveDispatch(
+        wave=wave, total_waves=len(waves), stages=tuple(prepared), plugin_root=proot
+    )
+
+
+# ---------------------------------------------------------------------------
+# run_transforms — the driver's own half of a wave
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class TransformResult:
+    """One in-process stage's execution, before `complete_wave` validates it."""
+
+    stage_id: str
+    skill: str
+    ok: bool
+    outputs: dict | None = None
+    error: str | None = None
+
+
+def run_transforms(dispatch: WaveDispatch) -> tuple[TransformResult, ...]:
+    """Execute every transform stage in `dispatch`, writing each outputs.json.
+
+    Transforms in one wave are independent by construction — the scheduler put
+    them there because nothing in the wave references anything else in it — so
+    they run in declaration order and the order does not matter.
+
+    **A raising transform is a stage failure, not a crash.** The exception is
+    written as `{"error": …}` to the stage's outputs.json, exactly as a sub-agent's
+    `io.fail(...)` would, so `complete_wave` reports `ok=False`, the checkpoint
+    surfaces the reason whatever the stage's mode, and the run halts before the
+    next wave. That is what keeps a `DeckNotConvergedError` — the one failure the
+    deck stage is expected to be able to produce — a legible halt with the shape
+    and the depth in the message rather than a traceback out of the driver.
+
+    Reads each stage's inputs back off disk through `stage_io.stage_io`, the same
+    entry point the dispatched form used, so a transform sees byte-identical
+    inputs to what a sub-agent would have read.
+    """
+    results: list[TransformResult] = []
+    for stage in dispatch.transforms:
+        io = stage_io(
+            [
+                "run_transforms",
+                str(dispatch.plugin_root),
+                str(stage.inputs_path),
+                str(stage.outputs_path),
+            ]
+        )
+        try:
+            outputs = stage_transforms.run_transform(stage.skill, io)
+        except Exception as exc:  # noqa: BLE001 — every failure becomes a stage failure
+            error = f"{type(exc).__name__}: {exc}"
+            io.fail(error)
+            results.append(
+                TransformResult(stage_id=stage.stage_id, skill=stage.skill, ok=False, error=error)
+            )
+            continue
+        io.write(outputs)
+        results.append(
+            TransformResult(
+                stage_id=stage.stage_id, skill=stage.skill, ok=True, outputs=dict(outputs)
+            )
+        )
+    return tuple(results)
 
 
 # ---------------------------------------------------------------------------
@@ -614,19 +760,22 @@ def run_wave(
     *,
     plugin_root: Path | str | None = None,
 ) -> WaveOutcome:
-    """Prepare a wave, dispatch it, collect it — the whole trip in one call.
+    """Prepare a wave, run its transforms, dispatch the rest, collect it.
 
     `dispatch` receives the :class:`WaveDispatch` and must not return until every
-    stage in the wave has finished writing its outputs.json.
+    **judgment** stage in the wave has finished writing its outputs.json. The
+    transforms have already run by then — :func:`run_transforms` is called first,
+    so a wave of nothing but transforms passes the callback an empty
+    `dispatch.prompts` and needs nothing from it.
 
     The conductor *skill* cannot pass a callback: its "dispatch" is a set of `Task`
-    tool calls, which no Python function can issue. It calls the two halves
-    instead — :func:`prepare_wave`, then its `Task` calls, then
+    tool calls, which no Python function can issue. It calls the three parts
+    instead — :func:`prepare_wave`, :func:`run_transforms`, its `Task` calls, then
     :func:`complete_wave` — which is this same sequence with the model standing in
-    for the callback. This entry point is for callers that *can* dispatch
-    programmatically: the tests here, and Phase F's in-process transform stages.
+    for the callback.
     """
     prepared = prepare_wave(run_dir, wave, plugin_root=plugin_root)
+    run_transforms(prepared)
     dispatch(prepared)
     return complete_wave(run_dir, wave)
 
@@ -694,15 +843,30 @@ def _print_prepared(dispatch: WaveDispatch) -> None:
     print(dispatch.narration())
     print()
     for entry in dispatch.stages:
-        print(f"=== stage `{entry.stage_id}` (skill: {entry.skill}) ===")
+        print(f"=== stage `{entry.stage_id}` (skill: {entry.skill}, {entry.kind}) ===")
         print(f"inputs.json : {entry.inputs_path}")
         print(f"outputs.json: {entry.outputs_path}")
-        if entry.prompt is not None:
+        if entry.kind == KIND_TRANSFORM:
+            print("(in-process transform — no sub-agent; run `run-transforms` for this wave)")
+        elif entry.prompt is not None:
             print("--- dispatch envelope ---")
             print(entry.prompt)
         else:
             print("(stage-envelope template not found; inputs.json written anyway)")
         print()
+
+
+def _print_transforms(results: tuple[TransformResult, ...]) -> int:
+    if not results:
+        print("(this wave has no in-process transform stages)")
+        return 0
+    for r in results:
+        if r.ok:
+            keys = sorted(r.outputs or {})
+            print(f"[ok]   {r.stage_id} ({r.skill}): outputs {keys}")
+        else:
+            print(f"[FAIL] {r.stage_id} ({r.skill}): {r.error}")
+    return 1 if any(not r.ok for r in results) else 0
 
 
 def _print_outcome(outcome: WaveOutcome) -> int:
@@ -737,6 +901,11 @@ def main(argv: list[str] | None = None) -> int:
     p_prep.add_argument("wave", type=int)
     p_prep.add_argument("--plugin-root", default=None)
 
+    p_run = sub.add_parser("run-transforms", help="execute a wave's in-process stages")
+    p_run.add_argument("run_dir")
+    p_run.add_argument("wave", type=int)
+    p_run.add_argument("--plugin-root", default=None)
+
     p_done = sub.add_parser("complete-wave", help="read + validate a wave's outputs")
     p_done.add_argument("run_dir")
     p_done.add_argument("wave", type=int)
@@ -753,6 +922,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "prepare-wave":
         _print_prepared(prepare_wave(args.run_dir, args.wave, plugin_root=args.plugin_root))
         return 0
+    if args.command == "run-transforms":
+        dispatch = prepare_wave(args.run_dir, args.wave, plugin_root=args.plugin_root)
+        return _print_transforms(run_transforms(dispatch))
     if args.command == "complete-wave":
         return _print_outcome(complete_wave(args.run_dir, args.wave))
     if args.command == "summary":

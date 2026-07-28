@@ -1389,7 +1389,10 @@ def _tight_clearance(slide, reference: dict[tuple[str, str], float]) -> list[tup
     return sorted(tight, key=lambda t: t[2])
 
 
-_VISION_CHECKLIST = (
+#: What the vision tier asks a reader to look for. Public because the `deck`
+#: stage's vision review renders the same sentence (`stage_transforms`), and two
+#: wordings for one checklist is the drift H1 collapsed on the intake side.
+VISION_CHECKLIST = (
     "text drawn over other text, shapes colliding, text too faint against its "
     "background, and chart/table labels piling up"
 )
@@ -1501,7 +1504,7 @@ def vision_pass(
                 "vision-review",
                 SEVERITY_ADVISORY,
                 index,
-                f"needs a look at the render for {_VISION_CHECKLIST}; flagged because "
+                f"needs a look at the render for {VISION_CHECKLIST}; flagged because "
                 f"of {' and '.join(reasons)}"
                 + (f". Render: {render}" if render else " (no render available)"),
             )

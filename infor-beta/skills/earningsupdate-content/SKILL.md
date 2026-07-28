@@ -77,4 +77,4 @@ Use the company filings, MD&A / press release, earnings call transcript if provi
 
 ## Boundary
 
-Do not call `deck-assembler`, do not open PowerPoint, and do not produce the companion cap table. Those are separate conductor stages.
+Do not assemble the deck, do not open PowerPoint, and do not produce the companion cap table. Those are separate conductor stages — and the deck stage is not a skill you could call in any case: the conductor assembles it in-process.

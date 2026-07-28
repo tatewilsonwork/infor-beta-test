@@ -275,6 +275,40 @@ def test_readme_wave_counts_match_the_scheduler():
     _assert_claims_match(claims, "README.md")
 
 
+def test_readme_dispatch_counts_match_the_transform_registry():
+    """The README's "(N dispatched, M in-process)" split is checked too.
+
+    Phase F's whole claim is a number — how many sub-agents a run costs — and the
+    classification behind it lives in one dict. A skill moved between transform and
+    judgment without the README following would leave the plugin's headline
+    description of its own cost wrong, which is the drift the wave-count locks above
+    exist for. Same parser shape, one release later.
+    """
+    import re
+
+    import stage_transforms
+
+    readme = (Path(__file__).resolve().parents[3] / "README.md").read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"`(?P<plan>[a-z-]+\.yaml)`\*\*[^\n]*?\((?P<dispatched>\d+) dispatched, "
+        r"(?P<transforms>\d+) in-process\)"
+    )
+    claims = {
+        m.group("plan"): (int(m.group("dispatched")), int(m.group("transforms")))
+        for m in pattern.finditer(readme)
+    }
+    assert set(claims) == {"pitch.yaml", "earnings-update.yaml"}, (
+        f"README.md: expected a dispatch split for each shipped plan, found {sorted(claims)}"
+    )
+    for name, (dispatched, transforms) in claims.items():
+        plan = _load_plan(name)
+        kinds = [stage_transforms.is_transform(s.skill) for s in plan.stages]
+        assert (kinds.count(False), kinds.count(True)) == (dispatched, transforms), (
+            f"README.md says {name} is {dispatched} dispatched / {transforms} in-process; "
+            f"the registry gives {kinds.count(False)} / {kinds.count(True)}"
+        )
+
+
 def test_contributor_brief_wave_counts_match_the_scheduler():
     """CLAUDE.md carries the same two numbers, in its own wording.
 

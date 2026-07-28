@@ -2,6 +2,81 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
+## [0.5.47] — 2026-07-28
+
+**Migration Phase F — stage granularity. The migration is complete.** Every plan stage is now classified as a **transform** (deterministic — the conductor calls the function in-process) or **judgment** (research, drafting, argument — a dispatched sub-agent with a real tool allow-list). Four stages move to the first kind, so a pitch run costs **8 sub-agent dispatches instead of 11** and an earnings update **4 instead of 6**.
+
+### What a dispatched transform actually was
+
+`pitch-wireframe`, `earningsupdate-wireframe`, `deck-assembler` and `financial-charts` each ended their SKILL.md in a fenced "Reference command": the exact Python call, with the exact arguments, which the dispatched model was asked to reproduce. Around that block sat between 67 and 268 lines of prose, one `Task` round trip, and a fresh sub-agent context whose entire job was to retype a call whose arguments were already sitting in `inputs.json`.
+
+Nothing in that loop could go *right* that the direct call does not, and three things could go wrong: a paraphrased argument, a skipped step, or a sub-agent that reports success without writing `outputs.json`. So the driver calls them. `scripts/stage_transforms.py` holds the four ports and `TRANSFORMS`, the one registry that decides the kind — the plan YAML carries no annotation for it, because a second source of truth is a second thing to drift.
+
+The ports keep the handoff object the dispatched form had. `run_transforms` builds a real `stage_io.StageIO` from the same three paths and **reads `inputs.json` back off disk**, so a transform sees byte-identical inputs to what a sub-agent would have read, writes its artefacts to the same derived `io.stage_dir` / `io.artefacts_dir`, and answers through the same `io.write(...)`.
+
+| | before | after |
+|---|---|---|
+| `pitch.yaml` | 11 stages, **11 dispatches**, 7 waves | 11 stages, **8 dispatches**, 7 waves |
+| `earnings-update.yaml` | 6 stages, **6 dispatches**, 4 waves | 6 stages, **4 dispatches**, 4 waves |
+
+### The wave graph did not shorten, and must not
+
+The phase brief predicted "pitch drops from 11 dispatches to ~7 **and the wave graph shortens**". The first half is right (8, not 7 — the brief predated Phase G's `deckcheck`). **The second half is wrong, and acting on it would have been a defect.**
+
+The DAG is derived from the `$stages.*` references in each stage's inputs, and an in-process stage has exactly the same references it had as a sub-agent. `wireframe` still produces the `slide_plan_path` that `content` and `deck` consume; `financial-charts` still consumes `deck`'s `deck_path`; `deckcheck` still consumes `financial-charts`'. Who *executes* a stage is not an ordering fact, so both plans keep 7 and 4 waves — and `plan_schedule.compute_waves` is untouched by this phase. The only way a transform could have collapsed a wave is by dropping its declared inputs and reaching for state directly, which is precisely the "run whenever" failure the reference-derived DAG exists to prevent. `test_pitch_plan_waves` and `test_earnings_update_plan_waves` are unchanged and still pin the full wave lists.
+
+### The `deck` gate is the property this phase could have broken
+
+`deck` carries the plugin's only `required` checkpoint — the analyst's pre-delivery approval of a deck assembled from untrusted external inputs — and it works because `deck` is scheduled alone in its wave, so the wave-boundary gate holds everything after it. `deck` is now a transform.
+
+It survives for a structural reason rather than a careful one: `complete_wave` builds its checkpoints from a stage's `outputs.json`, and cannot tell who wrote the file. Nothing about the gate is on the dispatch path. That is now asserted rather than reasoned about — `test_the_required_gate_halts_the_run_when_the_analyst_rejects` drives a three-wave plan through the same sequence the conductor skill performs (`prepare_wave` → `run_transforms` → the `Task` calls → `complete_wave`), rejects the gate, and checks that the downstream stage resolved no inputs and wrote no outputs; its sibling approves and checks the wave is released. A third asserts the locked two-option dialog is byte-identical on a transform stage.
+
+`deckcheck` stays judgment and stays last in both plans. It reads rendered PNGs, provenance records and source filings and argues about whether a figure is true; running that in-process would mean a Python function deciding whether a target's financial statements support a number on a slide. `test_every_judgment_skill_stays_out_of_the_registry` names it explicitly.
+
+### Deleting a SKILL.md deletes what its prose made mandatory
+
+All four docs are deleted and their directories with them (Phase D's `workbook-aggregator` pattern), none being separately invocable. **Two of them ended in a *mandatory* analyst-facing QA section, and both were genuine judgment — a naive deletion would have removed them with nothing failing anywhere.** Prose obligations are invisible to tests, which is exactly why they need accounting for by hand:
+
+- **The deck assembler's "read the slides" pass.** Geometry has been measured and repaired inside the assembler since Phase B (`deck_repair.converge_deck`, which fails the stage if it cannot converge), so what the prose asked for was the part measurement cannot do: values that are wrong, labels that are unreadable, pictures in the wrong place, text over text. The transform now writes a **vision review** into its stage directory — `deck_contract.vision_pass`'s existing agenda, one entry per thing worth a close look, plus every slide's render and each rasterised picture at native resolution — and hands back `vision_review_path` as a declared plan output. That lands in the `required` gate's own surface, so the analyst being asked to approve the deck is told which slides to look at and why. The review is *better placed* than it was: it now reaches the person with the authority to reject, every run, instead of a sub-agent that had to remember to look.
+- **`financial-charts`' chart check.** `charts_inserted` and `pie_inserted` are declared plan outputs now, so a skipped chart (no `financial-summary` tab, or LibreOffice unable to render the charts it persisted) is visible in the wave-boundary surface and the run summary. In the dispatched form this depended on the sub-agent remembering to "say so explicitly". The slides the stage changed are also rendered to `chart_qa_dir`, and the finished artefact then goes to `deckcheck`, which is judgment and stays dispatched.
+
+The load-bearing *specifications* in those docs were already duplicated in the module docstrings they described — `financial_charts.py` carries the full INFOR chart formatting rules, `pitch_deck_assembler.py` the slide-mix arithmetic — so nothing normative was lost with the prose.
+
+### These are the first executable tests of those four call sites
+
+Worth stating plainly, because it inverts the usual worry about deleting documentation. A SKILL.md's reference command was never run by any test — it is prose, and the only thing that ever executed it was a live analyst run. So deleting the four docs removes **zero** coverage, and porting their commands into `stage_transforms.py` is what makes them testable at all. `test_stage_transforms.py` (19 tests) asserts what the prose used to promise: the classification and that nothing drifted into the registry, that no transform left a SKILL.md or directory behind and no plan references a deleted skill, each port's argument fidelity, and the two things the prose made mandatory — the vision review, and `financial-charts` chaining the pie onto the deck the FS-chart step wrote rather than the input path. One test runs the real earnings-update deck transform end to end, converge loop included.
+
+### `run_transforms` is a separate call, deliberately
+
+The tempting move was to have `prepare_wave` execute the transforms, making them unskippable. It was not taken: it would have made "resolve the wave" assemble a deck as a side effect, and would have churned twelve existing driver tests to work around the name. The skill calls `prepare_wave` → `run_transforms(dispatch)` → its `Task` calls → `complete_wave`, and `run_wave` composes all four for programmatic callers.
+
+Forgetting the second call **fails loudly**: the transform stage wrote no `outputs.json`, so `complete_wave` reports `ok=False` and the run halts before the next wave, with the reason on the surface. That is the acceptable shape of a skipped step, and `test_prepare_wave_runs_nothing` pins it. A **raising** transform is likewise a stage failure, not a driver crash: `run_transforms` writes `{"error": …}` exactly as a sub-agent's `io.fail(...)` would, which is what keeps a `DeckNotConvergedError` — the one failure the deck stage is expected to be able to produce — a legible halt naming the shape and the measured depth.
+
+### Smaller things
+
+- **Two dead plan inputs deleted.** `deck`'s `output_dir` and `financial-charts`' `deal_dir` existed for a direct invocation these stages no longer have; both locations are derived from the inputs path by `stage_io`. Neither is a `$stages` reference, so the DAG is unaffected. An input nothing reads is a claim nothing keeps.
+- **`plan_overview` reports the dispatch split** (`transform_stages` / `judgment_stages` / `dispatch_count`), and the conductor SKILL.md carries **no** copy of the number — Phase E deleted a hardcoded wave count for exactly this reason. The README's prose copy is locked by a new `test_readme_dispatch_counts_match_the_transform_registry`, parsed the same way the two wave-count locks are.
+- `WaveDispatch` gains `transforms` / `judgment`, and `prompts` now returns judgment envelopes only — so a wave of nothing but transforms (pitch waves 5 and 6) yields an empty list and the model issues no `Task` at all. `PreparedStage.kind` is the flag; a transform's `prompt` is `None`.
+- New CLI subcommand `conductor.py run-transforms <run_dir> <wave>`.
+
+### Net lines: +129, against a −400 estimate
+
+By bucket: **runtime code +534** (`stage_transforms.py` 359 new, `conductor.py` +172, `deck_contract.py` +3), **tests +842** (`test_stage_transforms.py` 558 new, `test_conductor.py` +249, `test_plan_schedule.py` +34), **skill docs −584** (the four deleted SKILL.md files are −593 of that), **plans +39**, **repo docs −702** (the migration plan −791, this entry +75). Net **+54** excluding this entry; **+845** excluding the migration-plan deletion as well.
+
+Phase E recorded that the "net lines" column measures a deleted subsystem well and moved behaviour not at all, and predicted "F is the first kind again". That prediction was wrong, for E's own reason: what left here was 593 lines of *prose asking a model to make a function call*, and replacing prose with something that cannot be skipped means code plus the tests that lock it. D's −2,685 came from deleting a subsystem; F's +129 comes from deleting a set of instructions and writing the first tests those call sites have ever had. **The number that actually moved is the dispatch count — 17 sub-agents across one run of each plan, down to 12.**
+
+### `docs/migration-plan.md` is deleted, and `docs/` with it
+
+The migration is complete; `CHANGELOG.md` is the record, as the file's own header said. It was retained past Phase G only because Phase F and H2 still had their specs there. F is this entry, so the one thing that file was still holding is **H2**, preserved here in full:
+
+> **H2 — inline interactive form.** A third generated rendering of the `IntakeSpec`: one fixed-design intake form, every field visible at once, a Start button that posts all answers back as a single structured payload. Four `AskUserQuestion` round trips plus three plain-text blocks → one. Rendered inline via the host's `show_widget` (the `visualize` MCP server), whose `sendPrompt(text)` global submits the payload as if the analyst typed it. Because H1 (v0.5.44) made the spec declarative, the form is *generated*, not authored — a third rendering of one source, not a fork.
+>
+> **Open decision, unresolved.** `visualize` is a **host-provided** MCP server, confirmed present on the desktop session where H2 was scoped and **unconfirmed on the Cowork/Linux production runtime**. One check on a Cowork shell settles it (same class as the still-open Phase A `fc-match` on Palatino resolution). Note that a plugin cannot *depend* on a host MCP server in any case, so the fallback chain **widget → dialogs → text is mandatory** and the widget can only ever front the dialogs, never replace them. If `visualize` is absent on Cowork, H1 stands on its own and H2 becomes desktop-only ergonomics.
+
+H2 is neither shipped nor formally dropped; it is unscheduled, driven by analyst experience rather than defect data, and blocked on that one check.
+
+Suite: **780 passed, 0 skipped** (747 before). Both golden fixtures and all three regression fixtures behave exactly as pinned — this phase touched no assembler and no scheduler, and `deck_contract` only to make `VISION_CHECKLIST` public so the vision review renders the same sentence rather than a second copy of it.
+
 ## [0.5.46] — 2026-07-28
 
 **Migration Phase G — falsification.** Two changes, one dependent on the other: a figure's source becomes a **structured record** rather than a sentence in a cell comment, and a new `deckcheck` stage uses those records to try to **disprove** every figure on the finished deck. Analyst-facing citation text is unchanged, byte for byte.
