@@ -474,21 +474,58 @@ def test_excel_com_gate_skips_marked_items_only(monkeypatch):
     conftest = _conftest_module()
 
     class _Item:
-        def __init__(self, keywords):
+        def __init__(self, keywords, path=None):
             self.keywords = keywords
             self.markers = []
+            self.path = path
 
         def add_marker(self, marker):
             self.markers.append(marker)
+
+        def names(self):
+            return sorted(m.name for m in self.markers)
 
     marked, plain = _Item({"excel_com": True}), _Item({})
 
     monkeypatch.delenv(conftest._EXCEL_COM_ENV_VAR, raising=False)
     conftest.pytest_collection_modifyitems(None, [marked, plain])
-    assert len(marked.markers) == 1 and marked.markers[0].name == "skip"
+    # Not opted in: skipped, and pinned to the Office-COM xdist group so it can
+    # never share a worker with another COM test.
+    assert marked.names() == ["skip", "xdist_group"]
     assert plain.markers == []
 
     marked2, plain2 = _Item({"excel_com": True}), _Item({})
     monkeypatch.setenv(conftest._EXCEL_COM_ENV_VAR, "1")
     conftest.pytest_collection_modifyitems(None, [marked2, plain2])
-    assert marked2.markers == [] and plain2.markers == []
+    assert marked2.names() == ["xdist_group"]  # opted in: grouped, not skipped
+    assert plain2.markers == []
+
+
+def test_office_com_modules_are_pinned_to_one_xdist_group(monkeypatch):
+    """Every PowerPoint-COM test shares a worker, without a per-test marker.
+
+    Excel and PowerPoint's COM servers are per-user singletons; two workers
+    driving one concurrently is a new flake source that grouping removes.
+    Membership is derived from the module name so a new COM test in those files
+    cannot forget the marker.
+    """
+    conftest = _conftest_module()
+
+    class _Item:
+        def __init__(self, path):
+            self.keywords = {}
+            self.markers = []
+            self.path = path
+
+        def add_marker(self, marker):
+            self.markers.append(marker)
+
+    monkeypatch.delenv(conftest._EXCEL_COM_ENV_VAR, raising=False)
+    com = [_Item(Path("/x") / name) for name in conftest._COM_MODULES]
+    other = _Item(Path("/x/test_codename.py"))
+    conftest.pytest_collection_modifyitems(None, [*com, other])
+
+    for item in com:
+        assert [m.name for m in item.markers] == ["xdist_group"]
+        assert item.markers[0].args == (conftest._COM_GROUP,)
+    assert other.markers == []

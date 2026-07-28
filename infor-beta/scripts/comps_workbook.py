@@ -11,10 +11,14 @@ block has a label cell, six ticker rows and six description rows; every other
 column is a Capital IQ array formula (``_xll.SNL…SPG($B10, …)``) that resolves
 off the ticker in column B once the analyst opens the workbook with the Capital
 IQ add-in active. This builder writes ONLY the three input fields — the vertical
-label (``D9`` / ``D19`` / ``D29``), the CapIQ ticker (``B10:B15`` / ``B20:B25``
-/ ``B30:B35``) and the description (``AA10:AA15`` / ``AA20:AA25`` /
-``AA30:AA35``) — and never touches the CapIQ formulas or the group-average /
-global-statistic rows.
+label, the CapIQ ticker (column B) and the description (column AA) — and never
+touches the CapIQ formulas or the group-average / global-statistic rows.
+
+Where those fields ARE comes from the template, not from this file: each
+block's label cell and row span are read off its ``infor_comps_groupN_label`` /
+``infor_comps_groupN_block`` defined names (``D9`` + rows 10-15, ``D19`` +
+20-25, ``D29`` + 30-35 as shipped). A template whose verticals were moved, or
+resized to a different number of peers, needs no code change.
 
 Capital IQ cannot be refreshed in this environment, so the workbook ships with
 its formulas un-evaluated; the analyst refreshes them in Excel. The shipped
@@ -32,22 +36,42 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from template_layout import COMPS_BLOCK_ANCHORS, COMPS_TEMPLATE, verify_anchors
+from openpyxl.utils import range_boundaries
 
-_SHEET = "Comps"
+from template_layout import (
+    COMPS_BLOCK_ANCHORS,
+    COMPS_SHEET,
+    COMPS_TEMPLATE,
+    NAME_COMPS_GROUP_BLOCKS,
+    NAME_COMPS_GROUP_LABELS,
+    resolve_name_cell,
+    resolve_name_range,
+    verify_anchors,
+)
+
+_SHEET = COMPS_SHEET
 _MAX_VERTICALS = 3
-_COMPANIES_PER_VERTICAL = 6
 _MAX_DESCRIPTION_CHARS = 50  # column AA width ~50; longer overflows visually in the cell
 
-# Per-vertical anchors: (label cell, first data row). For each block the ticker
-# (col B) and description (col AA) rows are contiguous: first_row .. first_row+5.
-_VERTICAL_ANCHORS = (
-    ("D9", 10),
-    ("D19", 20),
-    ("D29", 30),
-)
 _COL_TICKER = "B"
 _COL_DESCRIPTION = "AA"
+
+
+def _vertical_slots(ws) -> list[tuple[str, range]]:
+    """``(label cell, data rows)`` per vertical, resolved from the defined names.
+
+    Both the label cell and the block extent come from the template rather than
+    from constants: the shipped blocks are ``D9`` + rows 10-15, ``D19`` + 20-25,
+    ``D29`` + 30-35, but a template whose verticals were moved or resized needs
+    no code change, because the row span is read off ``infor_comps_groupN_block``.
+    """
+    slots: list[tuple[str, range]] = []
+    for label_name, block_name in zip(NAME_COMPS_GROUP_LABELS, NAME_COMPS_GROUP_BLOCKS):
+        label = resolve_name_cell(ws, label_name, template=COMPS_TEMPLATE)
+        block = resolve_name_range(ws, block_name, template=COMPS_TEMPLATE)
+        _, first_row, _, last_row = range_boundaries(block)
+        slots.append((label, range(first_row, last_row + 1)))
+    return slots
 
 
 @dataclass
@@ -117,11 +141,6 @@ def build_comps_workbook(
             f"comps template holds {_MAX_VERTICALS} vertical blocks; got {len(verticals)}"
         )
     for vertical in verticals:
-        if len(vertical.companies) > _COMPANIES_PER_VERTICAL:
-            raise ValueError(
-                f"vertical {vertical.name!r} has {len(vertical.companies)} companies; "
-                f"the template holds {_COMPANIES_PER_VERTICAL} rows per vertical"
-            )
         for company in vertical.companies:
             if not str(company.ticker).strip():
                 raise ValueError(f"empty ticker in vertical {vertical.name!r}")
@@ -143,13 +162,18 @@ def build_comps_workbook(
         raise KeyError(f"sheet {_SHEET!r} not found in comps template (have {wb.sheetnames})")
     ws = wb[_SHEET]
     # Verify the vertical blocks' sentinel anchors (row-7 headers + the 'Group
-    # Average' row closing each block) before writing the hardcoded rows blind.
-    verify_anchors(ws, COMPS_BLOCK_ANCHORS, template=COMPS_TEMPLATE)
+    # Average' row closing each block) AND that each block's defined name still
+    # resolves to the region its sentinel pins, before writing anything.
+    verify_anchors(ws, COMPS_BLOCK_ANCHORS, template=COMPS_TEMPLATE, require_names=True)
 
-    for vertical, (label_cell, first_row) in zip(verticals, _VERTICAL_ANCHORS):
+    for vertical, (label_cell, rows) in zip(verticals, _vertical_slots(ws)):
+        if len(vertical.companies) > len(rows):
+            raise ValueError(
+                f"vertical {vertical.name!r} has {len(vertical.companies)} companies; "
+                f"the template holds {len(rows)} rows per vertical"
+            )
         ws[label_cell] = vertical.name
-        for offset, company in enumerate(vertical.companies):
-            row = first_row + offset
+        for row, company in zip(rows, vertical.companies):
             ws[f"{_COL_TICKER}{row}"] = str(company.ticker).strip()
             description = company.description.strip()
             if description:

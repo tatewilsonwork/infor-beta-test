@@ -49,29 +49,46 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.styles import Font
 
+from openpyxl.utils import range_boundaries
+
 from template_layout import (
+    NAME_PREC_GROUP_BLOCKS,
+    NAME_PREC_GROUP_LABELS,
+    NAME_PREC_OUTPUT_CCY,
     PRECEDENTS_BLOCK_ANCHORS,
     PRECEDENTS_OUTPUT_CCY_ANCHORS,
+    PRECEDENTS_SHEET,
     PRECEDENTS_TEMPLATE,
+    resolve_name_cell,
+    resolve_name_range,
     verify_anchors,
 )
 
-_SHEET = "Precedents"
+_SHEET = PRECEDENTS_SHEET
 _MAX_GROUPS = 2
-_TX_PER_GROUP = 6
-_OUTPUT_CCY_CELL = "C2"
 
 # The shipped template's target/acquiror cells (F/G) are Calibri 11, inconsistent
 # with the Palatino 9 the rest of the table uses; set it explicitly so the names
 # match the template's intended body font instead of inheriting the stray default.
 _NAME_FONT = Font(name="Palatino Linotype", size=9)
 
-# Per-group anchors: (label cell, first data row). Each block's six rows are
-# contiguous: first_row .. first_row + 5.
-_GROUP_ANCHORS = (
-    ("E7", 8),
-    ("E16", 17),
-)
+
+def _group_slots(ws) -> list[tuple[str, range]]:
+    """``(label cell, data rows)`` per peer group, resolved from the defined names.
+
+    Shipped: ``E7`` + rows 8-13 and ``E16`` + rows 17-22. Read from
+    ``infor_prec_groupN_label`` / ``infor_prec_groupN_block`` so a re-saved
+    template that moved or resized a block needs no code change.
+    """
+    slots: list[tuple[str, range]] = []
+    for label_name, block_name in zip(NAME_PREC_GROUP_LABELS, NAME_PREC_GROUP_BLOCKS):
+        label = resolve_name_cell(ws, label_name, template=PRECEDENTS_TEMPLATE)
+        block = resolve_name_range(ws, block_name, template=PRECEDENTS_TEMPLATE)
+        _, first_row, _, last_row = range_boundaries(block)
+        slots.append((label, range(first_row, last_row + 1)))
+    return slots
+
+
 
 # Deal-identity columns (always written for a populated row).
 _COL_CURRENCY = "B"      # input currency, ISO-3 — drives the column-C FX formula
@@ -284,13 +301,8 @@ def build_precedents_workbook(
         raise ValueError("no groups supplied — expected 1–2 peer groups")
     if len(groups) > _MAX_GROUPS:
         raise ValueError(f"precedents template holds {_MAX_GROUPS} group blocks; got {len(groups)}")
-    output_currency = _check_code(output_currency, "output_currency", _OUTPUT_CCY_CELL)
+    output_currency = _check_code(output_currency, "output_currency", "output currency")
     for group in groups:
-        if len(group.transactions) > _TX_PER_GROUP:
-            raise ValueError(
-                f"group {group.name!r} has {len(group.transactions)} transactions; "
-                f"the template holds {_TX_PER_GROUP} rows per group"
-            )
         for i, tx in enumerate(group.transactions):
             _validate_transaction(tx, f"group {group.name!r} row {i + 1}")
 
@@ -306,19 +318,25 @@ def build_precedents_workbook(
         raise KeyError(f"sheet {_SHEET!r} not found in precedents template (have {wb.sheetnames})")
     ws = wb[_SHEET]
     # Verify the block/column sentinel anchors (row-4/5 headers + each group's
-    # 'Group Average' bound + the C2 'Output:' label) before writing blind.
+    # 'Group Average' bound + the 'Output:' label) and cross-check that each
+    # defined name still resolves to the region its sentinel pins.
     verify_anchors(
         ws,
         PRECEDENTS_OUTPUT_CCY_ANCHORS + PRECEDENTS_BLOCK_ANCHORS,
         template=PRECEDENTS_TEMPLATE,
+        require_names=True,
     )
 
-    ws[_OUTPUT_CCY_CELL] = output_currency
+    ws[resolve_name_cell(ws, NAME_PREC_OUTPUT_CCY, template=PRECEDENTS_TEMPLATE)] = output_currency
 
-    for group, (label_cell, first_row) in zip(groups, _GROUP_ANCHORS):
+    for group, (label_cell, rows) in zip(groups, _group_slots(ws)):
+        if len(group.transactions) > len(rows):
+            raise ValueError(
+                f"group {group.name!r} has {len(group.transactions)} transactions; "
+                f"the template holds {len(rows)} rows per group"
+            )
         ws[label_cell] = group.name
-        for offset, tx in enumerate(group.transactions):
-            row = first_row + offset
+        for row, tx in zip(rows, group.transactions):
             ws[f"{_COL_CURRENCY}{row}"] = _check_code(tx.input_currency, "input_currency", "")
             ws[f"{_COL_DATE}{row}"] = tx.announce_date
             target_cell = ws[f"{_COL_TARGET}{row}"]

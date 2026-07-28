@@ -36,28 +36,48 @@ from template_layout import (
     CAP_TABLE_PICTURE_ANCHORS,
     CAP_TABLE_PICTURE_RANGE,
     CAP_TABLE_SHEET,
-    verify_library_slide,
+    MARKER_CONTACT,
+    MARKER_COVER,
+    MARKER_DISCLAIMER,
+    MARKER_EARNINGS_SUMMARY,
+    MARKER_OVERVIEW,
+    NAME_CAP_PICTURE_RANGE,
+    find_slide_by_marker,
+    resolve_workbook_range,
     verify_workbook_anchors,
 )
 
-# Zero-based library indices the earnings deck keeps, in final deck order:
-# cover (0), public-company overview (6), earnings summary (7), disclaimer (15),
-# contact (16). The 17-slide library carries the insider-ownership slide at
-# index 9 and the precedent-transactions slide at index 12 (both pitch-only) plus
-# the earnings-summary slide at index 7; the disclaimer/contact closers sit at
-# 15/16. (Pre-0.5.9 this was (0,6,7,13,14); the v0.5.8 ownership-slide insertion
-# shifted the closers to 14/15, and the v0.5.14 precedents-slide insertion shifted
-# them again to 15/16 — each insertion before the closers bumps these by one.)
-# Every kept index is verified against its `template_layout` marker before the
-# delete pass, so a re-ordered library raises TemplateLayoutError instead of
-# shipping the wrong slides (this map has needed three manual migrations).
-_KEEP_LIBRARY_INDICES = (0, 6, 7, 15, 16)
+# The five library entries the earnings deck keeps, in final deck order. Their
+# INDICES are discovered per-run with `find_slide_by_marker`, not written down:
+# through v0.5.39 this was the literal tuple `(0, 6, 7, 15, 16)`, and it had
+# needed three manual migrations — (0,6,7,13,14) before v0.5.8's ownership
+# slide, (0,6,7,14,15) before v0.5.14's precedents slide — because every
+# insertion ahead of the closers silently shifted them. Locating each slide by
+# its marker shape ends that: an inserted library slide moves the indices and
+# nothing here changes.
+_KEEP_MARKERS = (
+    MARKER_COVER,
+    MARKER_OVERVIEW,
+    MARKER_EARNINGS_SUMMARY,
+    MARKER_DISCLAIMER,
+    MARKER_CONTACT,
+)
 
-# Earnings-summary slide cap-table placeholder (library slide 7 / deck index 1).
-# Range + its sentinel anchors live in template_layout (shared with the pitch
-# assembler — same 'Cap with Links'!B15:F40 picture).
+# Earnings-summary slide cap-table placeholder. The picture range is resolved
+# from the workbook's `infor_cap_picture_range` defined name (shared with the
+# pitch assembler — same picture); the constant is the pre-Phase-C fallback for
+# a cap table built before the templates were named.
 _CAP_TABLE_PLACEHOLDER = "Rectangle 3"
-_CAP_TABLE_RANGE = CAP_TABLE_PICTURE_RANGE
+
+
+def cap_table_picture_range(workbook_path) -> str:
+    """The cap table's slide-picture range, by name."""
+    return resolve_workbook_range(
+        workbook_path,
+        sheet=CAP_TABLE_SHEET,
+        name=NAME_CAP_PICTURE_RANGE,
+        fallback=CAP_TABLE_PICTURE_RANGE,
+    )
 
 # Section header that closes the Business Updates band on the earnings-summary
 # slide — the bullets above it are sized to stop short of it.
@@ -300,24 +320,32 @@ def assemble_earnings_update_deck(
 
     prs = Presentation(template)
 
-    # Verify each kept slide is the concept its index promises BEFORE any
-    # clone/delete — a re-ordered or re-saved library raises TemplateLayoutError
-    # here instead of assembling the wrong slides.
-    for idx in _KEEP_LIBRARY_INDICES:
-        verify_library_slide(prs, idx, template=template.name)
+    # Locate each kept entry by its marker shape. `find_slide_by_marker` insists
+    # on exactly one match, so a library that lost, duplicated or renamed one of
+    # these raises TemplateLayoutError here — before any clone or delete — rather
+    # than assembling the wrong slides.
+    keep_indices = [find_slide_by_marker(prs, m, template=template.name) for m in _KEEP_MARKERS]
 
-    # Reduce the 17-slide library to the five earnings entries (delete from the
-    # tail so earlier indices stay valid).
-    keep = set(_KEEP_LIBRARY_INDICES)
+    # Reduce the library to the five earnings entries (delete from the tail so
+    # earlier indices stay valid).
+    keep = set(keep_indices)
     for idx in range(len(prs.slides) - 1, -1, -1):
         if idx not in keep:
             delete_slide(prs, idx)
 
-    # Final order: cover, overview, earnings summary, disclaimer, contact.
-    _set_cover(prs.slides[0], content)
-    _set_overview(prs.slides[1], content)
-    _set_earnings_summary(prs.slides[2], content)
-    # Slides 4-5 (disclaimer, contact) are static library entries — untouched.
+    # Re-find the three slides that get filled, now that the deck is five slides
+    # long. Re-finding rather than assuming the survivors kept their listed order
+    # costs one cheap scan and makes the fill independent of the library's slide
+    # order entirely — the markers are still intact at this point, since nothing
+    # has been filled yet.
+    cover_at = find_slide_by_marker(prs, MARKER_COVER, template=template.name)
+    overview_at = find_slide_by_marker(prs, MARKER_OVERVIEW, template=template.name)
+    summary_at = find_slide_by_marker(prs, MARKER_EARNINGS_SUMMARY, template=template.name)
+
+    _set_cover(prs.slides[cover_at], content)
+    _set_overview(prs.slides[overview_at], content)
+    _set_earnings_summary(prs.slides[summary_at], content)
+    # Disclaimer + contact are static library entries — untouched.
 
     prs.save(output_path)
 
@@ -333,8 +361,9 @@ def assemble_earnings_update_deck(
         )
 
     if captable_workbook_path is not None:
-        # The picture range is read blind — verify its sentinel anchors first so
-        # a shifted cap table raises instead of pasting the wrong rows.
+        # The picture range is read through its defined name, cross-checked
+        # against the sentinel anchors — a shifted cap table raises instead of
+        # pasting the wrong rows.
         verify_workbook_anchors(
             captable_workbook_path, sheet=CAP_TABLE_SHEET, anchors=CAP_TABLE_PICTURE_ANCHORS
         )
@@ -342,12 +371,17 @@ def assemble_earnings_update_deck(
             deck_path=output_path,
             workbook_path=captable_workbook_path,
             output_path=output_path,
-            slide_index=1,
+            slide_index=summary_at,
             placeholder_name=_CAP_TABLE_PLACEHOLDER,
             sheet_name=CAP_TABLE_SHEET,
-            source_range=_CAP_TABLE_RANGE,
+            source_range=cap_table_picture_range(captable_workbook_path),
         )
-    _verify_output(output_path, cap_table_inserted=captable_workbook_path is not None)
+    _verify_output(
+        output_path,
+        overview_index=overview_at,
+        summary_index=summary_at,
+        cap_table_inserted=captable_workbook_path is not None,
+    )
     return output_path
 
 
@@ -363,12 +397,23 @@ def _slide_text(slide) -> str:
     return "\n".join(parts)
 
 
-def _verify_output(path: Path, *, cap_table_inserted: bool = False) -> None:
+def _verify_output(
+    path: Path,
+    *,
+    overview_index: int,
+    summary_index: int,
+    cap_table_inserted: bool = False,
+) -> None:
+    # The slide indices are passed in rather than re-discovered: this runs on
+    # the FILLED deck, where the library markers have been overwritten with the
+    # company's own copy. The caller resolved them by marker before the fill.
     prs = Presentation(path)
-    if len(prs.slides) != 5:
-        raise ValueError(f"earnings deck must have 5 slides, got {len(prs.slides)}")
-    overview_text = _slide_text(prs.slides[1])
-    summary_text = _slide_text(prs.slides[2])
+    if len(prs.slides) != len(_KEEP_MARKERS):
+        raise ValueError(
+            f"earnings deck must have {len(_KEEP_MARKERS)} slides, got {len(prs.slides)}"
+        )
+    overview_text = _slide_text(prs.slides[overview_index])
+    summary_text = _slide_text(prs.slides[summary_index])
 
     forbidden = ["[x]", "[Client Name]", "[Company]", "[Quarter]", "[Name]", "[Role]", "[Date]"]
     leftovers = sorted({t for t in forbidden if t in (overview_text + "\n" + summary_text)})

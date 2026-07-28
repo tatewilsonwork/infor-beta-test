@@ -15,6 +15,7 @@ pyproject's `pythonpath` setting.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -23,6 +24,31 @@ import pytest
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
+
+
+# ─── One shared render cache per run (Phase C) ────────────────────────────────
+# `slide_render` caches converted PDFs by deck content. Pointing every process at
+# one directory makes the cache shared, which matters most for the work that is
+# otherwise duplicated per worker: the blank library's baseline render and its
+# attribution probe deck are identical in all six workers, and paying for them
+# once instead of six times is the difference between a distributed run helping
+# and just thrashing.
+#
+# Set at import, before xdist spawns its workers, so they inherit it. A worker
+# re-importing this file finds the variable already set and joins the existing
+# directory rather than making its own — and only the process that created it
+# removes it, at exit, so nothing is deleted from under a live worker.
+#
+# Deliberately fresh per run rather than persistent: a cache surviving between
+# runs would make the reported suite time depend on whether someone had run it
+# before, and would keep serving decks whose source template had changed.
+if not os.environ.get("INFOR_RENDER_CACHE_DIR"):
+    import atexit
+    import tempfile
+
+    _RENDER_CACHE_DIR = tempfile.mkdtemp(prefix="infor-suite-render-cache-")
+    os.environ["INFOR_RENDER_CACHE_DIR"] = _RENDER_CACHE_DIR
+    atexit.register(shutil.rmtree, _RENDER_CACHE_DIR, True)
 
 
 # ─── Excel-COM opt-in gate (Phase I item 2) ───────────────────────────────────
@@ -52,10 +78,24 @@ def _excel_com_opted_in() -> bool:
     )
 
 
+# ─── Office-COM serialization under xdist (Phase C) ──────────────────────────
+# The suite runs distributed by default (`-n auto` in pyproject). Excel and
+# PowerPoint's COM servers are per-user singletons, so two workers driving one
+# of them at the same time can interfere — `test_powerpoint_com_render_still_works`
+# already flakes in a full serial run and passes in isolation, and running it
+# beside `test_render_parity`'s PowerPoint pass would only widen that window.
+#
+# Every Office-COM test is therefore put in one xdist group, which pins the
+# group to a single worker and so keeps them serialized relative to each other.
+# Grouping is applied here rather than as per-test markers so a new COM test
+# cannot forget it: membership follows from the marker/module that already
+# identifies these tests.
+_COM_GROUP = "office_com"
+_COM_MODULES = ("test_render_parity.py", "test_slide_render.py")
+
+
 def pytest_collection_modifyitems(config, items) -> None:
-    """Skip every `excel_com`-marked test unless the env var opts in."""
-    if _excel_com_opted_in():
-        return
+    """Gate the Excel-COM tests, and keep every Office-COM test on one worker."""
     skip = pytest.mark.skip(
         reason=(
             f"Excel-COM test: set {_EXCEL_COM_ENV_VAR}=1 to run. Spawns a real "
@@ -63,6 +103,17 @@ def pytest_collection_modifyitems(config, items) -> None:
             "dialog that stalls the run."
         )
     )
+    opted_in = _excel_com_opted_in()
     for item in items:
         if "excel_com" in item.keywords:
-            item.add_marker(skip)
+            if not opted_in:
+                item.add_marker(skip)
+            item.add_marker(pytest.mark.xdist_group(_COM_GROUP))
+        elif _module_name(item) in _COM_MODULES:
+            item.add_marker(pytest.mark.xdist_group(_COM_GROUP))
+
+
+def _module_name(item) -> str:
+    """The item's test-module filename, or '' when it has none."""
+    path = getattr(item, "path", None)
+    return Path(str(path)).name if path is not None else ""

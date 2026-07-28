@@ -215,6 +215,12 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
         template_path=TEMPLATE,
         output_dir=tmp_path,
         financial_metric_labels=["Revenue", "Gross Profit", "Adjusted EBITDA", "Net Income"],
+        # This test is about fill logic, so the converge loop is off — the module
+        # convention `_assemble` applies, which this call predates and bypassed by
+        # going straight to the assembler. Leaving it on cost ~45s of renders for
+        # assertions that are entirely about text. Geometry is covered by the
+        # `converge=True` tests below and by test_deck_repair.py.
+        converge=False,
     )
 
     assert deck_path.exists()

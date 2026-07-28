@@ -2,7 +2,7 @@
 
 INFOR Financial Group's next-generation analyst workflow platform — a Claude Code plugin that orchestrates investment-banking deliverables (earnings updates, pitches, and — soon — overview decks) through a conductor meta-skill, specialised sub-skills, a typed I/O contract, and a shared slide library.
 
-**Status: Phase 3 (proof-of-concept), plugin v0.5.29.** The conductor, the decomposed earnings-update plan, and the pitch slide-library plan (16-slide base with a configurable slide mix — market-entry, Financial Summary, and Key Investment Highlights; including the insider-ownership slide, a public-comparables companion workbook, a precedent-transactions companion workbook, a chart-ready financial-summary data tab with native Excel charts rendered onto the Financial Summary slide(s), and an LTM-revenue-by-segment pie on the overview slide) all run end-to-end, launchable via the `/pitch` and `/earnings-update` slash commands. The production plugin today is still the existing `infor-workflows` repo; this repo is a clean-break rebuild and will supersede it when ready.
+**Status: Phase 3 (proof-of-concept), plugin v0.5.40 — architecture migration Phases A, B, C and I shipped (see `docs/migration-plan.md`).** The conductor, the decomposed earnings-update plan, and the pitch slide-library plan (16-slide base with a configurable slide mix — market-entry, Financial Summary, and Key Investment Highlights; including the insider-ownership slide, a public-comparables companion workbook, a precedent-transactions companion workbook, a chart-ready financial-summary data tab with native Excel charts rendered onto the Financial Summary slide(s), and an LTM-revenue-by-segment pie on the overview slide) all run end-to-end, launchable via the `/pitch` and `/earnings-update` slash commands. The production plugin today is still the existing `infor-workflows` repo; this repo is a clean-break rebuild and will supersede it when ready.
 
 ## Vision
 
@@ -20,6 +20,8 @@ infor-beta/
 ├── templates/                     Excel + PowerPoint templates + brand theme
 │                                  (INFOR Slide Library.pptx; Cap Table / Comps /
 │                                  Precedents / Ownership .xlsx templates; INFORFG.thmx)
+docs/migration-plan.md             Phased plan to the target architecture (temporary)
+tools/                             Repo maintenance tooling — NOT shipped in the plugin
 README.md
 CLAUDE.md                          Contributor brief (loaded by Claude Code)
 CHANGELOG.md
@@ -52,15 +54,29 @@ The conductor runs one plan per deliverable, resolved as `plans/<deliverable>.ya
 - One plugin version, recorded in `marketplace.json` / `plugin.json` / `pyproject.toml` only — skills carry no `version:` frontmatter. Skill directory names carry no `-infor` suffix; deliverable-specific skills are prefixed by deliverable (`earningsupdate-*`, `pitch-*`).
 - Output files land in the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), not the analyst's `cwd`.
 - Templates are resolved via the plugin-aware `find_template.sh` helper, never hardcoded paths.
+- Inside a template, cells are reached through the `infor_`-prefixed **defined names** it carries and library slides through their **marker shapes** — never a hardcoded address or slide index, so an analyst can re-save a template or insert a library slide without a code change.
 - Excel does the math, not the LLM — arithmetic lives in cell formulas for auditability.
 - English only (no French). INFOR-only (single-tenant); no multi-tenancy.
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"        # pydantic, PyYAML, python-pptx, openpyxl, + pytest
+pip install -e ".[dev]"        # pydantic, PyYAML, python-pptx, openpyxl, pytest, pytest-xdist
 python -m pytest               # runs the suite under infor-beta/scripts/tests/
+python -m pytest -n0 -k name   # serial, for debugging a single test
 cd infor-beta/scripts && python -m schemas.export   # regenerate JSON schemas (idempotent)
+```
+
+The suite renders decks through headless LibreOffice (install it — it is the
+default renderer on every platform) and is distributed across six workers by
+default, since a conversion costs seconds. Expect 2.5-4 minutes for ~650 tests,
+depending on machine load.
+
+After re-saving one of the four workbook templates from Excel, restore its
+defined names:
+
+```bash
+python tools/add_template_named_ranges.py --verify-excel   # --check to dry-run
 ```
 
 ## Distribution
