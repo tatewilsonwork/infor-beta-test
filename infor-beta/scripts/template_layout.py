@@ -27,6 +27,26 @@ reintroduce them: a sentinel pins an *address*, which is the thing the names
 exist to stop mattering, and the two tables disagreeing was itself a failure
 mode.
 
+**Sheet names are for the SOURCE templates only.** Every ``*_SOURCE_SHEET``
+constant here is the sheet name inside one of the four shipped source
+templates — the artefacts ``tools/add_template_named_ranges.py`` stamps and
+``tools/build_deal_workbook_template.py`` reads. The **pipeline** does not
+produce those: Phase D put every stage on one deal workbook, whose tabs are
+named by ``deal_workbook.TAB_*`` (``captable``, ``comps``, ``precedents``, …).
+So anything holding a *built artefact* — both deck assemblers, ``financial_charts``,
+the tab producers — addresses ``TAB_*``, never a ``*_SOURCE_SHEET``.
+
+The two sets are deliberately not interchangeable, and the suffix is the whole
+reminder: ``CAP_TABLE_SOURCE_SHEET`` is ``'Cap with Links'`` while
+``TAB_CAPTABLE`` is ``'captable'``, and ``COMPS_SOURCE_SHEET`` / ``TAB_COMPS``
+differ only in case — which openpyxl treats as a different sheet. Both deck
+assemblers addressed the deal workbook by ``CAP_TABLE_SHEET`` (as it was then
+spelled) from Phase D until v0.5.45, so every build that supplied a cap table
+failed its deck stage. The one legitimate reader of a source sheet name at
+runtime is ``ownership_workbook.read_basic_shares_from_cap_table``, which
+accepts a pre-Phase-D standalone cap table as well as the deal workbook and
+tries both spellings on purpose.
+
 **Slide markers.** The pitch flow's self-discovery of Financial Summary slides
 by their ``Rectangle 17`` marker shape is generalised here into
 ``find_slides_by_marker`` / ``find_slide_by_marker``, and every hardcoded slide
@@ -217,7 +237,7 @@ def resolve_workbook_range(
 # ─── Cap table (INFOR Cap Table Template.xlsx, sheet 'Cap with Links') ───────
 
 CAP_TABLE_TEMPLATE = "INFOR Cap Table Template.xlsx"
-CAP_TABLE_SHEET = "Cap with Links"
+CAP_TABLE_SOURCE_SHEET = "Cap with Links"
 
 NAME_CAP_TICKER = "infor_cap_ticker"
 NAME_CAP_OUTPUT_CCY = "infor_cap_output_ccy"
@@ -282,8 +302,8 @@ def verify_cap_table_before_write(ws) -> None:
 # ─── Ownership (INFOR Ownership Template.xlsx) ────────────────────────────────
 
 OWNERSHIP_TEMPLATE = "INFOR Ownership Template.xlsx"
-OWNERSHIP_SHEET = "Ownership"
-OWNERSHIP_BBG_SHEET = "Bloomberg Output"
+OWNERSHIP_SOURCE_SHEET = "Ownership"
+OWNERSHIP_BBG_SOURCE_SHEET = "Bloomberg Output"
 
 NAME_OWN_INSIDER_BLOCK = "infor_own_insider_block"
 NAME_OWN_TOTAL_SHARES = "infor_own_total_shares"
@@ -320,7 +340,7 @@ OWNERSHIP_INSTITUTIONS_PICTURE_RANGE = "B19:G35"  # shipped address; fallback
 # ─── Comps (INFOR Comps Template.xlsx, sheet 'Comps') ─────────────────────────
 
 COMPS_TEMPLATE = "INFOR Comps Template.xlsx"
-COMPS_SHEET = "Comps"
+COMPS_SOURCE_SHEET = "Comps"
 
 NAME_COMPS_OUTPUT_CCY = "infor_comps_output_ccy"
 # One label + one block name per vertical. The builder derives the ticker
@@ -358,7 +378,7 @@ COMPS_WRITE_NAMES = (*NAME_COMPS_GROUP_LABELS, *NAME_COMPS_GROUP_BLOCKS)
 # ─── Precedents (INFOR Precedents Template.xlsx, sheet 'Precedents') ──────────
 
 PRECEDENTS_TEMPLATE = "INFOR Precedents Template.xlsx"
-PRECEDENTS_SHEET = "Precedents"
+PRECEDENTS_SOURCE_SHEET = "Precedents"
 
 # The plan calls this one `precedents_input_ccy`; the template labels the cell
 # "Output:" and it carries the cap table's *output* currency, so the name
@@ -399,13 +419,13 @@ PRECEDENTS_WRITE_NAMES = (
 #: template filename -> sheet -> ``{name: A1 target}``. The order here is the
 #: order the prep tool stamps them in.
 TEMPLATE_NAMED_RANGES: dict[str, dict[str, dict[str, str]]] = {
-    CAP_TABLE_TEMPLATE: {CAP_TABLE_SHEET: CAP_TABLE_NAMED_RANGES},
+    CAP_TABLE_TEMPLATE: {CAP_TABLE_SOURCE_SHEET: CAP_TABLE_NAMED_RANGES},
     OWNERSHIP_TEMPLATE: {
-        OWNERSHIP_SHEET: OWNERSHIP_NAMED_RANGES,
-        OWNERSHIP_BBG_SHEET: OWNERSHIP_BBG_NAMED_RANGES,
+        OWNERSHIP_SOURCE_SHEET: OWNERSHIP_NAMED_RANGES,
+        OWNERSHIP_BBG_SOURCE_SHEET: OWNERSHIP_BBG_NAMED_RANGES,
     },
-    COMPS_TEMPLATE: {COMPS_SHEET: COMPS_NAMED_RANGES},
-    PRECEDENTS_TEMPLATE: {PRECEDENTS_SHEET: PRECEDENTS_NAMED_RANGES},
+    COMPS_TEMPLATE: {COMPS_SOURCE_SHEET: COMPS_NAMED_RANGES},
+    PRECEDENTS_TEMPLATE: {PRECEDENTS_SOURCE_SHEET: PRECEDENTS_NAMED_RANGES},
 }
 
 # ─── Slide library (INFOR Slide Library.pptx) ─────────────────────────────────

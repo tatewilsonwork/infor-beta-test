@@ -422,40 +422,37 @@ def _content_with_targets(n: int) -> PitchDeckContent:
     return PitchDeckContent.model_validate(base)
 
 
-def _write_sample_cap_table(path: Path, currency: str = "CAD") -> Path:
-    from template_layout import (
-        CAP_TABLE_SHEET,
-        NAME_CAP_OUTPUT_CCY,
-        NAME_CAP_PICTURE_RANGE,
-    )
-    from tests.conftest import stamp_defined_names
+def _write_sample_cap_table(deal_dir: Path, currency: str = "CAD") -> Path:
+    """The cap table the assembler is really handed: the deal workbook.
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = CAP_TABLE_SHEET
-    # The assembler resolves both of these through their names and verifies them
-    # first, so a synthetic cap table has to carry them.
-    stamp_defined_names(
-        ws, {NAME_CAP_OUTPUT_CCY: "F5", NAME_CAP_PICTURE_RANGE: "B15:F40"}
+    `pitch.yaml` passes `$stages.captable.workbook_path`, which since Phase D is
+    the deal workbook — one file, `captable` tab. So this builds it with
+    `init_deal_workbook`, the conductor's own deal-init call, and writes only the
+    output currency, resolved through `infor_cap_output_ccy` like the captable
+    skill does.
+
+    It used to be a synthetic `Workbook()` titled `Cap with Links` with both
+    names stamped on by hand — a copy of the SOURCE template's shape.
+    `build_deal_workbook_template.py` renames that sheet to `captable`, so the
+    fixture and the artefact disagreed and this test stayed green through the
+    whole v0.5.45 outage; see `test_assembler_deal_workbook_inputs`.
+    """
+    from deal_workbook import TAB_CAPTABLE, TabSpec, init_deal_workbook, write_tab
+    from template_layout import NAME_CAP_OUTPUT_CCY, resolve_name_cell
+
+    path = init_deal_workbook(
+        deal_dir=deal_dir, deliverable_type="pitch", deal_name="Project Test"
     )
-    ws["F5"] = currency  # output currency drives the footnote letter
-    rows = {
-        # The pitch assembler verifies `infor_cap_output_ccy` and
-        # `infor_cap_picture_range` (template_layout) before reading the output
-        # currency / pasting the picture, then resolves both through those names.
-        5: ("Output Currency:", None),
-        15: ("Company Ticker:", None),
-        16: ("Share Price", "12.34"),
-        17: ("Basic Shares Outstanding", "100.0"),
-        18: ("Basic Market Cap", "1,234.0"),
-        31: ("Enterprise Value", "1,483.4"),
-        40: ("EV / Adj. EBITDA", "10.0x"),
-    }
-    for row, (label, value) in rows.items():
-        ws.cell(row=row, column=2).value = label
-        if value is not None:
-            ws.cell(row=row, column=6).value = value
-    wb.save(path)
+
+    # The shipped `captable` tab already carries real content across
+    # `infor_cap_picture_range` (B15:F40), so only the output currency — which
+    # drives the `[x]$MM` footnote letter — has to be set.
+    def _fill(_wb, ws):
+        ws[resolve_name_cell(ws, NAME_CAP_OUTPUT_CCY)] = currency
+
+    write_tab(
+        path, TAB_CAPTABLE, TabSpec(write=_fill, verify_names=(NAME_CAP_OUTPUT_CCY,))
+    )
     return path
 
 
@@ -808,7 +805,7 @@ def test_pitch_wireframe_expands_market_entry_slides():
 
 
 def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
-    workbook = _write_sample_cap_table(tmp_path / "cap-table.xlsx", currency="USD")
+    workbook = _write_sample_cap_table(tmp_path, currency="USD")
     deck_path = _assemble(tmp_path, _sample_content(), captable_workbook_path=workbook)
     prs = Presentation(deck_path)
     slide7 = prs.slides[6]
@@ -1144,13 +1141,16 @@ def test_assemble_excludes_investment_highlights_slide(tmp_path: Path):
 
 
 def _cap_table_with_currency(tmp_path: Path, code: str) -> Path:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Cap with Links"
-    ws["F5"] = code
-    path = tmp_path / f"cap-{code}.xlsx"
-    wb.save(path)
-    return path
+    """A deal workbook whose `captable` tab carries `code` as its output currency.
+
+    This was a bare `Workbook()` titled `Cap with Links` with **no defined
+    names** — so it exercised neither the tab lookup nor
+    `infor_cap_output_ccy`, and passed entirely on the two fallbacks the reader
+    used to carry. That is why the mapping below stayed green while every real
+    build read `F5` of whatever tab was active (`precedents` — the string
+    `'Target'`). It delegates to the deal-workbook fixture now.
+    """
+    return _write_sample_cap_table(tmp_path / code, currency=code)
 
 
 def test_output_currency_letter_maps_usd_and_cad_explicitly(tmp_path: Path):
@@ -1165,5 +1165,15 @@ def test_output_currency_letter_returns_iso_code_for_non_dollar_currency(tmp_pat
     assert _output_currency_letter(_cap_table_with_currency(tmp_path, "CHF")) == "CHF"
 
 
-def test_output_currency_letter_defaults_to_c_only_when_unreadable(tmp_path: Path):
-    assert _output_currency_letter(tmp_path / "missing.xlsx") == "C"
+def test_output_currency_letter_defaults_to_c_only_for_an_empty_cell(tmp_path: Path):
+    """An empty output-currency cell is the ONE fallback left: the template default.
+
+    A footnote must never ship the literal `[x]`, so a blank cell reads 'C'. That
+    is the whole of it — v0.5.45 deleted the sheet fallback, and a workbook that
+    cannot be read at all now raises rather than labelling a client deck 'C$MM'
+    on no evidence.
+    """
+    assert _output_currency_letter(_cap_table_with_currency(tmp_path, "")) == "C"
+
+    with pytest.raises(FileNotFoundError):
+        _output_currency_letter(tmp_path / "missing.xlsx")

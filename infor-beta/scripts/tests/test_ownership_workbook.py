@@ -134,18 +134,26 @@ def test_total_shares_none_leaves_f35_blank(tmp_path: Path):
 
 
 def _cap_table(path: Path, rows: dict[int, float]) -> Path:
+    """A pre-Phase-D STANDALONE cap table, i.e. the legacy branch of the reader.
+
+    `read_basic_shares_from_cap_table` accepts both spellings on purpose (it tries
+    `TAB_CAPTABLE` then `CAP_TABLE_SOURCE_SHEET`), so this covers the fallback.
+    The branch production actually takes is covered by
+    `test_read_basic_shares_reads_the_deal_workbook_tab` below — which is the one
+    that was missing, and is the same fixture/artefact mismatch that hid v0.5.45.
+    """
     from openpyxl.workbook.defined_name import DefinedName
 
-    from template_layout import CAP_TABLE_SHEET, NAME_CAP_SHARE_INPUTS
+    from template_layout import CAP_TABLE_SOURCE_SHEET, NAME_CAP_SHARE_INPUTS
 
     wb = Workbook()
     ws = wb.active
-    ws.title = CAP_TABLE_SHEET
+    ws.title = CAP_TABLE_SOURCE_SHEET
     # read_basic_shares_from_cap_table resolves the summing window through this
     # name, and verifies it is present first — so a synthetic cap table has to
     # carry it, exactly as the shipped template and the deal workbook do.
     ws.defined_names.add(
-        DefinedName(NAME_CAP_SHARE_INPUTS, attr_text=f"'{CAP_TABLE_SHEET}'!$F$168:$F$185")
+        DefinedName(NAME_CAP_SHARE_INPUTS, attr_text=f"'{CAP_TABLE_SOURCE_SHEET}'!$F$168:$F$185")
     )
     for row, value in rows.items():
         ws.cell(row=row, column=6, value=value)  # column F
@@ -163,6 +171,38 @@ def test_read_basic_shares_missing_or_empty_returns_none(tmp_path: Path):
     assert read_basic_shares_from_cap_table(tmp_path / "nope.xlsx") is None
     empty = _cap_table(tmp_path / "empty.xlsx", {})
     assert read_basic_shares_from_cap_table(empty) is None
+
+
+def test_read_basic_shares_reads_the_deal_workbook_tab(tmp_path: Path):
+    """The branch the pitch plan actually takes: the deal workbook's `captable`.
+
+    The reader's other tests all build a standalone `Cap with Links` sheet, so
+    only its legacy fallback was covered. `ownership.yaml`/`pitch.yaml` pass the
+    deal workbook, whose tab is `captable` — the same fixture-vs-artefact gap
+    that hid the v0.5.45 assembler bug, on a different reader.
+    """
+    from deal_workbook import TAB_CAPTABLE, TabSpec, init_deal_workbook, write_tab
+    from template_layout import NAME_CAP_SHARE_INPUTS, resolve_name_range
+
+    deal = init_deal_workbook(
+        deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+    )
+
+    def _fill(_wb, ws):
+        # Write into the top of the real `infor_cap_share_inputs` block, wherever
+        # the template now puts it, rather than at a hardcoded F168.
+        from openpyxl.utils import range_boundaries
+
+        min_col, min_row, _, _ = range_boundaries(
+            resolve_name_range(ws, NAME_CAP_SHARE_INPUTS)
+        )
+        ws.cell(row=min_row, column=min_col, value=100.0)
+        ws.cell(row=min_row + 1, column=min_col, value=72.34)
+
+    write_tab(
+        deal, TAB_CAPTABLE, TabSpec(write=_fill, verify_names=(NAME_CAP_SHARE_INPUTS,))
+    )
+    assert read_basic_shares_from_cap_table(deal) == 172_340_000
 
 
 # ─── Bloomberg institutional side ─────────────────────────────────────────────

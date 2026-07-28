@@ -103,10 +103,20 @@ def test_write_lo_recalc_profile_forces_always_recalc(tmp_path: Path):
 
 def _build_cacheless_cap_table(path: Path) -> None:
     """A manual-calc cap table with formula cells and NO cached values, plus a
-    CapIQ ``_xll.*`` cell LibreOffice cannot resolve."""
+    CapIQ ``_xll.*`` cell LibreOffice cannot resolve.
+
+    The tab is named for the deal workbook's, though nothing here depends on it:
+    `insert_excel_into_placeholder` is passed `sheet_name` explicitly, so this
+    fixture tests recalc and rendering, not tab resolution. It read
+    ``Cap with Links`` until v0.5.45 — harmless, but that is the SOURCE template's
+    sheet name and reading it here as "what the pipeline produces" is the
+    misreading that release was about.
+    """
+    from deal_workbook import TAB_CAPTABLE
+
     wb = Workbook()
     ws = wb.active
-    ws.title = "Cap with Links"
+    ws.title = TAB_CAPTABLE
     ws["F16"] = 30.0  # share price (hardcoded)
     ws["F17"] = 100.0  # basic shares (hardcoded)
     ws["F18"] = "=F16*F17"  # basic market cap -> 3000
@@ -132,16 +142,18 @@ def test_libreoffice_recalc_populates_inworkbook_formulas(tmp_path: Path):
     if soffice is None:
         pytest.skip("LibreOffice (soffice/libreoffice) not installed")
 
+    from deal_workbook import TAB_CAPTABLE
+
     src = tmp_path / "cap_cacheless.xlsx"
     _build_cacheless_cap_table(src)
     # Precondition: openpyxl wrote no cached value, so without recalc this is blank.
-    assert load_workbook(src, data_only=True)["Cap with Links"]["F31"].value is None
+    assert load_workbook(src, data_only=True)[TAB_CAPTABLE]["F31"].value is None
 
     out_dir = tmp_path / "out"
     out_dir.mkdir()
     _soffice_convert(soffice, src, "xlsx:Calc MS Excel 2007 XML", out_dir)
 
-    ws = load_workbook(out_dir / "cap_cacheless.xlsx", data_only=True)["Cap with Links"]
+    ws = load_workbook(out_dir / "cap_cacheless.xlsx", data_only=True)[TAB_CAPTABLE]
     # In-workbook arithmetic now computes through Enterprise Value.
     assert ws["F18"].value == pytest.approx(3000.0)
     assert ws["F31"].value == pytest.approx(3500.0)

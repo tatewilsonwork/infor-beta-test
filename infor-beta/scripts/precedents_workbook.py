@@ -53,7 +53,6 @@ from template_layout import (
     NAME_PREC_GROUP_BLOCKS,
     NAME_PREC_GROUP_LABELS,
     NAME_PREC_OUTPUT_CCY,
-    PRECEDENTS_SHEET,
     PRECEDENTS_TEMPLATE,
     PRECEDENTS_WRITE_NAMES,
     resolve_name_cell,
@@ -61,7 +60,6 @@ from template_layout import (
     verify_names,
 )
 
-_SHEET = PRECEDENTS_SHEET
 _MAX_GROUPS = 2
 
 # The shipped template's target/acquiror cells (F/G) are Calibri 11, inconsistent

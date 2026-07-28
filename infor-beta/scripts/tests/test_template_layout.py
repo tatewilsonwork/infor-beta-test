@@ -109,17 +109,17 @@ def test_the_registry_covers_the_names_phase_c_promised():
     # (`precedents_input_ccy` ships as `infor_prec_output_ccy` — the cell is
     # labelled "Output:" and carries the cap table's OUTPUT currency, so the
     # name follows the artefact.)
-    cap = tl.TEMPLATE_NAMED_RANGES[tl.CAP_TABLE_TEMPLATE][tl.CAP_TABLE_SHEET]
+    cap = tl.TEMPLATE_NAMED_RANGES[tl.CAP_TABLE_TEMPLATE][tl.CAP_TABLE_SOURCE_SHEET]
     assert cap[tl.NAME_FX_RATE] == "F7"
     assert cap[tl.NAME_SHARE_PRICE] == "F16"
     assert cap[tl.NAME_LTM_REVENUE_VALUATION] == "D47"
     assert cap[tl.NAME_LTM_EBITDA_VALUATION] == "D48"
     assert cap[tl.NAME_CAP_PICTURE_RANGE] == "B15:F40"
     assert cap[tl.NAME_BASIC_SHARES] == "F17"
-    assert tl.TEMPLATE_NAMED_RANGES[tl.COMPS_TEMPLATE][tl.COMPS_SHEET][
+    assert tl.TEMPLATE_NAMED_RANGES[tl.COMPS_TEMPLATE][tl.COMPS_SOURCE_SHEET][
         tl.NAME_COMPS_OUTPUT_CCY
     ] == "F3"
-    assert tl.TEMPLATE_NAMED_RANGES[tl.PRECEDENTS_TEMPLATE][tl.PRECEDENTS_SHEET][
+    assert tl.TEMPLATE_NAMED_RANGES[tl.PRECEDENTS_TEMPLATE][tl.PRECEDENTS_SOURCE_SHEET][
         tl.NAME_PREC_OUTPUT_CCY
     ] == "C2"
 
@@ -168,7 +168,7 @@ def test_new_names_did_not_disturb_the_capiq_and_legacy_namespaces():
 
 
 def test_cap_table_template_passes_every_verified_group():
-    ws = load_workbook(CAP_TABLE)[tl.CAP_TABLE_SHEET]
+    ws = load_workbook(CAP_TABLE)[tl.CAP_TABLE_SOURCE_SHEET]
     tl.verify_cap_table_before_write(ws)  # header + LTM + Section VII
     tl.verify_names(ws, tl.CAP_TABLE_PICTURE_NAMES, template=tl.CAP_TABLE_TEMPLATE)
     tl.verify_names(ws, tl.CAP_TABLE_OUTPUT_CCY_NAMES, template=tl.CAP_TABLE_TEMPLATE)
@@ -176,7 +176,7 @@ def test_cap_table_template_passes_every_verified_group():
 
 def test_ownership_template_passes_every_verified_group():
     wb = load_workbook(OWNERSHIP)
-    ws = wb[tl.OWNERSHIP_SHEET]
+    ws = wb[tl.OWNERSHIP_SOURCE_SHEET]
     tl.verify_names(
         ws,
         tl.OWNERSHIP_INSIDER_WRITE_NAMES
@@ -186,19 +186,19 @@ def test_ownership_template_passes_every_verified_group():
         template=tl.OWNERSHIP_TEMPLATE,
     )
     tl.verify_names(
-        wb[tl.OWNERSHIP_BBG_SHEET],
+        wb[tl.OWNERSHIP_BBG_SOURCE_SHEET],
         tl.OWNERSHIP_BBG_HOLDER_NAMES,
         template=tl.OWNERSHIP_TEMPLATE,
     )
 
 
 def test_comps_template_passes_every_verified_group():
-    ws = load_workbook(COMPS)[tl.COMPS_SHEET]
+    ws = load_workbook(COMPS)[tl.COMPS_SOURCE_SHEET]
     tl.verify_names(ws, tl.COMPS_WRITE_NAMES, template=tl.COMPS_TEMPLATE)
 
 
 def test_precedents_template_passes_every_verified_group():
-    ws = load_workbook(PRECEDENTS)[tl.PRECEDENTS_SHEET]
+    ws = load_workbook(PRECEDENTS)[tl.PRECEDENTS_SOURCE_SHEET]
     tl.verify_names(ws, tl.PRECEDENTS_WRITE_NAMES, template=tl.PRECEDENTS_TEMPLATE)
 
 
@@ -330,7 +330,7 @@ def test_verify_workbook_names_names_a_missing_sheet(tmp_path: Path):
     Workbook().save(path)
     with pytest.raises(TemplateLayoutError, match="expected sheet 'Cap with Links'"):
         tl.verify_workbook_names(
-            path, sheet=tl.CAP_TABLE_SHEET, names=tl.CAP_TABLE_PICTURE_NAMES
+            path, sheet=tl.CAP_TABLE_SOURCE_SHEET, names=tl.CAP_TABLE_PICTURE_NAMES
         )
 
 
@@ -360,14 +360,14 @@ def test_resolve_workbook_range_falls_back_when_the_name_is_absent(tmp_path: Pat
     # pins the behaviour for a caller that skipped one, not a supported path.
     path = tmp_path / "nameless.xlsx"
     wb = Workbook()
-    wb.active.title = tl.CAP_TABLE_SHEET
+    wb.active.title = tl.CAP_TABLE_SOURCE_SHEET
     wb.save(path)
     assert tl.resolve_workbook_range(
-        path, sheet=tl.CAP_TABLE_SHEET, name=tl.NAME_CAP_PICTURE_RANGE, fallback="B15:F40"
+        path, sheet=tl.CAP_TABLE_SOURCE_SHEET, name=tl.NAME_CAP_PICTURE_RANGE, fallback="B15:F40"
     ) == "B15:F40"
     # ...and the shipped template resolves through the name instead.
     assert tl.resolve_workbook_range(
-        CAP_TABLE, sheet=tl.CAP_TABLE_SHEET, name=tl.NAME_CAP_PICTURE_RANGE, fallback="ZZ1"
+        CAP_TABLE, sheet=tl.CAP_TABLE_SOURCE_SHEET, name=tl.NAME_CAP_PICTURE_RANGE, fallback="ZZ1"
     ) == "B15:F40"
 
 
