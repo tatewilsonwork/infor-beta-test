@@ -125,7 +125,12 @@ from deal_workbook import (  # the deal's ONE workbook — never write a standal
 )
 from slide_library_registry import load_slide_library_registry
 from codename import resolve, find_existing, disambiguate, codename_from_company
+from intake_spec import (  # the analyst questionnaire, declared once; both renderings generated
+    IntakeSpec, IntakeField, IntakeOption, IntakeDefault, IntakeNote,
+    render_dialogs, render_prompt, render_note, render_defaults_echo,
+)
 from deal_init import (
+    INIT_INTAKE,
     render_init_dialogs, render_init_filings_note, render_init_prompt,
     load_or_locate_deal, save_deal_context, load_deal_context,
 )
@@ -208,6 +213,7 @@ Nothing in the plugin or the test suite spawns Office any more; only `tools/buil
 - **Stage handoff is three argv paths** (`stage_io.stage_io`), never env vars — the `Task` tool cannot set them, and the old `export` block failed *silently* (an unset `DEAL_DIR` writes a client deliverable to whatever cwd the shell had). Two drift locks scan every dispatched skill doc for a reappearing export or `os.environ` handoff.
 - **A stage emits every declared output key**, using `null` rather than omission, so `$stages` resolution reaches a downstream fallback instead of halting the run.
 - **The `$stages.*` references *are* the dependency DAG.** There is no `depends_on` field, and since Phase D no hardcoded barrier either — `plan_schedule` derives every edge from a real reference.
+- **Every analyst-facing question is declared once, in an `IntakeSpec`**, and every rendering — the `AskUserQuestion` dialogs, the attachment checklist, the defaults echo, the text fallback — is *generated* from it (`intake_spec.py`; the specs live in `deal_init.INIT_INTAKE` and `deck_spec.PITCH_INTAKE` / `EARNINGS_UPDATE_INTAKE`). Never hand-write a second rendering of a question, an option label, or a default rule: the locked-questionnaire principle is that every run asks the same thing, and a hand-written text prompt drifted from the dialogs it was supposed to mirror with nothing failing. Tests assert each renderer returns exactly what the generator produces.
 - **Checkpoints fire at wave boundaries**, so a `required` gate holds the waves *after* its own, not its wave-mates. `deck` is `required` in both shipped plans; everything else is `informational`.
 - **`financial-charts` must never dispatch another skill via `Task`.** It runs after the deck is assembled, so re-assembling reverts filled tables to placeholders. It must call `render_financial_summary_charts_into_deck` / `render_ltm_revenue_pie_into_deck` — never hand-roll a chart with matplotlib or any other library.
 - Plans are validated at load (`validate_plan_references`): a `$stages`/`$plan_inputs` reference to something undeclared is rejected up front, listing every problem at once.

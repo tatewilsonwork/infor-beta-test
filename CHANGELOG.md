@@ -2,7 +2,43 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
-## [0.5.43] — 2026-07-28
+## [0.5.44] — 2026-07-28
+
+**Migration Phase H1 — one declarative `IntakeSpec` behind every analyst-intake rendering.** No behaviour change on a clean run: the dialogs, the checklists, the defaults echo and the text fallback all render what they rendered before, generated instead of hand-written.
+
+### The drift surface
+
+The locked-questionnaire principle — *every run asks the same questions, in the same order, with the same options* — was only half structural. `_dialog_item_plan_inputs` derived the numbered-item → plan-input **mapping** from the dialog order, so answer mapping could not drift. But `_PITCH_SPEC_PROMPT` was a hand-written string literal carrying its own copy of every question's wording, its own defaults list and its own option labels, independent of `_PITCH_SPEC_DIALOGS`. Change a dialog option and nothing forced the prompt to follow: an analyst on a surface without `AskUserQuestion` would be offered a choice that no longer existed, and the suite stayed green. Two hand-maintained content renderings existed, and the smaller ones were worse — the pitch documents note re-described the SEDI PDF and the Bloomberg export in prose beside the dialogs that asked for them, and the four default rules were written out three times (developer table, prompt list, echo) in three wordings.
+
+### What replaced it — `scripts/intake_spec.py`
+
+One declarative spec per questionnaire, and every rendering generated from it:
+
+- **`IntakeField`** — `key` (the `AskUserQuestion` header, and the answer-mapping table's key), `prompt_label`, `target`, `target_kind`, `required`, `group`, plus the `question` and `options` that are the analyst-facing wording in *both* renderings. `IntakeOption` carries `default=True` on the choice taken when the analyst says nothing; the prompt renders it `[bracketed]` and `required` is validated to exclude it.
+- **`IntakeDefault`** — one `rule` string per defaulted input, which is simultaneously what the prompt lists, what `*_DEFAULT_SUPPLIED_INPUTS` / `*_DEFAULT_UNSET_INPUTS` carry, and what a static echo line says. A computed default declares an `echo` template instead; `render_defaults_echo` derives which computed values a deliverable needs from those templates rather than from a hardcoded list of four, and names every missing one.
+- **`IntakeNote`** — the attachment checklist. Each attachment gate contributes its own bullet, so a document the run asks about is a document the checklist explains.
+- **`render_dialogs` / `render_prompt` / `render_note` / `render_defaults_echo`** — the only places either rendering is produced. Deterministic by construction: frozen dataclasses of plain strings, `textwrap` at a fixed width, no clock, no environment, no set iteration.
+
+Three specs are declared: `deal_init.INIT_INTAKE` (the G7 questions — Deliverable / Company / Listing / Sector / Filings) and `deck_spec.PITCH_INTAKE` / `EARNINGS_UPDATE_INTAKE`. Every public renderer is now a one-line call, and `PITCH_DIALOG_PLAN_INPUTS`, `PITCH_ITEM_PLAN_INPUTS`, `PITCH_DOCUMENTS_DIALOG_TARGETS`, `INIT_DIALOG_FIELDS`, `INIT_FILINGS_NOTE` and the four `*_DEFAULT_*_INPUTS` tables are all derived from the specs.
+
+Two shapes the model had to keep. A **free-text** field (the subject company name — pure free text with nothing to suggest) declares a `hint` and no options: a numbered item in the text prompt, a plain chat question in the interactive flow, never a dialog question. An **attachment gate** (`target_kind="attachment"`) is the fixed attached / will-drop / none status question; its answer is deliberately *not* a plan input, so it appears in `*_DOCUMENTS_DIALOG_TARGETS` and never in `*_DIALOG_PLAN_INPUTS` — a split the spec derives from `target_kind` rather than from two hand-kept tables that could disagree.
+
+### `tests/test_intake_spec.py` — the deliverable
+
+Two layers, 38 tests:
+
+1. **Every rendering is generated.** `render_deck_spec_prompt("pitch") == render_prompt(PITCH_INTAKE)`, and the same for the dialogs, the documents dialogs, the note, the echo, and all five deal-init renderings. Reintroducing a hand-written prompt literal fails here, in the change that reintroduces it — which is the guarantee `_PITCH_SPEC_PROMPT` never had.
+2. **The two renderings describe the same items with the same wording.** For all three specs: the numbered prompt items are the dialog questions, in the same order; every question, option label and option description appears verbatim in the prompt (whitespace-normalised, since the prompt is wrapped); `REQUIRED` and `[default]` are derived so they cannot contradict the options; every default states one rule in both the prompt and the echo; and every attachment gate's checklist bullet is in the note that the prompt embeds.
+
+Plus the invariants that had to survive — the `*_DIALOG_PLAN_INPUTS` header keying, the item-number tables, the attachment/plan-input split — and a `required`-against-`plan_inputs` cross-check that pins each field's requiredness to the plan YAML. The model itself rejects a questionnaire that could not render consistently: an over-long header, an option count outside 2–4, two defaults on one field, `required` plus a default, a dialog field carrying prompt-only prose (the removed drift surface), a free-text field with a question, an attachment gate with no checklist line, a reused dialog header, a split group, an input both asked and defaulted, and an attachment gate with no note to carry its bullet. That last set found a real bug while being written: the asked-and-defaulted check was comparing default names against dialog *headers* instead of targets, so it could never have fired.
+
+**Suite: 668 passed, 0 skipped** (630 before).
+
+### Also
+
+- The two prompt-token tests in `test_deck_spec.py` normalise whitespace before matching. The generated prompt is wrapped at a fixed width, so `"no slide options"` legitimately straddles a line break — wrapping is a rendering detail, the wording is what the test is about.
+- Analyst-facing wording is unchanged except where two renderings had to be reconciled into one string: the defaults echo's quarter line is labelled "Reporting vs comparison quarter" in both deliverables (was "LTM bridge quarters" for pitch, with the LTM reason moved into the line itself), and each default's prompt-list rule and developer-table rule are now the same sentence.
+- H2 (the inline `show_widget` form) is **not** started — it still has the open `visualize`-on-Cowork dependency question recorded in `docs/migration-plan.md`. H1 was specified to stand on its own, and does.
 
 **Phase C's sentinel tables deleted, and `CLAUDE.md` restructured around standing rules.** No deliverable-facing behaviour change on a clean run: the four shipped templates and the deal workbook carry every name the writers resolve, so every verification still passes.
 

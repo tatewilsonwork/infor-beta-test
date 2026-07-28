@@ -2,31 +2,41 @@
 
 Owns the conductor's deal-init flow (Obsidian note 12, G7 + H5):
 
-  - The G7 questions are rendered here, ONCE per deal — as interactive
-    dialogs (`render_init_dialogs`, the `AskUserQuestion` payloads) with the
-    legacy single-message text prompt (`render_init_prompt`) kept as the
-    fallback for surfaces without the interactive question UI. The codename
-    is not asked: it is auto-derived via `codename.codename_from_company`
-    ("Project <company>" with corporate suffixes stripped), overridable by
-    the analyst in chat.
+  - The G7 questions are declared ONCE, as the `INIT_INTAKE` spec, and asked
+    ONCE per deal. Both renderings are *generated* from that spec (Phase H1):
+    the interactive dialogs (`render_init_dialogs`, the `AskUserQuestion`
+    payloads), the filings checklist posted alongside them
+    (`render_init_filings_note`), and the single-message text prompt
+    (`render_init_prompt`) kept as the fallback for surfaces without the
+    interactive question UI. The codename is not asked: it is auto-derived via
+    `codename.codename_from_company` ("Project <company>" with corporate
+    suffixes stripped), overridable by the analyst in chat.
   - DealContext is persisted as `<deal_dir>/deal.json`.
   - The deal directory tree is bootstrapped: `facts/`, `filings/`,
     `artefacts/`, `runs/`.
 
 Plans cannot ask any of the G7 questions — those belong to deal-init.
 
-This module is a thin orchestrator over `codename.py` + the pydantic
-`DealContext` model. No Agent dispatch, no LLM calls.
+This module is a thin orchestrator over `intake_spec.py`, `codename.py` and
+the pydantic `DealContext` model. No Agent dispatch, no LLM calls.
 """
 
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
 from typing import Any
 
 from codename import DEFAULT_DEALS_ROOT, find_existing, resolve
+from intake_spec import (
+    IntakeField,
+    IntakeNote,
+    IntakeOption,
+    IntakeSpec,
+    render_dialogs,
+    render_note,
+    render_prompt,
+)
 from schemas import DealContext
 
 
@@ -37,58 +47,26 @@ DEAL_SUBDIRS = ("facts", "filings", "artefacts", "runs")
 DEAL_JSON_NAME = "deal.json"
 
 
-# G7 item 6 — the filings checklist. Attachments cannot come through the
-# interactive dialogs, so this is always posted as plain text (alongside the
-# dialogs, and embedded in the text-fallback prompt below).
-INIT_FILINGS_NOTE = """\
-Filings / attachments (drop in this chat now, or say "none for now"):
-For pitch and earnings-update deliverables I need the latest four annual
-financial statements / 10-Ks (they cover five fiscal years for the
-financial-summary history), plus the current-year YTD interim statements /
-10-Q and the prior-year same-period interim statements / 10-Q for the LTM
-bridge (LTM = full fiscal year + current YTD − prior-year YTD, so a single
-filing isn't enough). The cap table is still built off the most recent
-statement; the older filings are only for the 5-year history and the LTM math.
-"""
-
-_INIT_PROMPT = """\
-What deal is this for?
-
-(The codename is derived automatically: "Project <company>" with corporate
-suffixes stripped — say otherwise to override it.)
-
-1. Deliverable type:          (pitch / earnings update / overview / one-off skill)
-2. Subject company name:      (e.g. "ACME Corp")
-3. Public or private?:        (public → ask for ticker + exchange; private → skip)
-4. Sector / industry:         (one line, free-form)
-5. Filings / attachments:     (drop now or "none for now")
-                              For pitch and earnings-update deliverables I need
-                              the latest four annual financial statements / 10-Ks
-                              (they cover five fiscal years for the
-                              financial-summary history), plus the current-year
-                              YTD interim statements / 10-Q and the prior-year
-                              same-period interim statements / 10-Q for the LTM
-                              bridge (LTM = full fiscal year + current YTD −
-                              prior-year YTD, so a single filing isn't enough).
-                              The cap table is still built off the most recent
-                              statement; the older filings are only for the
-                              5-year history and the LTM math.
-"""
-
 # ---------------------------------------------------------------------------
-# Interactive deal-init dialogs (AskUserQuestion payloads)
+# The G7 questionnaire — declared once (Phase H1)
 #
-# Shape contract (enforced by tests): at most 4 questions per dialog, 2–4
-# options per question, header at most 12 characters, multiSelect always
-# False. Each question's `header` doubles as its key in INIT_DIALOG_FIELDS.
+# Both renderings below are generated from INIT_INTAKE, so a changed option
+# label cannot leave the text fallback describing a choice the dialog no
+# longer offers.
+#
+# Shape contract (enforced by `intake_spec` and the tests): at most 4
+# questions per dialog, 2–4 options per question, header at most 12
+# characters, multiSelect always False. Each question's `header` doubles as
+# its key in INIT_DIALOG_FIELDS.
 #
 # Not every G7 item is a dialog question:
 #   - the codename is never asked — it is derived silently via
 #     `codename.codename_from_company` ("Project <company>" with corporate
-#     suffixes stripped); the analyst can still override it in chat;
-#   - the subject company name is pure free text with nothing to
-#     suggest — when the slash command / analyst message did not supply it,
-#     the conductor asks for it as a plain chat question;
+#     suffixes stripped); the analyst can still override it in chat, which is
+#     why it is not a field at all;
+#   - the subject company name is pure free text with nothing to suggest, so
+#     it is declared with a `hint` and no options — a numbered item in the
+#     text prompt, a plain chat question in the interactive flow;
 #   - the filings item is a fixed STATUS question ("Filings" below) — files
 #     cannot come through a dialog, so the analyst answers attached / will
 #     drop next message / none, and the files themselves arrive through the
@@ -98,128 +76,158 @@ suffixes stripped — say otherwise to override it.)
 #     settable when the analyst volunteers notes in chat.
 # ---------------------------------------------------------------------------
 
-_DELIVERABLE_QUESTION: dict = {
-    "question": "Which deliverable is this?",
-    "header": "Deliverable",
-    "multiSelect": False,
-    "options": [
-        {
-            "label": "Pitch",
-            "description": (
-                "The 16-slide slide-library pitch deck (configurable slide mix)."
-            ),
-        },
-        {
-            "label": "Earnings update",
-            "description": "The fixed 5-slide quarterly earnings-update deck.",
-        },
-        {
-            "label": "Overview",
-            "description": (
-                "Stub — the overview plan is not yet implemented; the "
-                "conductor will say so and stop."
-            ),
-        },
-        {
-            "label": "One-off skill",
-            "description": (
-                "No deliverable plan — invoke the individual skill directly "
-                "instead of the conductor."
-            ),
-        },
-    ],
-}
+# The deliverable question, kept separable: the slash-command entry points
+# pre-answer it, so `render_init_dialogs` omits it by default.
+DELIVERABLE_FIELD_KEY = "Deliverable"
 
-_INIT_QUESTIONS: list[dict] = [
-    {
-        "question": "Is the subject company public or private?",
-        "header": "Listing",
-        "multiSelect": False,
-        "options": [
-            {
-                "label": "Public — I'll give the ticker",
-                "description": (
-                    'Type ticker + exchange in the Other box (e.g. "Public — '
-                    'TSX:ABC"), or I\'ll ask right after this dialog.'
-                ),
-            },
-            {
-                "label": "Private",
-                "description": "No ticker or exchange.",
-            },
-        ],
-    },
-    {
-        "question": "Sector / industry (one line)?",
-        "header": "Sector",
-        "multiSelect": False,
-        "options": [
-            {
-                "label": "Infer from the web",
-                "description": (
-                    "I'll look it up and use it — no confirmation needed."
-                ),
-            },
-            {
-                "label": "I'll type it",
-                "description": (
-                    "Put the one-line sector / industry in the Other box."
-                ),
-            },
-        ],
-    },
-    {
-        "question": "Filings — how will you provide them?",
-        "header": "Filings",
-        "multiSelect": False,
-        "options": [
-            {
-                "label": "Attached in this chat",
-                "description": (
-                    "I'll save them under the deal's filings/ directory now."
-                ),
-            },
-            {
-                "label": "I'll drop them in my next message",
-                "description": (
-                    "The run waits here for the attachments — the checklist "
-                    "note lists what I need."
-                ),
-            },
-            {
-                "label": "None for now",
-                "description": (
-                    "Continue without filings; attach them in chat at any "
-                    "later point."
-                ),
-            },
-        ],
-    },
-]
-
-# Question header -> where the answer lands on the DealContext.
-INIT_DIALOG_FIELDS: dict[str, str] = {
-    "Deliverable": "deliverable_type",
-    "Listing": "subject_company.ticker + subject_company.exchange (Private -> both None)",
-    "Sector": "subject_company.sector / subject_company.industry",
-    "Filings": (
-        "filings (attachments persisted to <deal_dir>/filings/; "
-        "'I'll drop them in my next message' -> the run waits for them)"
+INIT_INTAKE = IntakeSpec(
+    name="deal-init",
+    title="What deal is this for?",
+    preamble=(
+        'The codename is derived automatically: "Project <company>" with '
+        "corporate suffixes stripped — say otherwise to override it.",
     ),
-}
+    fields=(
+        IntakeField(
+            key=DELIVERABLE_FIELD_KEY,
+            prompt_label="Deliverable type",
+            target="deliverable_type",
+            target_kind="deal-context",
+            required=True,
+            group="deal",
+            question="Which deliverable is this?",
+            options=(
+                IntakeOption(
+                    "Pitch",
+                    "The 16-slide slide-library pitch deck (configurable slide mix).",
+                ),
+                IntakeOption(
+                    "Earnings update",
+                    "The fixed 5-slide quarterly earnings-update deck.",
+                ),
+                IntakeOption(
+                    "Overview",
+                    "Stub — the overview plan is not yet implemented; the "
+                    "conductor will say so and stop.",
+                ),
+                IntakeOption(
+                    "One-off skill",
+                    "No deliverable plan — invoke the individual skill directly "
+                    "instead of the conductor.",
+                ),
+            ),
+        ),
+        IntakeField(
+            key="Company",
+            prompt_label="Subject company name",
+            target="subject_company.legal_name",
+            target_kind="deal-context",
+            required=True,
+            group="deal",
+            hint='e.g. "ACME Corp"',
+        ),
+        IntakeField(
+            key="Listing",
+            prompt_label="Public or private?",
+            target=(
+                "subject_company.ticker + subject_company.exchange "
+                "(Private -> both None)"
+            ),
+            target_kind="deal-context",
+            required=True,
+            group="deal",
+            question="Is the subject company public or private?",
+            options=(
+                IntakeOption(
+                    "Public — I'll give the ticker",
+                    'Type ticker + exchange in the Other box (e.g. "Public — '
+                    'TSX:ABC"), or I\'ll ask right after this dialog.',
+                ),
+                IntakeOption("Private", "No ticker or exchange."),
+            ),
+        ),
+        IntakeField(
+            key="Sector",
+            prompt_label="Sector / industry",
+            target="subject_company.sector / subject_company.industry",
+            target_kind="deal-context",
+            group="deal",
+            question="Sector / industry (one line)?",
+            options=(
+                IntakeOption(
+                    "Infer from the web",
+                    "I'll look it up and use it — no confirmation needed.",
+                    default=True,
+                ),
+                IntakeOption(
+                    "I'll type it",
+                    "Put the one-line sector / industry in the Other box.",
+                ),
+            ),
+        ),
+        IntakeField(
+            key="Filings",
+            prompt_label="Filings / attachments",
+            target=(
+                "filings (attachments persisted to <deal_dir>/filings/; "
+                "'I'll drop them in my next message' -> the run waits for them)"
+            ),
+            target_kind="deal-context",
+            group="deal",
+            question="Filings — how will you provide them?",
+            options=(
+                IntakeOption(
+                    "Attached in this chat",
+                    "I'll save them under the deal's filings/ directory now.",
+                ),
+                IntakeOption(
+                    "I'll drop them in my next message",
+                    "The run waits here for the attachments — the checklist note "
+                    "lists what I need.",
+                ),
+                IntakeOption(
+                    "None for now",
+                    "Continue without filings; attach them in chat at any later "
+                    "point.",
+                    default=True,
+                ),
+            ),
+        ),
+    ),
+    note=IntakeNote(
+        header='Filings / attachments (drop in this chat now, or say "none for now"):',
+        body=(
+            "For pitch and earnings-update deliverables I need the latest four "
+            "annual financial statements / 10-Ks (they cover five fiscal years "
+            "for the financial-summary history), plus the current-year YTD "
+            "interim statements / 10-Q and the prior-year same-period interim "
+            "statements / 10-Q for the LTM bridge (LTM = full fiscal year + "
+            "current YTD − prior-year YTD, so a single filing isn't enough). "
+            "The cap table is still built off the most recent statement; the "
+            "older filings are only for the 5-year history and the LTM math.",
+        ),
+    ),
+)
 
-_DIALOG_MAX_QUESTIONS = 4
+# G7 item 6 — the filings checklist. Attachments cannot come through the
+# interactive dialogs, so this is always posted as plain text (alongside the
+# dialogs, and embedded in the text-fallback prompt).
+INIT_FILINGS_NOTE = render_note(INIT_INTAKE)
+
+# Question header -> where the answer lands on the DealContext. Derived from
+# the spec's dialog fields, so it cannot list a question that is not asked.
+INIT_DIALOG_FIELDS: dict[str, str] = INIT_INTAKE.targets("deal-context")
 
 
 def render_init_dialogs(*, include_deliverable: bool = False) -> list[list[dict]]:
-    """Return the locked deal-init dialogs, verbatim.
+    """Return the locked deal-init dialogs, generated from `INIT_INTAKE`.
 
     Each inner list is one `AskUserQuestion` call's `questions` payload —
     render them in order, unchanged. The slash-command entry points preset
     the deliverable type, so the deliverable question is only included when
     `include_deliverable=True` (generic conductor entry with no deliverable
-    named). Returns deep copies so callers cannot mutate the locked
-    constants.
+    named). Fresh payloads every call, so a caller mutating the result cannot
+    affect the next render.
 
     Post INIT_FILINGS_NOTE (plain text) alongside these — it is the
     checklist detail behind the "Filings" status question; file bytes cannot
@@ -229,23 +237,19 @@ def render_init_dialogs(*, include_deliverable: bool = False) -> list[list[dict]
     it silently with `codename.codename_from_company(<subject company
     name>)` (the analyst can override it in chat).
     """
-    questions = list(_INIT_QUESTIONS)
-    if include_deliverable:
-        questions.insert(0, _DELIVERABLE_QUESTION)
-    return [
-        copy.deepcopy(questions[i : i + _DIALOG_MAX_QUESTIONS])
-        for i in range(0, len(questions), _DIALOG_MAX_QUESTIONS)
-    ]
+    omit = () if include_deliverable else (DELIVERABLE_FIELD_KEY,)
+    return render_dialogs(INIT_INTAKE, omit=omit)
 
 
 def render_init_prompt() -> str:
-    """Return the locked G7 deal-init text prompt verbatim.
+    """Return the locked G7 deal-init text prompt, generated from `INIT_INTAKE`.
 
     This is the FALLBACK for surfaces where the interactive question UI
     (`AskUserQuestion`) is unavailable; `render_init_dialogs` is the primary
-    rendering.
+    rendering. Both come from the same spec, so they ask the same items in the
+    same order with the same options.
     """
-    return _INIT_PROMPT
+    return render_prompt(INIT_INTAKE)
 
 
 def render_init_filings_note() -> str:

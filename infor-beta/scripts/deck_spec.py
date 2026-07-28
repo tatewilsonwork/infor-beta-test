@@ -1,5 +1,12 @@
 """Deck-spec questionnaires — the locked per-deliverable analyst dialogs (Step 4).
 
+Each deliverable's questionnaire is declared ONCE as an
+:class:`intake_spec.IntakeSpec` (Phase H1) and every rendering is generated
+from it: the interactive dialogs, the attachment-status dialogs, the documents
+checklist, the defaults echo, and the single-message text fallback. A changed
+option label therefore reaches every surface, which is what makes the
+locked-questionnaire principle structural rather than conventional.
+
 The conductor collects the deck spec right after deal-init through the
 interactive question UI (the `AskUserQuestion` tool): it renders each dialog in
 :func:`render_deck_spec_dialogs` verbatim — one `AskUserQuestion` call per
@@ -48,315 +55,415 @@ through a dialog, so the questions gate the run (attached / will drop next
 message / none) while the file itself arrives via the chat input; the
 answers never land in ``plan_inputs``.
 
-The legacy single-message text prompts are kept (:func:`render_deck_spec_prompt`)
+The single-message text prompt is generated too (:func:`render_deck_spec_prompt`)
 as the fallback for surfaces where the interactive question UI is unavailable;
-they ask the same items and list the same defaults as the dialogs.
+it asks the same items in the same order and quotes the same question wording,
+option labels and option descriptions as the dialogs, because both come from
+one spec.
 
-No LLM calls, no dispatch — this module only owns the locked dialog payloads,
-prompts, and answer converters, so the questionnaire (and therefore the deck
-layout the answers produce) is reproducible run over run.
+No LLM calls, no dispatch — this module only owns the locked questionnaires and
+answer converters, so the questionnaire (and therefore the deck layout the
+answers produce) is reproducible run over run.
 """
 
 from __future__ import annotations
 
-import copy
 import re
 from datetime import date
 
+from intake_spec import (
+    IntakeDefault,
+    IntakeField,
+    IntakeNote,
+    IntakeOption,
+    IntakeSpec,
+    render_defaults_echo,
+    render_dialogs,
+    render_note,
+    render_prompt,
+)
+
 # ---------------------------------------------------------------------------
-# Interactive dialogs (AskUserQuestion payloads)
+# The declared questionnaires (Phase H1)
 #
-# Shape contract (enforced by tests): at most 4 questions per dialog, 2–4
-# options per question, header at most 12 characters, multiSelect always
-# False. Each question's `header` doubles as its key in the
-# *_DIALOG_PLAN_INPUTS tables below.
+# Shape contract (enforced by `intake_spec` and the tests): at most 4
+# questions per dialog, 2–4 options per question, header at most 12
+# characters, multiSelect always False. Each field's `key` is its dialog
+# `header` and doubles as its key in the *_DIALOG_PLAN_INPUTS tables below.
+#
+# Fields with target_kind="attachment" are the fixed status gates. File bytes
+# cannot come through a dialog — the attachment itself always arrives via the
+# chat input (or an absolute path in the Other box); the question is the
+# locked gate that pauses the run until the analyst says attached / will drop
+# next message / none. Their answers are NOT plan inputs (the consuming stages
+# discover the saved files under <deal_dir>/filings/), so they appear in
+# *_DOCUMENTS_DIALOG_TARGETS and never in *_DIALOG_PLAN_INPUTS — a split
+# `intake_spec` derives from target_kind rather than from two hand-kept
+# tables. The G7 filings have their own status question at deal-init; the CIM
+# (pitch) and EEO snip (earnings-update) are plan inputs, so they are asked
+# with the rest of the spec.
 # ---------------------------------------------------------------------------
 
-_PITCH_SPEC_DIALOGS: list[list[dict]] = [
-    # Dialog 1 — content inputs.
-    [
-        {
-            "question": (
+# Shared across both deliverables' documents checklists.
+_G7_FILINGS_BULLET = (
+    "The G7 filings: latest four annual statements / 10-Ks plus the "
+    "current-year and prior-year interim statements (5-year history + LTM "
+    "bridge)."
+)
+
+_DOCUMENTS_NOTE_HEADER = (
+    "Documents (attach in this chat if not already attached at deal-init):"
+)
+
+# The two quarter defaults are identical for both deliverables — declared once
+# so the pitch and earnings-update specs cannot describe them differently.
+_REPORTING_QUARTER_DEFAULT = IntakeDefault(
+    name="reporting_quarter",
+    label="Reporting quarter",
+    rule=(
+        "the latest attached interim filing's quarter — conductor-inferred from "
+        "the statements, since fiscal quarter labels depend on the company's "
+        "fiscal calendar, not the calendar date"
+    ),
+    supplied=True,
+    echo_label="Reporting vs comparison quarter",
+    echo=(
+        "{reporting_quarter} vs {comparison_quarter} (from the latest attached "
+        "interim filing — the LTM bridge)"
+    ),
+)
+
+# Echoed on the reporting quarter's line, as one range.
+_COMPARISON_QUARTER_DEFAULT = IntakeDefault(
+    name="comparison_quarter",
+    label="Comparison quarter",
+    rule="prior-year same quarter",
+    supplied=True,
+    echoed=False,
+)
+
+PITCH_INTAKE = IntakeSpec(
+    name="pitch",
+    title="Deck spec — pitch",
+    fields=(
+        # -- content inputs -------------------------------------------------
+        IntakeField(
+            key="Notes",
+            prompt_label="Analyst notes",
+            target="analyst_notes",
+            required=True,
+            group="content",
+            question=(
                 "Analyst notes — what should drive the executive summary, "
                 "company overview, risks, and takeaways?"
             ),
-            "header": "Notes",
-            "multiSelect": False,
-            "options": [
-                {
-                    "label": "I'll paste notes in my next message",
-                    "description": (
-                        "The run waits here for your notes. Specific "
-                        "acquisition-target names and Key Investment "
-                        "Highlights copy belong in these notes too."
-                    ),
-                },
-                {
-                    "label": "Draft from the attached filings + web",
-                    "description": (
-                        "No analyst notes — the content stage drafts "
-                        "everything from the deal's filings and public "
-                        "sources."
-                    ),
-                },
-            ],
-        },
-        {
-            "question": "Is there a CIM or management presentation to draw from?",
-            "header": "CIM",
-            "multiSelect": False,
-            "options": [
-                {
-                    "label": "None",
-                    "description": "Default — the deck drafts without one.",
-                },
-                {
-                    "label": "Attached in this chat",
-                    "description": (
-                        "I'll save the attachment under the deal's filings/ "
-                        "directory. Use Other to give an absolute path instead."
-                    ),
-                },
-            ],
-        },
-        {
-            "question": "Valuation range language for the executive summary?",
-            "header": "Valuation",
-            "multiSelect": False,
-            "options": [
-                {
-                    "label": "None",
-                    "description": (
-                        "Default — the executive summary carries no valuation "
-                        "range."
-                    ),
-                },
-                {
-                    "label": "I'll provide it",
-                    "description": (
-                        "Type the range language in the Other box (or reply "
-                        "right after this dialog)."
-                    ),
-                },
-            ],
-        },
-        {
-            "question": (
+            options=(
+                IntakeOption(
+                    "I'll paste notes in my next message",
+                    "The run waits here for your notes. Specific "
+                    "acquisition-target names and Key Investment Highlights copy "
+                    "belong in these notes too.",
+                ),
+                IntakeOption(
+                    "Draft from the attached filings + web",
+                    "No analyst notes — the content stage drafts everything from "
+                    "the deal's filings and public sources.",
+                ),
+            ),
+        ),
+        IntakeField(
+            key="CIM",
+            prompt_label="CIM / management pres.",
+            target="cim_path",
+            group="content",
+            question="Is there a CIM or management presentation to draw from?",
+            options=(
+                IntakeOption(
+                    "None",
+                    "Default — the deck drafts without one.",
+                    default=True,
+                ),
+                IntakeOption(
+                    "Attached in this chat",
+                    "I'll save the attachment under the deal's filings/ "
+                    "directory. Use Other to give an absolute path instead.",
+                ),
+            ),
+        ),
+        IntakeField(
+            key="Valuation",
+            prompt_label="Valuation range",
+            target="valuation_range",
+            group="content",
+            question="Valuation range language for the executive summary?",
+            options=(
+                IntakeOption(
+                    "None",
+                    "Default — the executive summary carries no valuation range.",
+                    default=True,
+                ),
+                IntakeOption(
+                    "I'll provide it",
+                    "Type the range language in the Other box (or reply right "
+                    "after this dialog).",
+                ),
+            ),
+        ),
+        IntakeField(
+            key="Risk notes",
+            prompt_label="Risk notes",
+            target="risk_notes",
+            group="content",
+            question=(
                 "Any specific risks / mitigants for the Considerations / "
                 "Mitigants slide?"
             ),
-            "header": "Risk notes",
-            "multiSelect": False,
-            "options": [
-                {
-                    "label": "None",
-                    "description": (
-                        "Default — risks and mitigants are drafted from the "
-                        "filings and your notes."
-                    ),
-                },
-                {
-                    "label": "I'll provide specific risks / mitigants",
-                    "description": (
-                        "Type them in the Other box (or reply right after "
-                        "this dialog)."
-                    ),
-                },
-            ],
-        },
-    ],
-    # Dialog 2 — slide mix.
-    [
-        {
-            "question": (
+            options=(
+                IntakeOption(
+                    "None",
+                    "Default — risks and mitigants are drafted from the filings "
+                    "and your notes.",
+                    default=True,
+                ),
+                IntakeOption(
+                    "I'll provide specific risks / mitigants",
+                    "Type them in the Other box (or reply right after this "
+                    "dialog).",
+                ),
+            ),
+        ),
+        # -- slide mix ------------------------------------------------------
+        IntakeField(
+            key="Targets",
+            prompt_label="Acquisition-target slides",
+            # market_entry_targets_from_slides(answer)
+            target="market_entry_target_count",
+            group="slide mix",
+            question=(
                 "How many Potential Market Entry Targets slides "
                 "(two targets per slide)?"
             ),
-            "header": "Targets",
-            "multiSelect": False,
-            "options": [
-                {
-                    "label": "4 slides — 8 targets",
-                    "description": "Default.",
-                },
-                {"label": "3 slides — 6 targets", "description": "Six targets."},
-                {"label": "2 slides — 4 targets", "description": "Four targets."},
-                {"label": "1 slide — 2 targets", "description": "Two targets."},
-            ],
-        },
-        {
-            "question": "Key Investment Highlights slide?",
-            "header": "Highlights",
-            "multiSelect": False,
-            "options": [
-                {
-                    "label": "Include — draft from my notes",
-                    "description": (
-                        "Default — the content stage drafts the highlight copy."
-                    ),
-                },
-                {
-                    "label": "Include — draft from attached filings + web",
-                    "description": (
-                        "The content stage drafts the highlights from the "
-                        "deal's filings and public sources."
-                    ),
-                },
-                {
-                    "label": "Omit",
-                    "description": "Drops the slide from the deck.",
-                },
-            ],
-        },
-    ],
-]
-
-_EARNINGS_UPDATE_SPEC_DIALOGS: list[list[dict]] = [
-    [
-        {
-            "question": (
-                "Bloomberg EEO snip (the broker estimates vs. actuals "
-                "screenshot)?"
+            options=(
+                IntakeOption("4 slides — 8 targets", "Default.", default=True),
+                IntakeOption("3 slides — 6 targets", "Six targets."),
+                IntakeOption("2 slides — 4 targets", "Four targets."),
+                IntakeOption("1 slide — 2 targets", "Two targets."),
             ),
-            "header": "EEO snip",
-            "multiSelect": False,
-            "options": [
-                {
-                    "label": "Attached in this chat",
-                    "description": (
-                        "I'll save it under the deal's filings/ directory."
-                    ),
-                },
-                {
-                    "label": "I'll attach it in my next message",
-                    "description": (
-                        "The run waits here for the snip. Use Other to give "
-                        "an absolute path instead."
-                    ),
-                },
-            ],
-        },
-    ],
-]
-
-_SPEC_DIALOGS: dict[str, list[list[dict]]] = {
-    "pitch": _PITCH_SPEC_DIALOGS,
-    "earnings-update": _EARNINGS_UPDATE_SPEC_DIALOGS,
-}
-
-# ---------------------------------------------------------------------------
-# Attachment-status dialogs (AskUserQuestion payloads)
-#
-# One fixed status question per deliverable-specific document. File bytes
-# cannot come through a dialog — the attachment itself always arrives via the
-# chat input (or an absolute path in the Other box); these questions are the
-# locked gate that pauses the run until the analyst says attached / will drop
-# next message / none. Their answers are NOT plan inputs (the consuming
-# stages discover the saved files under <deal_dir>/filings/), so their
-# headers deliberately do not appear in the *_DIALOG_PLAN_INPUTS tables.
-# The G7 filings have their own status question at deal-init; the CIM (pitch)
-# and EEO snip (earnings-update) are plan inputs and stay in the spec dialogs
-# above.
-# ---------------------------------------------------------------------------
-
-_PITCH_DOCUMENTS_DIALOGS: list[list[dict]] = [
-    [
-        {
-            "question": (
+        ),
+        IntakeField(
+            key="Highlights",
+            prompt_label="Key Investment Highlights",
+            target="include_investment_highlights",  # False only on "Omit"
+            group="slide mix",
+            question="Key Investment Highlights slide?",
+            options=(
+                IntakeOption(
+                    "Include — draft from my notes",
+                    "Default — the content stage drafts the highlight copy.",
+                    default=True,
+                ),
+                IntakeOption(
+                    "Include — draft from attached filings + web",
+                    "The content stage drafts the highlights from the deal's "
+                    "filings and public sources.",
+                ),
+                IntakeOption("Omit", "Drops the slide from the deck."),
+            ),
+        ),
+        # -- attachment status gates (answers are NOT plan inputs) ----------
+        IntakeField(
+            key="SEDI PDF",
+            prompt_label="",
+            target=(
+                "saved under <deal_dir>/filings/ — consumed by the ownership "
+                "stage (insider side)"
+            ),
+            target_kind="attachment",
+            group="documents",
+            question=(
                 'SEDI "Insider Information by Issuer" PDF '
                 "(Canadian public targets)?"
             ),
-            "header": "SEDI PDF",
-            "multiSelect": False,
-            "options": [
-                {
-                    "label": "Attached in this chat",
-                    "description": (
-                        "I'll save it under the deal's filings/ directory now."
-                    ),
-                },
-                {
-                    "label": "I'll drop it in my next message",
-                    "description": (
-                        "The run waits here for the PDF — SEDI is bot-walled, "
-                        "so I cannot fetch it myself."
-                    ),
-                },
-                {
-                    "label": "Not applicable / none",
-                    "description": (
-                        "Non-Canadian target or no report — the ownership "
-                        "slide's insider side stays a placeholder."
-                    ),
-                },
-            ],
-        },
-        {
-            "question": "Bloomberg ownership export (.xlsm)?",
-            "header": "BBG export",
-            "multiSelect": False,
-            "options": [
-                {
-                    "label": "Attached in this chat",
-                    "description": (
-                        "I'll save it under the deal's filings/ directory now."
-                    ),
-                },
-                {
-                    "label": "I'll drop it in my next message",
-                    "description": "The run waits here for the export.",
-                },
-                {
-                    "label": "None",
-                    "description": (
-                        "The ownership slide's institutions side stays a "
-                        "placeholder."
-                    ),
-                },
-            ],
-        },
-    ],
-]
+            options=(
+                IntakeOption(
+                    "Attached in this chat",
+                    "I'll save it under the deal's filings/ directory now.",
+                ),
+                IntakeOption(
+                    "I'll drop it in my next message",
+                    "The run waits here for the PDF — SEDI is bot-walled, so I "
+                    "cannot fetch it myself.",
+                ),
+                IntakeOption(
+                    "Not applicable / none",
+                    "Non-Canadian target or no report — the ownership slide's "
+                    "insider side stays a placeholder.",
+                ),
+            ),
+            checklist=(
+                'SEDI "Insider Information by Issuer" PDF — Canadian public '
+                "targets only; without it the ownership slide's insider side "
+                "stays a placeholder."
+            ),
+        ),
+        IntakeField(
+            key="BBG export",
+            prompt_label="",
+            target=(
+                "saved under <deal_dir>/filings/ — consumed by the ownership "
+                "stage (institutions side)"
+            ),
+            target_kind="attachment",
+            group="documents",
+            question="Bloomberg ownership export (.xlsm)?",
+            options=(
+                IntakeOption(
+                    "Attached in this chat",
+                    "I'll save it under the deal's filings/ directory now.",
+                ),
+                IntakeOption(
+                    "I'll drop it in my next message",
+                    "The run waits here for the export.",
+                ),
+                IntakeOption(
+                    "None",
+                    "The ownership slide's institutions side stays a placeholder.",
+                ),
+            ),
+            checklist=(
+                "Bloomberg ownership export (.xlsm) — without it the ownership "
+                "slide's institutions side stays a placeholder."
+            ),
+        ),
+    ),
+    defaults=(
+        IntakeDefault(
+            name="client_name",
+            label="Client name on the cover",
+            rule="the subject company name from deal-init",
+            supplied=True,
+            echo="{client_name}",
+        ),
+        IntakeDefault(
+            name="presentation_date",
+            label="Presentation date",
+            rule='the current month + year, e.g. "July 2026"',
+            supplied=True,
+            echo="{presentation_date}",
+        ),
+        _REPORTING_QUARTER_DEFAULT,
+        _COMPARISON_QUARTER_DEFAULT,
+        IntakeDefault(
+            name="financial_metric_count",
+            label="Financial Summary slides",
+            rule='1 slide — 4 metrics ("2 slides" — 8 metrics)',
+            supplied=False,
+        ),
+        IntakeDefault(
+            name="section_labels",
+            label="Section divider labels",
+            rule="Overview, Financial Summary, Valuation, Process",
+            supplied=False,
+        ),
+    ),
+    note=IntakeNote(
+        header=_DOCUMENTS_NOTE_HEADER,
+        bullets=(_G7_FILINGS_BULLET,),
+    ),
+)
 
-# Earnings-update has no deliverable-specific attachments beyond the EEO snip
-# (a plan input, asked in the spec dialogs) and the G7 filings (deal-init's
-# status question) — nothing to ask here.
-_DOCUMENTS_DIALOGS: dict[str, list[list[dict]]] = {
-    "pitch": _PITCH_DOCUMENTS_DIALOGS,
-    "earnings-update": [],
+EARNINGS_UPDATE_INTAKE = IntakeSpec(
+    name="earnings-update",
+    title="Deck spec — earnings update",
+    preamble=(
+        "The deck itself is the fixed 5-slide earnings-update layout (no slide "
+        "options).",
+    ),
+    fields=(
+        IntakeField(
+            key="EEO snip",
+            prompt_label="Bloomberg EEO snip",
+            target="eeo_snip_path",
+            required=True,
+            group="content",
+            question=(
+                "Bloomberg EEO snip (the broker estimates vs. actuals "
+                "screenshot)?"
+            ),
+            options=(
+                IntakeOption(
+                    "Attached in this chat",
+                    "I'll save it under the deal's filings/ directory.",
+                ),
+                IntakeOption(
+                    "I'll attach it in my next message",
+                    "The run waits here for the snip. Use Other to give an "
+                    "absolute path instead.",
+                ),
+            ),
+        ),
+    ),
+    defaults=(_REPORTING_QUARTER_DEFAULT, _COMPARISON_QUARTER_DEFAULT),
+    # Earnings-update has no deliverable-specific attachment gates: the EEO
+    # snip is a plan input asked above, and the G7 filings belong to deal-init.
+    note=IntakeNote(
+        header=_DOCUMENTS_NOTE_HEADER,
+        bullets=(_G7_FILINGS_BULLET,),
+    ),
+)
+
+_INTAKE_SPECS: dict[str, IntakeSpec] = {
+    "pitch": PITCH_INTAKE,
+    "earnings-update": EARNINGS_UPDATE_INTAKE,
 }
+
+
+def _spec(deliverable_type: str) -> IntakeSpec:
+    """The declared questionnaire for a deliverable.
+
+    Raises ValueError for a deliverable with no questionnaire (e.g. the
+    `overview` stub) — the conductor then falls back to prompting from the
+    plan's `plan_inputs` specs directly.
+    """
+    try:
+        return _INTAKE_SPECS[deliverable_type]
+    except KeyError:
+        raise ValueError(
+            f"no deck-spec questionnaire for deliverable type {deliverable_type!r}; "
+            f"known: {sorted(_INTAKE_SPECS)}"
+        ) from None
+
+
+# ---------------------------------------------------------------------------
+# Answer-mapping tables — all derived from the specs above
+# ---------------------------------------------------------------------------
 
 # Documents-dialog question header -> where the answer leads (never a plan
 # input; the files land under <deal_dir>/filings/ and the consuming stage
 # discovers them there).
-PITCH_DOCUMENTS_DIALOG_TARGETS: dict[str, str] = {
-    "SEDI PDF": (
-        "saved under <deal_dir>/filings/ — consumed by the ownership stage "
-        "(insider side)"
-    ),
-    "BBG export": (
-        "saved under <deal_dir>/filings/ — consumed by the ownership stage "
-        "(institutions side)"
-    ),
-}
+PITCH_DOCUMENTS_DIALOG_TARGETS: dict[str, str] = PITCH_INTAKE.targets("attachment")
 
-EARNINGS_UPDATE_DOCUMENTS_DIALOG_TARGETS: dict[str, str] = {}
+EARNINGS_UPDATE_DOCUMENTS_DIALOG_TARGETS: dict[str, str] = (
+    EARNINGS_UPDATE_INTAKE.targets("attachment")
+)
 
 # Question header -> plan_inputs name. Every dialog answer maps through one of
 # these; the converters below turn slide-count / include-omit answers into the
 # typed values.
-PITCH_DIALOG_PLAN_INPUTS: dict[str, str] = {
-    "Notes": "analyst_notes",
-    "CIM": "cim_path",
-    "Valuation": "valuation_range",
-    "Risk notes": "risk_notes",
-    "Targets": "market_entry_target_count",       # market_entry_targets_from_slides(answer)
-    "Highlights": "include_investment_highlights",  # False only on "Omit"
-}
+PITCH_DIALOG_PLAN_INPUTS: dict[str, str] = PITCH_INTAKE.targets("plan-input")
 
-EARNINGS_UPDATE_DIALOG_PLAN_INPUTS: dict[str, str] = {
-    "EEO snip": "eeo_snip_path",
-}
+EARNINGS_UPDATE_DIALOG_PLAN_INPUTS: dict[str, str] = (
+    EARNINGS_UPDATE_INTAKE.targets("plan-input")
+)
+
+# Fallback-prompt item number -> plan_inputs name. Numbered from the same
+# field order the dialogs are rendered in, so the text fallback and the
+# dialogs can never drift apart.
+PITCH_ITEM_PLAN_INPUTS: dict[int, str] = PITCH_INTAKE.item_targets()
+
+EARNINGS_UPDATE_ITEM_PLAN_INPUTS: dict[int, str] = (
+    EARNINGS_UPDATE_INTAKE.item_targets()
+)
 
 # The code-owned analyst_notes literal for the "Draft from the attached
 # filings + web" choice (analyst_notes is a required plan input, so the
@@ -372,64 +479,42 @@ NO_NOTES_ANALYST_NOTES = (
 # ---------------------------------------------------------------------------
 
 # Required plan inputs the conductor computes and supplies on every run
-# (name -> the default rule, human-readable).
-PITCH_DEFAULT_SUPPLIED_INPUTS: dict[str, str] = {
-    "client_name": "the subject company name from deal-init",
-    "presentation_date": (
-        'the current month + year — default_presentation_date(date.today()), '
-        'e.g. "July 2026"'
-    ),
-    "reporting_quarter": (
-        "the latest attached interim filing's quarter (conductor-inferred "
-        "from the statements — fiscal quarter labels depend on the company's "
-        "fiscal calendar)"
-    ),
-    "comparison_quarter": (
-        "prior-year same quarter — prior_year_quarter(reporting_quarter)"
-    ),
-}
+# (name -> the default rule, human-readable). The rule is the same string the
+# text prompt lists and the echo falls back to.
+PITCH_DEFAULT_SUPPLIED_INPUTS: dict[str, str] = PITCH_INTAKE.default_rules(
+    supplied=True
+)
 
 # Optional plan inputs left OUT of plan_inputs on default (the consuming
 # skills apply their own defaults).
-PITCH_DEFAULT_UNSET_INPUTS: dict[str, str] = {
-    "financial_metric_count": (
-        'unset -> one Financial Summary slide, 4 metrics ("2 slides" '
-        "override -> metric_count_from_slides(2) = 8)"
-    ),
-    "section_labels": (
-        "unset -> wireframe defaults (Overview, Financial Summary, "
-        "Valuation, Process)"
-    ),
-}
+PITCH_DEFAULT_UNSET_INPUTS: dict[str, str] = PITCH_INTAKE.default_rules(supplied=False)
 
-EARNINGS_UPDATE_DEFAULT_SUPPLIED_INPUTS: dict[str, str] = {
-    "reporting_quarter": PITCH_DEFAULT_SUPPLIED_INPUTS["reporting_quarter"],
-    "comparison_quarter": PITCH_DEFAULT_SUPPLIED_INPUTS["comparison_quarter"],
-}
+EARNINGS_UPDATE_DEFAULT_SUPPLIED_INPUTS: dict[str, str] = (
+    EARNINGS_UPDATE_INTAKE.default_rules(supplied=True)
+)
 
-EARNINGS_UPDATE_DEFAULT_UNSET_INPUTS: dict[str, str] = {}
+EARNINGS_UPDATE_DEFAULT_UNSET_INPUTS: dict[str, str] = (
+    EARNINGS_UPDATE_INTAKE.default_rules(supplied=False)
+)
 
 
 def render_deck_spec_dialogs(deliverable_type: str) -> list[list[dict]]:
-    """Return the locked deck-spec dialogs for a deliverable, verbatim.
+    """Return the locked deck-spec dialogs for a deliverable, generated.
 
     Each inner list is one `AskUserQuestion` call's `questions` payload —
-    render them in order, unchanged. Returns a deep copy so callers cannot
-    mutate the locked constants. Raises ValueError for a deliverable with no
-    questionnaire (e.g. the `overview` stub) — the conductor then falls back
-    to prompting from the plan's `plan_inputs` specs directly.
+    render them in order, unchanged. Fresh payloads every call, so a caller
+    mutating the result cannot affect the next render. Raises ValueError for a
+    deliverable with no questionnaire (e.g. the `overview` stub).
+
+    The attachment status gates are NOT here — they are their own dialogs
+    (:func:`render_deck_spec_documents_dialogs`) because their answers are not
+    plan inputs.
     """
-    try:
-        return copy.deepcopy(_SPEC_DIALOGS[deliverable_type])
-    except KeyError:
-        raise ValueError(
-            f"no deck-spec questionnaire for deliverable type {deliverable_type!r}; "
-            f"known: {sorted(_SPEC_DIALOGS)}"
-        ) from None
+    return render_dialogs(_spec(deliverable_type), target_kinds=("plan-input",))
 
 
 def render_deck_spec_documents_dialogs(deliverable_type: str) -> list[list[dict]]:
-    """Return the locked attachment-status dialogs for a deliverable, verbatim.
+    """Return the locked attachment-status dialogs for a deliverable, generated.
 
     Each inner list is one `AskUserQuestion` call's `questions` payload —
     render them in order, unchanged, alongside
@@ -443,17 +528,10 @@ def render_deck_spec_documents_dialogs(deliverable_type: str) -> list[list[dict]
     consuming slide side stays a placeholder).
 
     Returns an EMPTY list for a deliverable with no deliverable-specific
-    documents (earnings-update — render nothing); returns deep copies so
-    callers cannot mutate the locked constants. Raises ValueError for an
+    documents (earnings-update — render nothing). Raises ValueError for an
     unknown deliverable type.
     """
-    try:
-        return copy.deepcopy(_DOCUMENTS_DIALOGS[deliverable_type])
-    except KeyError:
-        raise ValueError(
-            f"no documents dialogs for deliverable type {deliverable_type!r}; "
-            f"known: {sorted(_DOCUMENTS_DIALOGS)}"
-        ) from None
+    return render_dialogs(_spec(deliverable_type), target_kinds=("attachment",))
 
 
 def render_deck_spec_defaults(
@@ -469,46 +547,18 @@ def render_deck_spec_defaults(
     The caller passes the computed default values (pitch: all four; earnings
     update: the two quarters). The returned text lists every defaulted item
     with an override invitation — the analyst overrides by replying, not
-    through the dialogs.
+    through the dialogs. Which computed values a deliverable needs comes from
+    its spec's echo templates, so an absent one is named rather than rendered
+    as a blank.
     """
-    if deliverable_type == "pitch":
-        missing = [
-            name
-            for name, value in (
-                ("client_name", client_name),
-                ("presentation_date", presentation_date),
-                ("reporting_quarter", reporting_quarter),
-                ("comparison_quarter", comparison_quarter),
-            )
-            if value is None
-        ]
-        if missing:
-            raise ValueError(f"pitch defaults echo needs {', '.join(missing)}")
-        return (
-            "Defaults in effect — reply to override any of these before the "
-            "run starts:\n"
-            f"- Client name on the cover: {client_name}\n"
-            f"- Presentation date: {presentation_date}\n"
-            f"- LTM bridge quarters: {reporting_quarter} vs {comparison_quarter} "
-            "(from the latest attached interim filing)\n"
-            '- Financial Summary slides: 1 slide — 4 metrics ("2 slides" gives 8)\n'
-            "- Section divider labels: Overview, Financial Summary, Valuation, "
-            "Process\n"
-        )
-    if deliverable_type == "earnings-update":
-        if reporting_quarter is None or comparison_quarter is None:
-            raise ValueError(
-                "earnings-update defaults echo needs reporting_quarter and "
-                "comparison_quarter"
-            )
-        return (
-            "Defaults in effect — reply to override before the run starts:\n"
-            f"- Reporting vs comparison quarter: {reporting_quarter} vs "
-            f"{comparison_quarter} (from the latest attached interim filing)\n"
-        )
-    raise ValueError(
-        f"no deck-spec defaults for deliverable type {deliverable_type!r}; "
-        f"known: {sorted(_SPEC_DIALOGS)}"
+    return render_defaults_echo(
+        _spec(deliverable_type),
+        {
+            "client_name": client_name,
+            "presentation_date": presentation_date,
+            "reporting_quarter": reporting_quarter,
+            "comparison_quarter": comparison_quarter,
+        },
     )
 
 
@@ -516,131 +566,31 @@ def render_deck_spec_defaults(
 # Text fallback (surfaces without the interactive question UI)
 # ---------------------------------------------------------------------------
 
-_PITCH_DOCUMENTS_NOTE = """\
-Documents (attach in this chat if not already attached at deal-init):
-- The G7 filings: latest four annual statements / 10-Ks plus the current-year
-  and prior-year interim statements (5-year history + LTM bridge).
-- SEDI "Insider Information by Issuer" PDF — Canadian public targets only;
-  without it the ownership slide's insider side stays a placeholder.
-- Bloomberg ownership export (.xlsm) — without it the ownership slide's
-  institutions side stays a placeholder.
-"""
-
-_EARNINGS_UPDATE_DOCUMENTS_NOTE = """\
-Documents (attach in this chat if not already attached at deal-init):
-- The G7 filings: latest four annual statements / 10-Ks plus the current-year
-  and prior-year interim statements (5-year history + LTM bridge).
-"""
-
-_DOCUMENTS_NOTES: dict[str, str] = {
-    "pitch": _PITCH_DOCUMENTS_NOTE,
-    "earnings-update": _EARNINGS_UPDATE_DOCUMENTS_NOTE,
-}
-
-_PITCH_SPEC_PROMPT = """\
-Deck spec — pitch
-
-Answer by item number; reply "defaults" to accept every [bracketed] default.
-Items marked REQUIRED have no default.
-
-1. Analyst notes:             REQUIRED — the raw notes behind the executive
-                              summary, company overview, risks, and takeaways;
-                              "draft from filings + web" is acceptable
-2. CIM / management pres.:    [none] — attach the file or give its path
-3. Valuation range:           [none] — optional executive-summary language
-4. Risk notes:                [none] — optional specific risks / mitigants for
-                              the Considerations / Mitigants slide
-5. Acquisition-target slides: [4 slides — 8 targets] — 1 to 4 slides, two
-                              targets per slide; name specific targets if you
-                              have them
-6. Key Investment Highlights: [include — drafted from your notes] /
-                              "include — draft from attached filings + web" /
-                              "omit" — drops the slide
-
-Defaulted unless you override here (no need to answer):
-- Client name on the cover:   the subject company name from deal-init
-- Presentation date:          the current month + year, e.g. "July 2026"
-- Reporting quarter:          the latest attached interim filing's quarter
-- Comparison quarter:         prior-year same quarter
-- Financial Summary slides:   1 slide — 4 metrics ("2 slides" — 8 metrics)
-- Section divider labels:     Overview, Financial Summary, Valuation, Process
-
-""" + _PITCH_DOCUMENTS_NOTE
-
-_EARNINGS_UPDATE_SPEC_PROMPT = """\
-Deck spec — earnings update
-
-The deck itself is the fixed 5-slide earnings-update layout (no slide options).
-
-1. Bloomberg EEO snip:        REQUIRED — attach the screenshot or give its
-                              absolute path
-
-Defaulted unless you override here (no need to answer):
-- Reporting quarter:          the latest attached interim filing's quarter
-- Comparison quarter:         prior-year same quarter
-
-""" + _EARNINGS_UPDATE_DOCUMENTS_NOTE
-
-_SPEC_PROMPTS: dict[str, str] = {
-    "pitch": _PITCH_SPEC_PROMPT,
-    "earnings-update": _EARNINGS_UPDATE_SPEC_PROMPT,
-}
-
-
-def _dialog_item_plan_inputs(
-    dialogs: list[list[dict]], header_table: dict[str, str]
-) -> dict[int, str]:
-    """Derive the numbered-item table from the dialog order (single source)."""
-    return {
-        i + 1: header_table[q["header"]]
-        for i, q in enumerate(q for dialog in dialogs for q in dialog)
-    }
-
-
-# Fallback-prompt item number -> plan_inputs name. Derived from the dialog
-# order so the text fallback and the dialogs can never drift apart.
-PITCH_ITEM_PLAN_INPUTS: dict[int, str] = _dialog_item_plan_inputs(
-    _PITCH_SPEC_DIALOGS, PITCH_DIALOG_PLAN_INPUTS
-)
-
-EARNINGS_UPDATE_ITEM_PLAN_INPUTS: dict[int, str] = _dialog_item_plan_inputs(
-    _EARNINGS_UPDATE_SPEC_DIALOGS, EARNINGS_UPDATE_DIALOG_PLAN_INPUTS
-)
-
 
 def render_deck_spec_prompt(deliverable_type: str) -> str:
-    """Return the locked deck-spec text prompt for a deliverable, verbatim.
+    """Return the locked deck-spec text prompt for a deliverable, generated.
 
     This is the FALLBACK for surfaces where the interactive question UI
-    (`AskUserQuestion`) is unavailable; it asks the same items and lists the
-    same defaults as :func:`render_deck_spec_dialogs`. Raises ValueError for
-    a deliverable with no questionnaire (e.g. the `overview` stub) — the
-    conductor then falls back to prompting from the plan's `plan_inputs`
-    specs directly.
+    (`AskUserQuestion`) is unavailable. It is generated from the same spec as
+    :func:`render_deck_spec_dialogs`, so it asks the same items in the same
+    order, quotes the same question wording and option labels/descriptions,
+    lists the same defaults, and embeds the same documents checklist. Raises
+    ValueError for a deliverable with no questionnaire (e.g. the `overview`
+    stub) — the conductor then falls back to prompting from the plan's
+    `plan_inputs` specs directly.
     """
-    try:
-        return _SPEC_PROMPTS[deliverable_type]
-    except KeyError:
-        raise ValueError(
-            f"no deck-spec questionnaire for deliverable type {deliverable_type!r}; "
-            f"known: {sorted(_SPEC_PROMPTS)}"
-        ) from None
+    return render_prompt(_spec(deliverable_type))
 
 
 def render_deck_spec_documents_note(deliverable_type: str) -> str:
-    """Return the deliverable's documents checklist, verbatim.
+    """Return the deliverable's documents checklist, generated.
 
     Attachments cannot come through the interactive dialogs, so the conductor
     posts this as plain text alongside them (the text fallback prompt already
-    embeds it).
+    embeds it). Each attachment status gate contributes its own bullet, so a
+    document that is asked about is a document the checklist describes.
     """
-    try:
-        return _DOCUMENTS_NOTES[deliverable_type]
-    except KeyError:
-        raise ValueError(
-            f"no documents note for deliverable type {deliverable_type!r}; "
-            f"known: {sorted(_DOCUMENTS_NOTES)}"
-        ) from None
+    return render_note(_spec(deliverable_type))
 
 
 # ---------------------------------------------------------------------------

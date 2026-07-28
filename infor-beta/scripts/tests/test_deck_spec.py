@@ -199,8 +199,14 @@ def test_earnings_update_asked_and_defaulted_inputs_cover_the_plan():
 # ---------------------------------------------------------------------------
 
 
+def _flat(text: str) -> str:
+    """Collapse whitespace — the generated prompt is wrapped, so a token can
+    straddle a line break. Wrapping is a rendering detail; the wording is not."""
+    return " ".join(text.split())
+
+
 def test_pitch_prompt_covers_every_questionnaire_topic():
-    prompt = render_deck_spec_prompt("pitch")
+    prompt = _flat(render_deck_spec_prompt("pitch"))
     for token in (
         # Asked items.
         "Analyst notes",
@@ -221,12 +227,12 @@ def test_pitch_prompt_covers_every_questionnaire_topic():
         "Bloomberg ownership export",
     ):
         assert token in prompt, f"pitch deck-spec prompt lost its {token!r} item"
-    # Rendered verbatim, twice the same — the consistency contract.
-    assert render_deck_spec_prompt("pitch") == prompt
+    # Generated deterministically, twice the same — the consistency contract.
+    assert _flat(render_deck_spec_prompt("pitch")) == prompt
 
 
 def test_earnings_update_prompt_covers_every_questionnaire_topic():
-    prompt = render_deck_spec_prompt("earnings-update")
+    prompt = _flat(render_deck_spec_prompt("earnings-update"))
     for token in ("Bloomberg EEO snip", "Reporting quarter", "Comparison quarter"):
         assert token in prompt
     # The EU deck has no slide options — the prompt must say so, not offer any.
