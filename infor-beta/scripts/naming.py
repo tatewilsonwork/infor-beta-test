@@ -1,7 +1,7 @@
 """Shared filename sanitisation.
 
 Kept dependency-free (stdlib ``re`` only) so the openpyxl-only workbook builders
-(`ltm_metrics`, `workbook_aggregator`) and the python-pptx deck assemblers can all
+(`ltm_metrics`, `deal_workbook`) and the python-pptx deck assemblers can all
 import it without pulling in unrelated dependencies.
 
 This replaces the per-module ``_safe_name`` / ``_safe_file_stem`` copies that had

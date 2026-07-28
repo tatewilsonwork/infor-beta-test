@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook, load_workbook
 
+from deal_workbook import init_deal_workbook
 from ownership_workbook import (
     InsiderHolding,
     bloomberg_matches_sedi,
@@ -26,12 +27,18 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = PLUGIN_ROOT / "templates" / "INFOR Ownership Template.xlsx"
 
 
+def _deal(tmp_path: Path) -> Path:
+    """A fresh deal workbook — the Ownership + Bloomberg Output tabs come with it."""
+    return init_deal_workbook(
+        deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+    )
+
+
 def _build(tmp_path, insiders, total=261_000_000):
     return build_ownership_workbook(
-        template_path=TEMPLATE,
+        deal_workbook=_deal(tmp_path),
         insiders=insiders,
         total_shares_outstanding=total,
-        output_path=tmp_path / "Ownership.xlsx",
     )
 
 
@@ -86,17 +93,24 @@ def test_too_many_insiders_raises(tmp_path: Path):
         _build(tmp_path, too_many)
 
 
-def test_template_and_output_carry_no_external_links_or_defined_names(tmp_path: Path):
-    """The shipped template is pre-cleaned of dead external links + legacy
-    defined names so the openpyxl output opens in Excel for the render step.
-    Guards against a re-dirtied template and confirms the build stays clean."""
+def test_template_and_output_carry_no_external_links_or_invented_names(tmp_path: Path):
+    """The write must not re-dirty the file, or the render step cannot open it.
+
+    The source template is still pre-cleaned of dead external links and legacy
+    defined names. The *output* is now the deal workbook, which legitimately
+    inherits the comps template's 1,246 legacy artefacts and the 27 `infor_`
+    names — so the assertion is that this build ADDS nothing and loses nothing,
+    compared against a freshly initialised deal workbook.
+    """
     src = load_workbook(TEMPLATE)
     assert list(getattr(src, "_external_links", [])) == [], "shipped template must carry no external links"
     assert len(src.defined_names) == 0, "shipped template must carry no defined names"
+
+    baseline = set(load_workbook(_deal(tmp_path / "baseline")).defined_names)
     out = _build(tmp_path, [InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 500, "2025-01-01")])
     cleaned = load_workbook(out)
     assert list(getattr(cleaned, "_external_links", [])) == []
-    assert len(cleaned.defined_names) == 0
+    assert set(cleaned.defined_names) == baseline
 
 
 def test_f35_keeps_template_palatino_font(tmp_path: Path):
@@ -112,10 +126,9 @@ def test_f35_keeps_template_palatino_font(tmp_path: Path):
 
 def test_total_shares_none_leaves_f35_blank(tmp_path: Path):
     out = build_ownership_workbook(
-        template_path=TEMPLATE,
+        deal_workbook=_deal(tmp_path),
         insiders=[InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 500, "2025-01-01")],
         total_shares_outstanding=None,
-        output_path=tmp_path / "Ownership.xlsx",
     )
     assert load_workbook(out)["Ownership"]["F35"].value is None
 
@@ -269,13 +282,12 @@ def test_read_bloomberg_export_rejects_non_bbg_workbook(tmp_path: Path):
 def _build_with_bbg(tmp_path: Path, holders=None, **kwargs):
     src = _bbg_export(tmp_path / "bbg.xlsx", holders if holders is not None else _SAMPLE_HOLDERS)
     return build_ownership_workbook(
-        template_path=TEMPLATE,
+        deal_workbook=_deal(tmp_path),
         insiders=[
             InsiderHolding("Malchow, Eric D", "Eric Malchow (CEO & Director)", 4_972_500, "2026-05-21"),
             InsiderHolding("Brown, Robert T", "Robert Brown (Director)", 1_665_600, "2026-05-21"),
         ],
         total_shares_outstanding=31_650_000,
-        output_path=tmp_path / "Ownership.xlsx",
         bloomberg_export_path=src,
         **kwargs,
     )
@@ -364,7 +376,8 @@ def test_build_with_bloomberg_truncates_at_118_holders(tmp_path: Path):
 
 
 def test_build_with_bloomberg_stays_excel_clean(tmp_path: Path):
+    baseline = set(load_workbook(_deal(tmp_path / "baseline")).defined_names)
     out = _build_with_bbg(tmp_path)
     cleaned = load_workbook(out)
     assert list(getattr(cleaned, "_external_links", [])) == []
-    assert len(cleaned.defined_names) == 0
+    assert set(cleaned.defined_names) == baseline

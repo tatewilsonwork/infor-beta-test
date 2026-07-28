@@ -54,7 +54,7 @@ When invoked as a stage of a conductor plan, the environment carries `$STAGE_INP
 - Otherwise write the workbook to `$DEAL_DIR/artefacts/<SANITIZED_TICKER> - Ownership.xlsx` (bootstrap
   `artefacts/` if absent). At the end, write the structured handoff:
   ```bash
-  python -c "import json,os; json.dump({'workbook_path': os.environ['OUTPUT']}, open(os.environ['STAGE_OUTPUTS'], 'w'))"
+  python -c "import json,os; json.dump({'workbook_path': os.environ['DEAL_WORKBOOK']}, open(os.environ['STAGE_OUTPUTS'], 'w'))"
   ```
 
 When `$STAGE_OUTPUTS` is **unset** (direct `/ownership` invocation), follow the workflow below as-is —
@@ -87,7 +87,7 @@ output filename:
 
 ```bash
 SANITIZED_TICKER=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/sanitize_name.sh" "$TICKER")
-OUTPUT="./$SANITIZED_TICKER - Ownership.xlsx"   # or $DEAL_DIR/artefacts/... under the conductor
+DEAL_WORKBOOK="$(python -c "import json,os;print(json.load(open(os.environ['STAGE_INPUTS']))['deal_workbook'])")"
 ```
 
 **Do not build the workbook by hand or in any other format.** If the template can't be found, stop
@@ -178,7 +178,7 @@ plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
 sys.path.insert(0, str(plugin_root / "scripts"))
 from ownership_workbook import build_ownership_workbook, InsiderHolding
 
-template = plugin_root / "templates" / "INFOR Ownership Template.xlsx"   # native path (no /c/… )
+deal_workbook = inputs["deal_workbook"]   # the Ownership + Bloomberg Output tabs are in it
 
 insiders = [
     InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),
@@ -186,10 +186,10 @@ insiders = [
     # ... one InsiderHolding per current insider ...
 ]
 build_ownership_workbook(
-    template_path=template,
+
     insiders=insiders,
     total_shares_outstanding=total,   # full units, or None
-    output_path=OUTPUT,
+    deal_workbook=deal_workbook,
     bloomberg_export_path=BBG_PATH,   # or None / omit when no export is attached
     # bloomberg_adjusted_names={"T Rowe Price Group Inc": "T. Rowe Price"},   # optional
     # bloomberg_include_overrides={"Some Holder": 0},                         # optional
@@ -254,7 +254,8 @@ was left as a placeholder and can be filled by re-running with the Bloomberg att
   analyst can blank the surplus display rows.
 - The `Bloomberg Output` tab holds **118 holders** (`C14:C131`); a longer export is truncated to the
   118 largest (the Summary View is position-sorted) and the truncation is reported in the summary.
-- **Render fidelity:** the picture render uses Excel COM on Windows (full fidelity, native `XLOOKUP`)
-  and LibreOffice headless elsewhere (Cowork). LibreOffice needs a recent build (24.8+) for `XLOOKUP`;
-  on older builds the insider/institution **name** columns may render blank — run the ownership stage
-  on Windows + Excel for production decks.
+- **Render fidelity:** the picture render is **LibreOffice headless on every platform** (Phase D
+  deleted the Excel-COM path, which only ever ran on a Windows dev box — production is Cowork/Linux
+  with no Excel). LibreOffice needs a recent build (24.8+) for `XLOOKUP`; on older builds the
+  insider/institution **name** columns may render blank, so check the build before a production run
+  rather than reaching for Excel.

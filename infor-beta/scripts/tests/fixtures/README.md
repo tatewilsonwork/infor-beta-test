@@ -110,9 +110,9 @@ A workbook-side scan is not the missing piece either: of the **121 formula cells
 on the fixture's `captable` tab, **zero** carry a cached value under
 `data_only=True` — including `=TODAY()-1` at `F6`. openpyxl only returns the
 cache, and nothing populated it, so such a scan sees `None` everywhere and looks
-green while proving nothing. Real values exist only on the COM path (live Excel)
-or after a LibreOffice recalc-on-load; anything built there must fail loudly on an
-empty cache rather than pass quietly.
+green while proving nothing. Real values appear only after a LibreOffice
+recalc-on-load (Phase D deleted the live-Excel COM path); anything built there must
+fail loudly on an empty cache rather than pass quietly.
 
 The general point the finding was reaching for still holds — **a string scan
 cannot see inside a rasterised picture**, and the cap-table picture is a flat
@@ -184,9 +184,17 @@ geometric tier measures each deck against the **blank library** rather than
 against zero, so the library's own off-canvas tombstone shapes and its footnote
 placeholders' overhang cancel out.
 
-## Render parity
+## Render parity — retired in Phase D
 
-`test_render_parity.py` renders `pitch-deck.pptx` through both backends
-(LibreOffice, and PowerPoint COM where available) and asserts they agree on
-slide count, raster dimensions, and per-slide ink geometry. That test is the
-executable form of the Phase A exit criterion.
+`test_render_parity.py` rendered `pitch-deck.pptx` through both backends
+(LibreOffice, and PowerPoint COM where available) and asserted they agreed on
+slide count, raster dimensions, and per-slide ink geometry — the executable form
+of the Phase A exit criterion.
+
+Phase D deleted the PowerPoint-COM backend, so there is no second renderer to
+agree with and the test went with it. What it established is still load-bearing
+and is recorded in `docs/migration-plan.md`: the two engines do NOT lay text out
+identically even with the same font file, and LibreOffice is the **conservative**
+one — "fits under LibreOffice" implies "fits in PowerPoint", not the reverse.
+Phase B's `deck_repair` depends on that direction, and on the sharper Phase B
+finding that the implication holds only for shapes WITHOUT autofit.

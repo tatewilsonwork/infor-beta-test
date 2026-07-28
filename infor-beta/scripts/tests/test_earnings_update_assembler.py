@@ -352,30 +352,16 @@ def test_assemble_earnings_update_deck_does_not_bold_overview_headers(tmp_path: 
     assert all(run.font.bold is not True for run in header_runs)
 
 
-@pytest.mark.excel_com
-def test_assemble_earnings_update_deck_inserts_cap_table_from_workbook(tmp_path: Path):
-    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
-
-    workbook_path = _write_sample_cap_table(tmp_path / "cap-table.xlsx")
-    deck_path = _assemble_sample_deck(tmp_path, captable_workbook_path=workbook_path)
-
-    prs = Presentation(deck_path)
-    slide2 = prs.slides[1]
-    assert next((s for s in slide2.shapes if s.name == "Rectangle 3"), None) is None, (
-        "overview cap-table placeholder should be removed after picture insertion"
-    )
-    pictures = [s for s in slide2.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
-    assert pictures, "expected a picture shape on slide 2 after cap-table insertion"
-
-
 def test_assemble_earnings_update_deck_inserts_cap_table_via_libreoffice(tmp_path: Path):
-    """LibreOffice fallback path for Cowork / Linux runs."""
-    import sys
+    """The cap-table picture insertion, on the ONE render backend.
 
-    if sys.platform == "win32":
-        pytest.skip("Windows uses the Excel COM path; LibreOffice fallback exercised on other OSes")
+    No longer skipped on Windows. It was, on the grounds that "Windows uses the
+    Excel COM path" — true until Phase D deleted that path, after which the guard
+    was skipping the only renderer there is on the very platform this is
+    developed on. Exactly the stale-skip-guard class v0.5.36 fixed.
+    """
     if find_soffice() is None:
-        pytest.skip("LibreOffice not installed; cannot exercise the fallback renderer")
+        pytest.skip("LibreOffice not installed; it is the only range renderer")
     pytest.importorskip("pypdfium2", reason="pypdfium2 required for the LibreOffice fallback")
 
     workbook_path = _write_sample_cap_table(tmp_path / "cap-table.xlsx")
@@ -404,3 +390,29 @@ def test_currency_letter_returns_iso_code_for_non_dollar_currency():
     assert _currency_letter("GBP") == "GBP"
     assert _currency_letter("EUR MM") == "EUR"
     assert _currency_letter("CHF") == "CHF"  # would have read as 'C' pre-v0.5.34
+
+
+def test_cap_table_goes_on_the_overview_slide_not_the_summary(tmp_path: Path):
+    """Regression pin for the v0.5.40 slip: `Rectangle 3` is on the OVERVIEW.
+
+    Phase C converted the hardcoded `slide_index=1` to a marker lookup and picked
+    `summary_at` instead of `overview_at`. The earnings summary slide has no
+    `Rectangle 3`, so every earnings-update run that supplied a cap table raised
+    `KeyError: placeholder 'Rectangle 3' not found on slide 3` and failed the deck
+    stage. It shipped because both tests covering the insertion were skipped on a
+    dev box (one behind the `excel_com` opt-in, one behind `skipif win32`).
+
+    Asserted structurally, so it holds without a renderer: the placeholder must be
+    consumed on the overview slide, and the summary slide must never have had one.
+    """
+    from earnings_update_assembler import _CAP_TABLE_PLACEHOLDER
+
+    plain = Presentation(_assemble_sample_deck(tmp_path / "plain"))
+    overview_shapes = {s.name for s in plain.slides[1].shapes}
+    summary_shapes = {s.name for s in plain.slides[2].shapes}
+    assert _CAP_TABLE_PLACEHOLDER in overview_shapes, (
+        "the overview slide must carry the cap-table placeholder"
+    )
+    assert _CAP_TABLE_PLACEHOLDER not in summary_shapes, (
+        "the summary slide has no cap-table placeholder — inserting there raises"
+    )

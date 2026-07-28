@@ -1,35 +1,38 @@
 """Financial Summary charts — build the deck's metric charts and place them.
 
-Post-aggregation stage (`financial-charts`). One clustered-column chart per
-metric row — four for the default single Financial Summary slide, eight when the
-deck spec asked for two FS slides — is built on the **combined** pitch workbook's
-`financial-summary` tab — the only place each flow metric's
-``=INDEX('ltm-metrics'!…)`` LTM link resolves, because the `ltm-metrics` tab
-co-exists there after `workbook-aggregation` folds it in. (The standalone
-Financial Summary file can't be charted: its LTM cells stay ``#N/A`` until
-aggregation.) The charts are then rendered and dropped into the Financial
-Summary slides' chart placeholders (four per slide, discovered by scanning the
-deck for the Metric #1 placeholder), stretched to each placeholder's box — the
-same picture-into-placeholder pattern as the cap-table / ownership insertions.
+The `financial-charts` stage. One clustered-column chart per metric row — four for
+the default single Financial Summary slide, eight when the deck spec asked for two
+FS slides — is built on the deal workbook's `financial-summary` tab, where each
+flow metric's ``=INDEX('ltm-metrics'!…)`` LTM link is an ordinary internal
+reference to a sibling tab. The charts are then rendered and dropped into the
+Financial Summary slides' chart placeholders (four per slide, discovered by
+scanning the deck for the Metric #1 placeholder), stretched to each placeholder's
+box — the same picture-into-placeholder pattern as the cap-table / ownership
+insertions.
+
+Before Phase D this had to be a *post-aggregation* stage: the two tabs lived in
+separate standalone files until `workbook-aggregation` merged them, so the LTM
+links read ``#N/A`` and could not be charted. The deal owns one workbook from
+stage one now, so this stage's only ordering constraint is that it follows
+`deck` — the deck it edits.
 
 This stage MUTATES THE ALREADY-ASSEMBLED DECK IN PLACE — it must never re-run the
-`deck-assembler` (or any other skill). It runs *after* `workbook-aggregation` has
-folded the standalone `captable` / `ownership` workbooks into the combined file and
-deleted them, so re-assembling the deck would re-paste those (now-gone) tables and
-revert them to empty placeholders. The orchestrators below only open ``deck_path``,
-insert pictures into existing placeholders, and save; nothing here dispatches a
-sub-agent or rebuilds the deck.
+`deck-assembler` (or any other skill). The orchestrators below only open
+``deck_path``, insert pictures into existing placeholders, and save; nothing here
+dispatches a sub-agent or rebuilds the deck.
 
-Two backends mirror ``excel_to_powerpoint.py`` / ``slide_render.py``:
+One backend, everywhere: **openpyxl + LibreOffice headless**. openpyxl writes
+the native charts on the tab; each PNG is rendered from a single-chart temp
+workbook built off LibreOffice-recalculated values.
 
-  - **Excel COM** (Windows + Excel) — native clustered-column charts are built on
-    the tab and exported to PNG via ``Chart.Export``; a full recalc first resolves
-    the LTM links. The charts persist on the tab and CapIQ links / other-tab
-    formulas survive (COM does not round-trip the workbook through openpyxl).
-
-  - **openpyxl + LibreOffice headless** (Cowork / Linux / macOS) — openpyxl writes
-    the native charts on the tab; each PNG is rendered from a single-chart temp
-    workbook built off LibreOffice-recalculated values. Best-effort fidelity.
+Phase D deleted the Excel-COM alternative. It only ever ran on a Windows dev box
+with Excel installed — production is Cowork/Linux, which has neither — so it was
+a second implementation of every chart-formatting decision that no deliverable
+depended on, and the platform whose output actually ships was the one exercised
+less. Its measured cost was real: a wedged automation instance is unkillable
+in-process (Phase I), and the four tests that drove it had to be opt-in behind
+`INFOR_EXCEL_COM_TESTS` because the Cap IQ add-in raises a modal dialog that
+`DisplayAlerts = False` cannot suppress.
 
 INFOR chart formatting (the only formatting that matters): Palatino Linotype 9 pt
 black (data labels + category-axis labels); no chart title; no chart border; the
@@ -41,7 +44,7 @@ same ``$`` currency format as the tab's value cells (so a bar reads ``$102.7``
 exactly like its cell); all bars filled RGB(70, 86, 110) = hex ``46566E``.
 
 The same module also builds the overview slide's **LTM revenue pie**
-(``render_ltm_revenue_pie_into_deck``): a by-segment pie over the combined
+(``render_ltm_revenue_pie_into_deck``): a by-segment pie over the deal
 workbook's ``ltm-metrics`` tab "LTM Revenue Overview" block. The pie series is the
 **"% of Total" column** (the ``=B/Btotal`` fraction), so its data labels show the
 segment share (value-only, ``#,##0.0%`` format) rather than the dollar amounts —
@@ -57,14 +60,12 @@ placeholder.
 from __future__ import annotations
 
 import io
-import os
 import sys
 import tempfile
 from pathlib import Path
 
 from pptx import Presentation
 
-from excel_to_powerpoint import excel_com_app  # the ONLY Excel-COM instance owner
 from pptx_helpers import INFOR_ACCENTS
 from template_layout import (
     MARKER_BUILT_FINANCIAL_SUMMARY,
@@ -75,8 +76,6 @@ from template_layout import (
 
 # --- INFOR chart constants ---------------------------------------------------
 _BAR_RGB_HEX = "46566E"  # RGB(70, 86, 110) as openpyxl RRGGBB
-# Excel COM `.RGB` wants R + G*256 + B*65536 (i.e. 0x6E5646 = BGR byte order).
-_BAR_RGB_COM = 70 + 86 * 256 + 110 * 65536
 _FONT_NAME = "Palatino Linotype"
 _FONT_SIZE_PT = 9
 _FONT_SIZE_HUNDREDTHS = _FONT_SIZE_PT * 100  # openpyxl drawing fonts use 1/100 pt
@@ -89,9 +88,8 @@ _VALUE_FORMAT = '$#,##0.0_);($#,##0.0);"--"'
 # Category (horizontal) axis baseline: an explicit, visible solid-black line.
 # Without an explicit width the openpyxl ``<a:ln>`` defaults to a hairline that the
 # LibreOffice PNG render drops entirely, leaving the bars with no baseline (Issue
-# 2). 12700 EMU = 1.0 pt for the openpyxl path; the COM path takes the point value.
+# 2). 12700 EMU = 1.0 pt.
 _AXIS_LINE_WIDTH_EMU = 12700
-_AXIS_LINE_WEIGHT_PT = 1.0
 
 # --- tab / slide geometry ----------------------------------------------------
 _SHEET_DEFAULT = "financial-summary"
@@ -119,10 +117,10 @@ _CHART_W_CM = 4.53 * 2.54
 _CHART_H_CM = 2.51 * 2.54
 
 # --- LTM revenue pie (overview slide) ----------------------------------------
-# The pie is built on the combined workbook's `ltm-metrics` tab — its "LTM Revenue
+# The pie is built on the deal workbook's `ltm-metrics` tab — its "LTM Revenue
 # Overview" block carries literal segment × LTM-revenue values — and dropped into
 # the overview slide's wide/short "[Pie Chart Placeholder]" (Rectangle 4). The
-# data live on the same combined workbook the FS charts use, so this rides the
+# data live on the same deal workbook the FS charts use, so this rides the
 # post-aggregation `financial-charts` stage rather than a parallel path.
 _PIE_SHEET_DEFAULT = "ltm-metrics"
 _PIE_SECTION_LABEL = "LTM Revenue Overview"
@@ -162,7 +160,7 @@ _PIE_LABEL_COLOR = "FFFFFF"
 # Pie plot-area manual layout, as fractions of the chart area: pin the pie to
 # the LEFT of the chart box so it sits clear of the right-docked legend (the
 # auto-layout centers the pie in this wide/short box, where it can collide with
-# the legend). Shared by the COM and openpyxl builders.
+# the legend).
 _PIE_PLOT_X = 0.02
 _PIE_PLOT_Y = 0.05
 _PIE_PLOT_W = 0.58
@@ -188,19 +186,6 @@ _PIE_W_PT = 4.51 * 72
 _PIE_H_PT = 1.77 * 72
 _PIE_W_CM = 4.51 * 2.54
 _PIE_H_CM = 1.77 * 2.54
-
-# --- Excel COM enums ---------------------------------------------------------
-_XL_NORMAL = -4143
-_XL_COLUMN_CLUSTERED = 51
-_XL_PIE = 5
-_XL_CATEGORY = 1
-_XL_VALUE = 2
-_XL_LABEL_OUTSIDE_END = 2
-_XL_LABEL_INSIDE_END = 3
-_XL_LEGEND_RIGHT = -4152
-_MSO_FALSE = 0
-_MSO_TRUE = -1
-
 
 def period_axis_columns(ws) -> tuple[int, int]:
     """Return the (first, last) 1-based column of the period axis on row 5.
@@ -248,7 +233,7 @@ def metric_data_rows(ws) -> list[int]:
 def _find_label_row_openpyxl(ws, prefixes) -> int | None:
     """Row (1-based) of the first col-A cell whose text starts with any prefix.
 
-    Mirrors ``workbook_aggregator._find_label_row_openpyxl`` — the established way
+    The established way
     to locate a labelled block on these tabs without hardcoding row numbers.
     """
     for row in ws.iter_rows(min_col=1, max_col=1):
@@ -284,40 +269,15 @@ def _find_label_row_openpyxl_from(ws, prefixes, *, start: int) -> int | None:
         if isinstance(value, str) and any(value.strip().startswith(p) for p in prefixes):
             return row
     return None
-
-
-def _find_label_row_com(ws, prefixes, *, start: int = 1) -> int | None:
-    """COM counterpart of :func:`_find_label_row_openpyxl_from`."""
-    try:
-        used = ws.UsedRange
-        last = used.Row + used.Rows.Count - 1
-    except Exception:
-        last = 200
-    for r in range(start, last + 1):
-        value = ws.Cells(r, 1).Value
-        if isinstance(value, str) and any(value.strip().startswith(p) for p in prefixes):
-            return r
-    return None
-
-
-def _hex_to_com_bgr(hex_rgb: str) -> int:
-    """Convert an ``RRGGBB`` hex string to the int Excel COM ``.RGB`` expects
-    (``R + G*256 + B*65536`` — i.e. BGR byte order)."""
-    r = int(hex_rgb[0:2], 16)
-    g = int(hex_rgb[2:4], 16)
-    b = int(hex_rgb[4:6], 16)
-    return r + g * 256 + b * 65536
-
-
 def _fractions_from_amounts(amounts: list) -> list:
     """Convert a list of $ amounts to fractions of their total (None-safe).
 
     Used two ways: the off-Windows PNG render charts literal cells, but the pie's
     "% of Total" column on the real tab is the formula ``=B/Btotal`` that openpyxl
     cannot evaluate, so the throwaway render workbook charts fractions recomputed
-    here from the column-B ``$`` literals; and BOTH builders (COM and openpyxl)
-    use the same recomputed fractions to decide which slices are above the 3%
-    data-label threshold — deterministic regardless of recalc state.
+    here from the column-B ``$`` literals, and the same recomputed fractions decide
+    which slices are above the 3% data-label threshold — deterministic regardless
+    of recalc state.
     """
     numeric = [a for a in amounts if isinstance(a, (int, float))]
     total = sum(numeric)
@@ -384,7 +344,7 @@ def _grouped_pie_labels_amounts(names: list, amounts: list) -> tuple[list, list]
 def render_financial_summary_charts_into_deck(
     *,
     deck_path: Path | str,
-    combined_workbook_path: Path | str,
+    deal_workbook: Path | str,
     sheet_name: str = _SHEET_DEFAULT,
     slide_index: int | None = None,
     output_path: Path | str | None = None,
@@ -399,7 +359,7 @@ def render_financial_summary_charts_into_deck(
     known slide instead of scanning (legacy call shape).
 
     Returns the output deck path, or ``None`` when the slide is left with its
-    placeholders — either because the combined workbook has no ``financial-summary``
+    placeholders — either because the deal workbook has no ``financial-summary``
     tab (the financial-summary stage produced nothing) **or** because the native
     charts were persisted to the workbook but their PNGs could not be rendered for
     the deck (LibreOffice unavailable — the graceful-degradation path, Issue 1).
@@ -413,29 +373,20 @@ def render_financial_summary_charts_into_deck(
     deck-assembler — see the module docstring.
     """
     deck = Path(deck_path).resolve()
-    workbook = Path(combined_workbook_path).resolve()
+    workbook = Path(deal_workbook).resolve()
     if not deck.exists():
         raise FileNotFoundError(f"deck not found: {deck}")
     if not workbook.exists():
-        raise FileNotFoundError(f"combined workbook not found: {workbook}")
+        raise FileNotFoundError(f"deal workbook not found: {workbook}")
 
     geometry = _resolve_geometry(workbook, sheet_name)
     if geometry is None:
         return None
     first_col, last_col, data_rows = geometry
 
-    if sys.platform == "win32":
-        try:
-            pngs = _build_charts_com(workbook, sheet_name, first_col, last_col, data_rows)
-        except RuntimeError:
-            # Excel COM unavailable on this Windows box — fall through.
-            pngs = _build_charts_openpyxl_libreoffice(
-                workbook, sheet_name, first_col, last_col, data_rows
-            )
-    else:
-        pngs = _build_charts_openpyxl_libreoffice(
-            workbook, sheet_name, first_col, last_col, data_rows
-        )
+    pngs = _build_charts_openpyxl_libreoffice(
+        workbook, sheet_name, first_col, last_col, data_rows
+    )
 
     if not pngs or any(row not in pngs for row in data_rows):
         # Native charts were persisted to the workbook, but their PNGs could not be
@@ -464,7 +415,7 @@ def render_financial_summary_charts_into_deck(
 
 
 def _resolve_geometry(workbook: Path, sheet_name: str) -> tuple[int, int, list[int]] | None:
-    """Read the period-axis columns + metric data rows from the combined
+    """Read the period-axis columns + metric data rows from the deal
     workbook, or None if the ``financial-summary`` tab is absent."""
     from openpyxl import load_workbook
 
@@ -507,7 +458,7 @@ def _find_financial_summary_slides(deck_path: Path) -> list[int]:
 def render_ltm_revenue_pie_into_deck(
     *,
     deck_path: Path | str,
-    combined_workbook_path: Path | str,
+    deal_workbook: Path | str,
     sheet_name: str = _PIE_SHEET_DEFAULT,
     slide_index: int | None = None,
     placeholder_name: str = _PIE_PLACEHOLDER,
@@ -515,7 +466,7 @@ def render_ltm_revenue_pie_into_deck(
 ) -> Path | None:
     """Build the LTM-revenue-by-segment pie and place it on the overview slide.
 
-    The pie is built on the combined workbook's ``ltm-metrics`` tab (its "LTM
+    The pie is built on the deal workbook's ``ltm-metrics`` tab (its "LTM
     Revenue Overview" block carries literal segment × LTM-revenue values) and
     dropped into the overview slide's "[Pie Chart Placeholder]" (``Rectangle 4``).
 
@@ -524,7 +475,7 @@ def render_ltm_revenue_pie_into_deck(
     rather than the two agreeing on a number.
 
     Returns the output deck path, or ``None`` when the slide keeps its placeholder
-    — either because the combined workbook has no ``ltm-metrics`` tab / no "LTM
+    — either because the deal workbook has no ``ltm-metrics`` tab / no "LTM
     Revenue Overview" block, **or** because the native pie was persisted to the
     workbook but its PNG could not be rendered for the deck (LibreOffice unavailable
     — the graceful-degradation path). Mirrors the FS / ownership null paths.
@@ -534,25 +485,18 @@ def render_ltm_revenue_pie_into_deck(
     deck-assembler — see the module docstring.
     """
     deck = Path(deck_path).resolve()
-    workbook = Path(combined_workbook_path).resolve()
+    workbook = Path(deal_workbook).resolve()
     if not deck.exists():
         raise FileNotFoundError(f"deck not found: {deck}")
     if not workbook.exists():
-        raise FileNotFoundError(f"combined workbook not found: {workbook}")
+        raise FileNotFoundError(f"deal workbook not found: {workbook}")
 
     rng = _resolve_pie_range(workbook, sheet_name)
     if rng is None:
         return None
     first_row, last_row = rng
 
-    if sys.platform == "win32":
-        try:
-            png = _build_pie_com(workbook, sheet_name, first_row, last_row)
-        except RuntimeError:
-            # Excel COM unavailable on this Windows box — fall through.
-            png = _build_pie_openpyxl_libreoffice(workbook, sheet_name, first_row, last_row)
-    else:
-        png = _build_pie_openpyxl_libreoffice(workbook, sheet_name, first_row, last_row)
+    png = _build_pie_openpyxl_libreoffice(workbook, sheet_name, first_row, last_row)
 
     if png is None:
         # Native pie persisted to the workbook, but its PNG could not be rendered
@@ -577,7 +521,7 @@ def render_ltm_revenue_pie_into_deck(
 
 
 def _resolve_pie_range(workbook: Path, sheet_name: str) -> tuple[int, int] | None:
-    """Read the "LTM Revenue Overview" data-row span from the combined workbook,
+    """Read the "LTM Revenue Overview" data-row span from the deal workbook,
     or None if the ``ltm-metrics`` tab / block is absent."""
     from openpyxl import load_workbook
 
@@ -657,444 +601,6 @@ def insert_png_into_placeholder(
         pngs_by_placeholder={placeholder_name: png_bytes},
         output_path=output_path,
     )
-
-
-# ---------------------------------------------------------------------------
-# Excel COM backend (Windows) — full fidelity, charts persist, links survive
-# ---------------------------------------------------------------------------
-def _build_charts_com(
-    workbook: Path, sheet_name: str, first_col: int, last_col: int, data_rows: list[int]
-) -> dict[int, bytes]:
-    """Build one native chart per metric row on the tab via Excel COM, export PNGs."""
-    tmp_paths: list[str] = []
-    pngs: dict[int, bytes] = {}
-    try:
-        # Chart.Export is reliable when the instance can render; run visible but
-        # parked far off-screen so the window never pops in front of the analyst.
-        with excel_com_app(
-            purpose="COM-based chart building", visible=True, park_offscreen=True
-        ) as excel:
-            wb = ws = chart_obj = chart = series = None
-            try:
-                wb = excel.Workbooks.Open(str(workbook), ReadOnly=False, UpdateLinks=0)
-                # Resolve the INDEX/MATCH LTM links (and any other formulas) before
-                # snapshotting; a flaky recalc must never abort the build.
-                try:
-                    excel.CalculateFull()
-                except Exception:
-                    pass
-
-                ws = wb.Worksheets(sheet_name)
-                try:
-                    excel.ActiveWindow.ScrollRow = 1
-                    excel.ActiveWindow.ScrollColumn = 1
-                except Exception:
-                    pass
-                # Replace, never accumulate: a re-run must not park a second set of
-                # four charts next to the stale one (mirrors the openpyxl path).
-                try:
-                    ws.ChartObjects().Delete()
-                except Exception:
-                    pass
-                # Every chart is built + exported at the same on-screen "scratch" spot
-                # (row 1) and only then moved to its 2x2 grid slot below the data. A
-                # chart parked below the rendered viewport exports as a blank/0-byte
-                # PNG, so exporting in-place would silently lose the lower-row charts.
-                scratch_left = ws.Cells(1, 2).Left
-                scratch_top = ws.Cells(1, 1).Top
-                # Park the persisted charts one blank row below the last metric row
-                # (row 11 for the default four metrics, row 15 for eight).
-                grid_top = ws.Cells(data_rows[-1] + 2, 1).Top
-                for idx, data_row in enumerate(data_rows):
-                    chart_obj = ws.ChartObjects().Add(
-                        Left=scratch_left, Top=scratch_top, Width=_CHART_W_PT, Height=_CHART_H_PT
-                    )
-                    chart = chart_obj.Chart
-                    chart.ChartType = _XL_COLUMN_CLUSTERED
-                    while chart.SeriesCollection().Count > 0:
-                        chart.SeriesCollection(1).Delete()
-                    series = chart.SeriesCollection().NewSeries()
-                    series.Values = ws.Range(
-                        ws.Cells(data_row, first_col), ws.Cells(data_row, last_col)
-                    )
-                    series.XValues = ws.Range(
-                        ws.Cells(_HEADER_ROW, first_col), ws.Cells(_HEADER_ROW, last_col)
-                    )
-                    _format_com_chart(chart, series)
-
-                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                        tmp = f.name
-                    tmp_paths.append(tmp)
-                    chart.Export(Filename=tmp, FilterName="PNG")
-                    with open(tmp, "rb") as fh:
-                        pngs[data_row] = fh.read()
-
-                    # Park the (now-exported) chart in its grid slot for persistence.
-                    col = idx % 2
-                    row = idx // 2
-                    chart_obj.Left = scratch_left + col * (_CHART_W_PT + 18)
-                    chart_obj.Top = grid_top + row * (_CHART_H_PT + 18)
-
-                wb.Save()
-            finally:
-                # Release the COM children in reverse creation order before
-                # `excel_com_app` quits the instance.
-                series = chart = chart_obj = ws = None
-                if wb is not None:
-                    try:
-                        wb.Close(SaveChanges=False)
-                    except Exception:
-                        pass
-                    wb = None
-        return pngs
-    except RuntimeError:
-        raise  # already normalized (excel_com_app's startup / pywin32 guards)
-    except Exception as exc:
-        # COM failures surface as pywintypes.com_error (a dead instance, a failed
-        # Open), not RuntimeError — normalize so the caller's `except RuntimeError`
-        # fallback to openpyxl+LibreOffice actually engages.
-        raise RuntimeError(f"Excel COM chart build failed: {exc}") from exc
-    finally:
-        for tmp in tmp_paths:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-
-
-def _com_strip_chart_border(chart) -> None:
-    """Remove the chart-area and plot-area outlines so no border frames the picture.
-
-    The legacy ``ChartArea.Border.LineStyle = 0`` alone does not suppress the
-    modern chart-area outline in current Excel — that line is drawn by
-    ``ChartArea.Format.Line``, which defaults visible. We clear both, plus the
-    plot-area outline, defensively (a pie has no plot-area line to clear).
-    """
-    try:
-        chart.ChartArea.Format.Line.Visible = _MSO_FALSE
-    except Exception:
-        pass
-    try:
-        chart.ChartArea.Border.LineStyle = 0
-    except Exception:
-        pass
-    try:
-        chart.PlotArea.Format.Line.Visible = _MSO_FALSE
-    except Exception:
-        pass
-
-
-def _format_com_chart(chart, series) -> None:
-    """Apply the INFOR chart formatting to a COM chart + its single series."""
-    chart.HasTitle = False
-    chart.HasLegend = False
-    _com_strip_chart_border(chart)
-
-    # Gap width 50% (clustered-column group).
-    chart.ChartGroups(1).GapWidth = _GAP_WIDTH
-
-    # All bars filled RGB(70, 86, 110).
-    series.Format.Fill.Visible = True
-    series.Format.Fill.ForeColor.RGB = _BAR_RGB_COM
-
-    # Data labels on every bar, Outside End, Palatino 9 black. Show the VALUE
-    # only — set the other flags off explicitly (mirrors _format_com_pie and the
-    # openpyxl path) so no "<category>; <series>" text rides along (Issue P1.2).
-    series.HasDataLabels = True
-    labels = series.DataLabels()
-    try:
-        labels.ShowValue = True
-        labels.ShowPercentage = False
-        labels.ShowCategoryName = False
-        labels.ShowSeriesName = False
-        labels.ShowLegendKey = False
-    except Exception:
-        pass
-    labels.Position = _XL_LABEL_OUTSIDE_END
-    labels.NumberFormat = _VALUE_FORMAT
-    labels.Font.Name = _FONT_NAME
-    labels.Font.Size = _FONT_SIZE_PT
-    labels.Font.Color = 0  # black
-
-    # Category (horizontal) axis: Palatino 9 black, no title, a visible solid-black
-    # baseline line (the default is a gray line — set it explicitly black with a
-    # visible weight so the bars sit on a clear baseline).
-    cat_axis = chart.Axes(_XL_CATEGORY)
-    cat_axis.HasTitle = False
-    cat_axis.TickLabels.Font.Name = _FONT_NAME
-    cat_axis.TickLabels.Font.Size = _FONT_SIZE_PT
-    cat_axis.TickLabels.Font.Color = 0
-    cat_axis.Format.Line.Visible = _MSO_TRUE
-    cat_axis.Format.Line.ForeColor.RGB = 0  # black
-    try:
-        cat_axis.Format.Line.Weight = _AXIS_LINE_WEIGHT_PT  # visible width (points)
-    except Exception:
-        pass
-
-    # Value (vertical) axis + gridlines: hidden entirely.
-    value_axis = chart.Axes(_XL_VALUE)
-    value_axis.HasTitle = False
-    value_axis.HasMajorGridlines = False
-    value_axis.Delete()
-
-
-def _build_pie_com(workbook: Path, sheet_name: str, first_row: int, last_row: int) -> bytes:
-    """Build the LTM-revenue pie on the ``ltm-metrics`` tab via Excel COM, export PNG.
-
-    Mirrors :func:`_build_charts_com`: the chart is built + exported at an on-screen
-    scratch spot (a chart parked below the rendered viewport exports blank), then
-    parked below the data and saved so it persists on the tab.
-    """
-    tmp_paths: list[str] = []
-    try:
-        with excel_com_app(
-            purpose="COM-based chart building", visible=True, park_offscreen=True
-        ) as excel:
-            wb = ws = chart_obj = chart = series = None
-            try:
-                wb = excel.Workbooks.Open(str(workbook), ReadOnly=False, UpdateLinks=0)
-                try:
-                    excel.CalculateFull()
-                except Exception:
-                    pass
-                ws = wb.Worksheets(sheet_name)
-                try:
-                    excel.ActiveWindow.ScrollRow = 1
-                    excel.ActiveWindow.ScrollColumn = 1
-                except Exception:
-                    pass
-                # Replace, never accumulate: a re-run must not park a second pie
-                # next to the stale one (mirrors the openpyxl path).
-                try:
-                    ws.ChartObjects().Delete()
-                except Exception:
-                    pass
-                # Write/refresh the Top-4 + "Other" source block the chart references,
-                # then let Excel resolve its formulas before the chart is exported.
-                src_first, src_last, grouped = _write_pie_source_block_com(
-                    ws, first_row, last_row
-                )
-                try:
-                    excel.Calculate()
-                except Exception:
-                    pass
-                scratch_left = ws.Cells(1, 2).Left
-                scratch_top = ws.Cells(1, 1).Top
-                chart_obj = ws.ChartObjects().Add(
-                    Left=scratch_left, Top=scratch_top, Width=_PIE_W_PT, Height=_PIE_H_PT
-                )
-                chart = chart_obj.Chart
-                chart.ChartType = _XL_PIE
-                while chart.SeriesCollection().Count > 0:
-                    chart.SeriesCollection(1).Delete()
-                series = chart.SeriesCollection().NewSeries()
-                # Chart the source block's fraction column (grouped Top-4 + "Other"),
-                # not the raw segment rows — the value labels then read each share.
-                series.Values = ws.Range(
-                    ws.Cells(src_first, _PIE_SRC_FRAC_COL), ws.Cells(src_last, _PIE_SRC_FRAC_COL)
-                )
-                series.XValues = ws.Range(
-                    ws.Cells(src_first, _PIE_SRC_NAME_COL), ws.Cells(src_last, _PIE_SRC_NAME_COL)
-                )
-                # Which slices are above the 3% label threshold: the grouped shares
-                # recomputed in Python from the column-B $ amounts (same rule as the
-                # openpyxl builder, deterministic regardless of recalc state).
-                _format_com_pie(
-                    chart,
-                    series,
-                    src_last - src_first + 1,
-                    _fractions_from_amounts(grouped),
-                )
-
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                    tmp = f.name
-                tmp_paths.append(tmp)
-                chart.Export(Filename=tmp, FilterName="PNG")
-                with open(tmp, "rb") as fh:
-                    png = fh.read()
-
-                # Park the (now-exported) chart below the data for persistence.
-                try:
-                    chart_obj.Left = scratch_left
-                    chart_obj.Top = ws.Cells(last_row + 3, 1).Top
-                except Exception:
-                    pass
-
-                wb.Save()
-            finally:
-                # Release the COM children in reverse creation order before
-                # `excel_com_app` quits the instance.
-                series = chart = chart_obj = ws = None
-                if wb is not None:
-                    try:
-                        wb.Close(SaveChanges=False)
-                    except Exception:
-                        pass
-                    wb = None
-        return png
-    except RuntimeError:
-        raise  # already normalized (excel_com_app's startup / pywin32 guards)
-    except Exception as exc:
-        # Normalize COM failures (pywintypes.com_error) to RuntimeError so the
-        # caller's fallback to openpyxl+LibreOffice engages — same as
-        # _build_charts_com.
-        raise RuntimeError(f"Excel COM pie build failed: {exc}") from exc
-    finally:
-        for tmp in tmp_paths:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-
-
-def _write_pie_source_block_com(ws, first_row: int, last_row: int) -> tuple[int, int, list]:
-    """COM mirror of :func:`_write_pie_source_block_openpyxl` (same block, same
-    formulas, same footprint clearing); Palatino 11 on the written range.
-
-    Returns ``(src_first_row, src_last_row, grouped_amounts)``.
-    """
-    names = [ws.Cells(r, _PIE_SEGMENT_COL).Value for r in range(first_row, last_row + 1)]
-    amounts = [ws.Cells(r, _PIE_VALUE_COL).Value for r in range(first_row, last_row + 1)]
-    kept, has_other = _pie_grouping(amounts)
-    total_row = last_row + 1
-    value_format = ws.Cells(first_row, _PIE_VALUE_COL).NumberFormat
-
-    footprint = ws.Range(
-        ws.Cells(first_row - 2, _PIE_SRC_NAME_COL), ws.Cells(total_row, _PIE_SRC_FRAC_COL)
-    )
-    footprint.ClearContents()
-    try:
-        footprint.Font.Name = _FONT_NAME
-        footprint.Font.Size = 11
-        footprint.Font.Bold = False
-    except Exception:
-        pass
-
-    title_cell = ws.Cells(first_row - 2, _PIE_SRC_NAME_COL)
-    title_cell.Value = _PIE_SRC_TITLE + (" (Top 4 + Other)" if has_other else "")
-    header_cells = (
-        (_PIE_SRC_NAME_COL, "Segment"),
-        (_PIE_SRC_VALUE_COL, ws.Cells(first_row - 1, _PIE_VALUE_COL).Value),
-        (_PIE_SRC_FRAC_COL, "% of Total"),
-    )
-    for col, text in header_cells:
-        ws.Cells(first_row - 1, col).Value = text
-    try:
-        title_cell.Font.Bold = True
-        ws.Range(
-            ws.Cells(first_row - 1, _PIE_SRC_NAME_COL), ws.Cells(first_row - 1, _PIE_SRC_FRAC_COL)
-        ).Font.Bold = True
-    except Exception:
-        pass
-
-    from openpyxl.utils import get_column_letter
-
-    seg_col = get_column_letter(_PIE_SEGMENT_COL)
-    val_col = get_column_letter(_PIE_VALUE_COL)
-    src_val_col = get_column_letter(_PIE_SRC_VALUE_COL)
-    rows: list[int] = []
-    for j, i in enumerate(kept):
-        r = first_row + j
-        ws.Cells(r, _PIE_SRC_NAME_COL).Formula = f"={seg_col}{first_row + i}"
-        ws.Cells(r, _PIE_SRC_VALUE_COL).Formula = f"={val_col}{first_row + i}"
-        rows.append(r)
-    if has_other:
-        r = first_row + len(kept)
-        ws.Cells(r, _PIE_SRC_NAME_COL).Value = _PIE_OTHER_LABEL
-        ws.Cells(r, _PIE_SRC_VALUE_COL).Formula = (
-            f"={val_col}{total_row}-SUM({src_val_col}{first_row}:{src_val_col}{r - 1})"
-        )
-        rows.append(r)
-    for r in rows:
-        ws.Cells(r, _PIE_SRC_VALUE_COL).NumberFormat = value_format
-        frac = ws.Cells(r, _PIE_SRC_FRAC_COL)
-        frac.Formula = f"={src_val_col}{r}/${val_col}${total_row}"
-        frac.NumberFormat = _PIE_SRC_FRAC_FORMAT
-
-    return first_row, rows[-1], _grouped_pie_labels_amounts(names, amounts)[1]
-
-
-def _format_com_pie(chart, series, n_points: int, fractions: list) -> None:
-    """Apply INFOR pie formatting: right-docked legend with the pie pinned left of
-    it, no title/border, accent slice fills, and labels only on >3% slices."""
-    chart.HasTitle = False
-    _com_strip_chart_border(chart)
-
-    # Legend docked on the RIGHT, Palatino 8 black (one point under the chart
-    # text), then pinned to the full remaining right side of the chart box —
-    # Excel's auto legend wraps every entry and silently drops the ones that no
-    # longer fit its undersized auto box (see _PIE_LEGEND_*).
-    chart.HasLegend = True
-    legend = chart.Legend
-    legend.Position = _XL_LEGEND_RIGHT
-    try:
-        legend.Font.Name = _FONT_NAME
-        legend.Font.Size = _PIE_LEGEND_FONT_SIZE_PT
-        legend.Font.Color = 0
-    except Exception:
-        pass
-    try:
-        area_w = chart.ChartArea.Width
-        area_h = chart.ChartArea.Height
-        legend.Left = _PIE_LEGEND_X * area_w
-        legend.Top = _PIE_LEGEND_Y * area_h
-        legend.Width = _PIE_LEGEND_W * area_w
-        legend.Height = _PIE_LEGEND_H * area_h
-    except Exception:
-        pass
-
-    # Pin the plot area to the left of the chart box so the pie sits clear of the
-    # right-docked legend (mirrors the openpyxl manual layout). After the legend
-    # is docked, so this manual position is not reflowed by the dock.
-    try:
-        plot = chart.PlotArea
-        plot.Left = _PIE_PLOT_X * chart.ChartArea.Width
-        plot.Top = _PIE_PLOT_Y * chart.ChartArea.Height
-        plot.Width = _PIE_PLOT_W * chart.ChartArea.Width
-        plot.Height = _PIE_PLOT_H * chart.ChartArea.Height
-    except Exception:
-        pass
-
-    # Per-slice fills from the INFOR theme accents, in order, cycled past six.
-    for i in range(1, n_points + 1):
-        try:
-            point = series.Points(i)
-            point.Format.Fill.Visible = True
-            point.Format.Fill.ForeColor.RGB = _hex_to_com_bgr(
-                INFOR_ACCENTS[(i - 1) % len(INFOR_ACCENTS)]
-            )
-        except Exception:
-            pass
-
-    # Value-only data labels, Palatino 9 white, pinned INSIDE their slice. The
-    # series is the source block's "% of Total" fraction column, so ShowValue +
-    # a "%" number format renders e.g. 0.452 as "45.2%" (ShowPercentage is off —
-    # we want the cell's own value, not a recomputed share). Inside End instead
-    # of Best Fit: Best Fit pushed the small-slice labels outside the pie.
-    # Set the flags directly on the DataLabels object: under late-binding COM,
-    # ApplyDataLabels(ShowValue=...) keyword args silently do nothing.
-    try:
-        series.HasDataLabels = True
-        labels = series.DataLabels()
-        labels.ShowValue = True
-        labels.ShowPercentage = False
-        labels.ShowCategoryName = False
-        labels.ShowSeriesName = False
-        labels.ShowLegendKey = False
-        labels.NumberFormat = _PIE_LABEL_FORMAT
-        labels.Position = _XL_LABEL_INSIDE_END
-        labels.Font.Name = _FONT_NAME
-        labels.Font.Size = _FONT_SIZE_PT
-        labels.Font.Color = _hex_to_com_bgr(_PIE_LABEL_COLOR)
-    except Exception:
-        pass
-
-    # Only slices above the 3% share threshold keep their label — the tiny-slice
-    # labels overlap each other in the short overview box. Per-point, after the
-    # series-level HasDataLabels above (COM points are 1-based).
-    for i in _suppressed_pie_label_indices(fractions):
-        try:
-            series.Points(i + 1).HasDataLabel = False
-        except Exception:
-            pass
-
-
 # ---------------------------------------------------------------------------
 # openpyxl + LibreOffice backend (off-Windows) — best-effort
 # ---------------------------------------------------------------------------
@@ -1120,10 +626,10 @@ def _persist_native_charts_openpyxl(
     pie_sheet: str = _PIE_SHEET_DEFAULT,
     pie_rows: tuple[int, int] | None = None,
 ):
-    """Load the combined workbook, (re)create native charts, save. Returns the wb.
+    """Load the deal workbook, (re)create native charts, save. Returns the wb.
 
     The FS-chart and pie steps run as separate orchestrator calls against the
-    SAME combined workbook, so each save must neither lose the other step's
+    SAME deal workbook, so each save must neither lose the other step's
     charts nor let a re-run accumulate duplicates:
 
       - The ``rebuild`` side (``"fs"`` | ``"pie"``) has its sheet's charts
@@ -1193,7 +699,7 @@ def _build_charts_openpyxl_libreoffice(
 ) -> dict[int, bytes]:
     """Persist native openpyxl charts on the tab, then render each PNG.
 
-    The combined workbook off-Windows was already built by openpyxl (CapIQ links
+    The deal workbook off-Windows was already built by openpyxl (CapIQ links
     do not survive that path), so loading + re-saving it here costs nothing extra.
     PNGs are rendered from single-chart temp workbooks built off
     LibreOffice-recalculated values so the LTM bar is correct.
@@ -1285,9 +791,8 @@ def _make_openpyxl_chart(ws, data_row: int, first_col: int, last_col: int):
 def _openpyxl_no_border_black_axis(chart) -> None:
     """No chart-area border + a visible solid-black category-axis baseline.
 
-    openpyxl best-effort mirror of the COM border/axis fix: clears the chart-area
-    outline and sets the category-axis line explicitly black **with a visible
-    width**. A width-less ``<a:ln>`` renders as a hairline that LibreOffice drops
+    Clears the chart-area outline and sets the category-axis line explicitly
+    black **with a visible width**. A width-less ``<a:ln>`` renders as a hairline that LibreOffice drops
     on export, so the bars float with no baseline (Issue 2) — pin the width.
     """
     from openpyxl.chart.shapes import GraphicalProperties
@@ -1322,7 +827,7 @@ def _palatino_text(size_hundredths: int = _FONT_SIZE_HUNDREDTHS, color: str = "0
 def _libreoffice_recalc_values(
     workbook: Path, sheet_name: str, first_col: int, last_col: int, data_rows: list[int]
 ) -> dict:
-    """Recalc the combined workbook with LibreOffice and read the period labels +
+    """Recalc the deal workbook with LibreOffice and read the period labels +
     each metric row's resolved values (so the LTM cell is no longer a formula)."""
     from openpyxl import load_workbook
 

@@ -105,7 +105,7 @@ stages:
   # `ltm_bridge_specs`, which extra metrics to bridge LTM for. It gathers the
   # 5-fiscal-year history from the latest 10-Ks and links each metric's LTM cell
   # to the `ltm-metrics` tab (a label-keyed lookup that resolves only in the
-  # combined workbook). Independent of the ltm/captable chain — needs only the
+  # sibling `ltm-metrics` tab). Independent of the ltm/captable chain — needs only the
   # target's facts + the attached 10-Ks.
   - id: financial-summary
     skill: financial-summary
@@ -115,10 +115,11 @@ stages:
       reporting_quarter: $plan_inputs.reporting_quarter
       comparison_quarter: $plan_inputs.comparison_quarter
       financial_metric_count: $plan_inputs.financial_metric_count
+      deal_workbook: $deal.deal_workbook
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the standalone Financial Summary .xlsx (5 FY + LTM × the requested metric count; chart-ready).
+        description: Absolute path to the deal workbook, whose `financial-summary` tab this stage wrote (5 FY + LTM × the requested metric count; chart-ready).
       - name: financial_metric_labels
         type: list[str]
         description: The Financial Summary metric names, in tile order (four per deck slide) — read by the deck stage for the FS slide tiles.
@@ -141,10 +142,11 @@ stages:
       reporting_quarter: $plan_inputs.reporting_quarter
       comparison_quarter: $plan_inputs.comparison_quarter
       ltm_bridge_specs: $stages.financial-summary.ltm_bridge_specs
+      deal_workbook: $deal.deal_workbook
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the standalone LTM metrics .xlsx (revenue overview + revenue/EBITDA bridges; companion to the overview slide pie placeholder).
+        description: Absolute path to the deal workbook, whose `ltm-metrics` tab this stage wrote (revenue overview + revenue/EBITDA bridges; feeds the overview slide pie).
       - name: ltm_revenue
         type: float
         description: LTM revenue total (millions, filing reporting currency) — fed to the cap table D47.
@@ -160,10 +162,11 @@ stages:
       ticker: $deal.subject_company.ticker
       ltm_revenue: $stages.ltm-metrics.ltm_revenue
       ltm_adj_ebitda: $stages.ltm-metrics.ltm_adj_ebitda
+      deal_workbook: $deal.deal_workbook
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the generated companion cap table .xlsx (with LTM revenue/EBITDA in D47/D48).
+        description: Absolute path to the deal workbook, whose `captable` tab this stage wrote (with LTM revenue/EBITDA in D47/D48).
     checkpoint: informational
 
   # Ownership (Canadian public targets only). Runs *after* captable so F35
@@ -182,10 +185,11 @@ stages:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker
       captable_workbook_path: $stages.captable.workbook_path
+      deal_workbook: $deal.deal_workbook
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the ownership companion .xlsx (Select-Insiders block + F35, plus the Bloomberg Output tab when an export was attached); null when the target is not a Canadian issuer or no SEDI PDF was attached.
+        description: Absolute path to the deal workbook, whose `Ownership` (+ `Bloomberg Output`) tabs this stage wrote; null when the target is not a Canadian issuer or no SEDI PDF was attached, leaving the tabs as shipped.
     checkpoint: informational
 
   # Public comparables (trading comps). Independent of the ltm/captable/ownership
@@ -199,10 +203,11 @@ stages:
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker
+      deal_workbook: $deal.deal_workbook
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the companion comps .xlsx (3 verticals × 6 CapIQ tickers + descriptions; metric columns are CapIQ array formulas, un-evaluated until refreshed).
+        description: Absolute path to the deal workbook, whose `comps` tab this stage wrote (3 verticals × 6 CapIQ tickers + descriptions; metric columns are CapIQ array formulas, un-evaluated until refreshed).
     checkpoint: informational
 
   # Precedent transactions. Like comps, it depends on nothing upstream — only the
@@ -218,10 +223,11 @@ stages:
     inputs:
       company: $deal.subject_company
       ticker: $deal.subject_company.ticker
+      deal_workbook: $deal.deal_workbook
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the companion precedents .xlsx (≤2 groups × 6 M&A deals; disclosed multiples are literals, $-metric ratios + statistic rows are formulas, un-evaluated until refreshed).
+        description: Absolute path to the deal workbook, whose `precedents` tab this stage wrote (≤2 groups × 6 M&A deals; disclosed multiples are literals, $-metric ratios + statistic rows are formulas, un-evaluated until refreshed).
     checkpoint: informational
 
   - id: deck
@@ -241,48 +247,27 @@ stages:
     # Pre-delivery gate: the assembled deck is built from untrusted external
     # inputs (filings, exports, web data), so the analyst must approve it before
     # the final artefacts are produced. `deck` sits alone in its wave ahead of
-    # `workbook-aggregation` and `financial-charts`, so this wave-boundary gate
-    # genuinely holds both final artefacts (combined workbook + charted deck).
+    # `financial-charts`, so this wave-boundary gate genuinely holds the final
+    # charted deck.
     checkpoint: required
 
-  # Final consolidation: merge every companion workbook into one file named
-  # pitch-<codename>.xlsx (one tab per producing skill) and delete the
-  # individual sources. Runs last so the deck stage can still read the
-  # standalone cap-table workbook before it is folded in. The comps and
-  # precedents workbooks join as the `comps` / `precedents` tabs (any CapIQ
-  # helper sheet is dropped automatically); the aggregator skips any source
-  # whose path is null/missing.
-  - id: workbook-aggregation
-    skill: workbook-aggregator
-    inputs:
-      workbooks:
-        captable: $stages.captable.workbook_path
-        ltm-metrics: $stages.ltm-metrics.workbook_path
-        financial-summary: $stages.financial-summary.workbook_path
-        ownership: $stages.ownership.workbook_path
-        comps: $stages.comps.workbook_path
-        precedents: $stages.precedents.workbook_path
-      deliverable_type: $deal.deliverable_type
-      deal_name: $deal.codename
-      output_dir: $deal.deal_dir
-    outputs:
-      - name: combined_workbook_path
-        type: Path
-        description: Absolute path to the combined workbook (one tab per producing skill); replaces the individual workbooks once the merge is verified (a degraded or partially-linked merge preserves them).
-    checkpoint: informational
-
   # Financial Summary charts: build the deck's metric charts (one per metric row
-  # — four per Financial Summary slide) on the COMBINED workbook's
-  # `financial-summary` tab — the only place each flow metric's
-  # `=INDEX('ltm-metrics'!…)` LTM link resolves (the standalone tab is #N/A until
-  # this point) — then drop the rendered charts into each FS slide's four
-  # placeholders (the slides are discovered by scanning the deck).
-  # Runs after BOTH `deck` (which it edits) and `workbook-aggregation` (whose
-  # combined workbook it charts); the scheduler places it alone in the final wave.
+  # — four per Financial Summary slide) on the deal workbook's `financial-summary`
+  # tab, then drop the rendered charts into each FS slide's four placeholders
+  # (the slides are discovered by scanning the deck). It also builds the overview
+  # slide's LTM revenue-by-segment pie on the `ltm-metrics` tab.
+  #
+  # Runs after `deck`, which it edits. It needs the `financial-summary` and
+  # `ltm-metrics` tabs to exist, which is guaranteed transitively rather than by a
+  # direct reference: `deck` depends on `financial-summary`, and on `captable`,
+  # which depends on `ltm-metrics`. Before Phase D this stage also had to wait for
+  # `workbook-aggregation`, because the `financial-summary` LTM link resolved only
+  # in the combined workbook; the deal now owns one workbook from stage one, so
+  # that constraint — and the aggregation stage — are gone.
   - id: financial-charts
     skill: financial-charts
     inputs:
-      combined_workbook_path: $stages.workbook-aggregation.combined_workbook_path
+      deal_workbook: $deal.deal_workbook
       deck_path: $stages.deck.deck_path
       deal_dir: $deal.deal_dir
     outputs:

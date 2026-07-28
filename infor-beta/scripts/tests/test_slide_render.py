@@ -4,19 +4,13 @@ Backend selection is tested on every platform (it is pure dispatch); the actual
 render tests skip when the backend binary is absent.
 """
 
-import sys
 from pathlib import Path
 
 import pytest
 
 import slide_render
 from excel_to_powerpoint import find_soffice
-from slide_render import (
-    BACKEND_ENV_VAR,
-    BACKEND_LIBREOFFICE,
-    BACKEND_POWERPOINT,
-    render_deck_to_png,
-)
+from slide_render import BACKEND_ENV_VAR, BACKEND_LIBREOFFICE, render_deck_to_png
 
 _LIBRARY = Path("infor-beta/templates/INFOR Slide Library.pptx")
 
@@ -27,13 +21,14 @@ def _libreoffice_available() -> bool:
 
 @pytest.fixture
 def stub_backends(monkeypatch):
-    """Replace both renderers with recorders so dispatch can be asserted."""
+    """Replace the renderer with a recorder so dispatch can be asserted.
+
+    One backend since Phase D deleted the PowerPoint-COM path, so there is only
+    one recorder — the fixture name is kept because the assertions read the same.
+    """
     calls: list[str] = []
     monkeypatch.setattr(
         slide_render, "_libreoffice_render", lambda *a, **k: calls.append(BACKEND_LIBREOFFICE) or []
-    )
-    monkeypatch.setattr(
-        slide_render, "_powerpoint_com_render", lambda *a, **k: calls.append(BACKEND_POWERPOINT) or []
     )
     monkeypatch.delenv(BACKEND_ENV_VAR, raising=False)
     return calls
@@ -57,45 +52,37 @@ def test_default_backend_is_libreoffice_even_on_windows(tmp_path: Path, stub_bac
     render_deck_to_png(_dummy_deck(tmp_path), tmp_path / "out")
 
     assert stub_backends == [BACKEND_LIBREOFFICE]
-
-
-def test_powerpoint_backend_requires_explicit_opt_in(tmp_path: Path, stub_backends):
-    render_deck_to_png(_dummy_deck(tmp_path), tmp_path / "out", backend=BACKEND_POWERPOINT)
-
-    assert stub_backends == [BACKEND_POWERPOINT]
-
-
-def test_env_var_selects_backend(tmp_path: Path, stub_backends, monkeypatch):
-    monkeypatch.setenv(BACKEND_ENV_VAR, "PowerPoint")  # case/whitespace tolerant
+def test_env_var_naming_libreoffice_still_works(tmp_path: Path, stub_backends, monkeypatch):
+    """A leftover `=libreoffice` in an environment keeps working, case-tolerantly."""
+    monkeypatch.setenv(BACKEND_ENV_VAR, "LibreOffice")
 
     render_deck_to_png(_dummy_deck(tmp_path), tmp_path / "out")
-
-    assert stub_backends == [BACKEND_POWERPOINT]
-
-
-def test_explicit_backend_beats_env_var(tmp_path: Path, stub_backends, monkeypatch):
-    monkeypatch.setenv(BACKEND_ENV_VAR, BACKEND_POWERPOINT)
-
-    render_deck_to_png(_dummy_deck(tmp_path), tmp_path / "out", backend=BACKEND_LIBREOFFICE)
 
     assert stub_backends == [BACKEND_LIBREOFFICE]
 
 
-def test_libreoffice_failure_does_not_fall_back_to_com(tmp_path: Path, monkeypatch):
-    """No silent fallback — that divergence is the bug Phase A closed."""
+def test_the_removed_powerpoint_backend_is_rejected_not_ignored(tmp_path: Path, stub_backends):
+    """Asking for the deleted COM backend must RAISE, not quietly use LibreOffice.
+
+    A stale caller (or a stale `INFOR_SLIDE_RENDER_BACKEND=powerpoint` in someone's
+    shell) that silently got a different renderer is exactly the dev/prod
+    ambiguity Phase A set out to remove.
+    """
+    with pytest.raises(ValueError, match="Phase D deleted the PowerPoint-COM"):
+        render_deck_to_png(_dummy_deck(tmp_path), tmp_path / "out", backend="powerpoint")
+    assert stub_backends == []
+
+
+def test_libreoffice_failure_raises_loudly(tmp_path: Path, monkeypatch):
+    """A missing LibreOffice must fail, not degrade — there is nothing to degrade to."""
     def boom(*a, **k):
         raise RuntimeError("LibreOffice not found on PATH")
 
-    com_calls: list[str] = []
     monkeypatch.setattr(slide_render, "_libreoffice_render", boom)
-    monkeypatch.setattr(
-        slide_render, "_powerpoint_com_render", lambda *a, **k: com_calls.append("com") or []
-    )
     monkeypatch.delenv(BACKEND_ENV_VAR, raising=False)
 
     with pytest.raises(RuntimeError, match="LibreOffice"):
         render_deck_to_png(_dummy_deck(tmp_path), tmp_path / "out")
-    assert com_calls == [], "a failed LibreOffice render must not silently use COM"
 
 
 def test_unknown_backend_raises(tmp_path: Path, stub_backends):
@@ -289,20 +276,3 @@ def test_cache_eviction_is_bounded(tmp_path: Path, monkeypatch, private_cache):
     assert len(slide_render._PDF_CACHE) <= 3
     for path in slide_render._PDF_CACHE.values():
         assert path.is_file(), "a surviving entry must still be on disk"
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="PowerPoint COM is Windows-only")
-def test_powerpoint_com_render_still_works(tmp_path: Path):
-    """The opt-in path stays reachable until Phase D deletes it."""
-    if not _LIBRARY.exists():
-        pytest.skip("slide library template not present")
-    pytest.importorskip("win32com.client", reason="COM render needs pywin32 + PowerPoint")
-
-    out_dir = tmp_path / "png"
-    paths = render_deck_to_png(
-        _LIBRARY, out_dir, slide_indices=[0, 6], backend=BACKEND_POWERPOINT
-    )
-
-    assert len(paths) == 2
-    for p in paths:
-        assert p.exists() and p.stat().st_size > 0

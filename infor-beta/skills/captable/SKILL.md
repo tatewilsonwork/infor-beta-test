@@ -20,14 +20,14 @@ When invoked as a stage of a conductor plan, the environment carries `$STAGE_INP
 
 - Read your inputs (ticker, optional company facts) from `$STAGE_INPUTS` instead of asking the analyst. If `$STAGE_INPUTS` is missing fields you need, surface the gap by writing `{"error": "missing input: <field>"}` to `$STAGE_OUTPUTS` and stop — the conductor halts on that.
 - `$STAGE_INPUTS` may also carry `ltm_revenue` and `ltm_adj_ebitda` (millions, in the **filing's reporting currency**) handed off by the upstream `ltm-metrics` stage. Use them in Step 6b to populate the cap table's LTM valuation column (D47 / D48). They are optional — when absent (e.g. direct `/captable` invocation, or a plan with no `ltm-metrics` stage), Step 6b restores the CapIQ fallback formulas instead.
-- Write the cap table to `$DEAL_DIR/artefacts/<SANITIZED_TICKER> - Capitalization Table.xlsx` (NOT cwd). Bootstrap `$DEAL_DIR/artefacts/` if it doesn't exist.
+- `$STAGE_INPUTS` carries `deal_workbook` — the deal's ONE workbook, whose `captable` tab you write. Do NOT create a standalone cap table file.
 - At the end of Step 8, also write the structured handoff:
   ```bash
-  python -c "import json,os; json.dump({'workbook_path': os.environ['OUTPUT']}, open(os.environ['STAGE_OUTPUTS'], 'w'))"
+  python -c "import json,os; json.dump({'workbook_path': os.environ['DEAL_WORKBOOK']}, open(os.environ['STAGE_OUTPUTS'], 'w'))"
   ```
   The conductor will not proceed past this stage until `$STAGE_OUTPUTS` exists and parses as JSON.
 
-When `$STAGE_OUTPUTS` is **unset** (direct `/captable` invocation), follow the workflow below as-is — output lands in cwd, no JSON handoff needed.
+When `$STAGE_OUTPUTS` is **unset** (direct `/captable` invocation), the analyst supplies the deal workbook path; there is no standalone-file mode, and no JSON handoff is needed.
 
 ---
 
@@ -50,39 +50,51 @@ Wait for both the ticker and at least one attached document before proceeding.
 
 ---
 
-### Step 2 — Locate and Copy the Template
+### Step 2 — Open the deal workbook's `captable` tab
 
-Resolve the template via the plugin's shared helper:
+**Do not copy a template.** The deal owns ONE workbook, created at deal-init, and the
+`captable` tab is already in it — carried in from `INFOR Deal Workbook Template.xlsx` with all
+its formulas, its CapIQ refresh comments on the FX / share-price cells, and its `infor_cap_*`
+defined names. Every write below goes into that tab.
+
+Its path arrives as `deal_workbook` in `$STAGE_INPUTS`:
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/find_template.sh" "INFOR Cap Table Template.xlsx"
+DEAL_WORKBOOK="$(python -c "import json,os;print(json.load(open(os.environ['STAGE_INPUTS']))['deal_workbook'])")"
+ls -lh "$DEAL_WORKBOOK"
 ```
 
-Sanitize the ticker for use as a filename via the shared helper (e.g., `NasdaqGS:MSFT` → `NasdaqGS-MSFT`):
-```bash
-SANITIZED_TICKER=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/sanitize_name.sh" "$TICKER")
+All writes go through the shared `deal_workbook.write_tab`, which holds an exclusive lock for
+the whole load → mutate → save cycle. That matters: the conductor dispatches a wave's stages
+concurrently, and openpyxl rewrites the entire file on save, so an unsynchronised write would
+drop another stage's tab.
+
+```python
+import json, os, sys
+sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
+from deal_workbook import TAB_CAPTABLE, TabSpec, write_tab
+
+inputs = json.load(open(os.environ["STAGE_INPUTS"]))
+deal_workbook = inputs["deal_workbook"]
+
+def fill(wb, ws):
+    ...   # every Step 3-7 write, against `ws`
+    
+write_tab(deal_workbook, TAB_CAPTABLE, TabSpec(write=fill))
 ```
 
-Copy the template to the current working directory using this exact shell pattern (note the quoting — required because the path contains spaces):
-```bash
-TEMPLATE=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/find_template.sh" "INFOR Cap Table Template.xlsx")
-OUTPUT="./$SANITIZED_TICKER - Capitalization Table.xlsx"
-cp "$TEMPLATE" "$OUTPUT" && echo "COPY_OK" || echo "COPY_FAILED"
-```
+**If the deal workbook is missing, or the tab is not in it — STOP immediately. Do NOT proceed.
+Do NOT create a standalone cap table or output data in any other format. Tell the user:**
 
-Then verify the output file exists and has non-zero size:
-```bash
-ls -lh "$OUTPUT"
-```
-
-**If the result is `COPY_FAILED`, the file is missing, or its size is 0 bytes — STOP immediately. Do NOT proceed. Do NOT create a manual cap table or output data in any other format. Tell the user:**
-
-> "I could not copy the INFOR Cap Table Template. Please confirm the file `INFOR Cap Table Template.xlsx` exists in the `templates/` folder at the root of the `infor-beta` plugin repository."
+> "I could not find the deal workbook's `captable` tab. The conductor creates the deal workbook
+> at deal-init from `INFOR Deal Workbook Template.xlsx`; please confirm deal-init ran, and that
+> the template exists in the `templates/` folder of the `infor-beta` plugin repository."
 
 ---
 
 ### Step 3 — Update Header Inputs (openpyxl)
 
-Open the copied file with openpyxl (NOT data_only — preserve all formulas).
+All the writes below happen inside the `fill(wb, ws)` callback from Step 2, where `ws` is the
+`captable` tab. Never open the file directly and never save it yourself — `write_tab` does both.
 
 **Layout verification — REQUIRED before any write.** The cells named below are the shipped template's positions; resolve each one through its **defined name** rather than typing the address, so a re-saved template that shifted a row still writes to the right cell. Run the shared verification first — it checks the sentinel label beside each address, cross-checks that the defined name resolves to the same cell, and raises `TemplateLayoutError` naming what moved:
 
@@ -144,7 +156,7 @@ Throughout this skill, a cell named in the tables below is the address the
 `infor_basic_shares`, `infor_cap_ticker`), resolve through the name — the
 addresses are written out only so the arithmetic below reads clearly.
 
-Use the actual page URL you read the value from and the retrieval date (today, from `currentDate`). The helper preserves the existing comment text (the CapIQ formula) and author, adding the citation as a new final line; the workbook aggregator carries the whole comment into the combined workbook. Also note the source and as-of date for each in the Step 8 summary.
+Use the actual page URL you read the value from and the retrieval date (today, from `currentDate`). The helper preserves the existing comment text (the CapIQ formula) and author, adding the citation as a new final line. The comment lives on the deal workbook's `captable` tab, so nothing has to carry it anywhere. Also note the source and as-of date for each in the Step 8 summary.
 
 ---
 

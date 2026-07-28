@@ -1,10 +1,11 @@
-"""Unit tests for the LTM metrics workbook helper."""
+"""Unit tests for the deal workbook's `ltm-metrics` tab."""
 
 from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
 
+from deal_workbook import TAB_LTM_METRICS, init_deal_workbook
 from ltm_metrics import Bridge, BridgeComponent, RevenueSegment, build_ltm_metrics_workbook
 
 
@@ -30,22 +31,30 @@ def _build(tmp_path: Path, **overrides) -> Path:
             BridgeComponent("Q3 2026 YTD Adj. EBITDA", 1040.0),
             BridgeComponent("Q3 2025 YTD Adj. EBITDA", 815.0, subtract=True),
         ],
-        output_dir=tmp_path,
+        deal_workbook=init_deal_workbook(
+            deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+        ),
     )
     kwargs.update(overrides)
     return build_ltm_metrics_workbook(**kwargs)
 
 
-def test_build_ltm_metrics_workbook_writes_expected_file(tmp_path: Path):
+def _ws(path: Path):
+    """The deal workbook's `ltm-metrics` tab — formulas, not computed values."""
+    return load_workbook(path)[TAB_LTM_METRICS]
+
+
+def test_build_ltm_metrics_writes_the_tab_into_the_deal_workbook(tmp_path: Path):
     path = _build(tmp_path)
     assert path.exists()
-    assert path.name == "SampleCo - LTM Metrics.xlsx"
-    assert load_workbook(path).active.title == "LTM Metrics"
+    assert path.name == "pitch-Project Test.xlsx", "the deal owns one workbook"
+    assert TAB_LTM_METRICS in load_workbook(path).sheetnames
+    assert _ws(path).title == TAB_LTM_METRICS
 
 
 def test_revenue_overview_uses_formulas_for_totals_and_percentages(tmp_path: Path):
     path = _build(tmp_path)
-    ws = load_workbook(path).active  # formulas, not computed values
+    ws = _ws(path)  # formulas, not computed values
 
     # Section row 6, header row 7, data rows 8-11, total row 12.
     assert ws["A6"].value == "LTM Revenue Overview"
@@ -60,7 +69,7 @@ def test_revenue_overview_uses_formulas_for_totals_and_percentages(tmp_path: Pat
 
 def test_revenue_bridge_sums_fy_plus_ytd_minus_prior(tmp_path: Path):
     path = _build(tmp_path)
-    ws = load_workbook(path).active
+    ws = _ws(path)
 
     # Overview total is row 12; row 13 is a blank spacer, bridge starts at 14.
     assert ws["A14"].value == "LTM Revenue Bridge"
@@ -75,7 +84,7 @@ def test_revenue_bridge_sums_fy_plus_ytd_minus_prior(tmp_path: Path):
 
 def test_ebitda_bridge_only_and_label(tmp_path: Path):
     path = _build(tmp_path)
-    ws = load_workbook(path).active
+    ws = _ws(path)
 
     # Revenue result is row 19; row 20 is a blank spacer, EBITDA starts at 21.
     assert ws["A21"].value == "LTM Adj. EBITDA Bridge"
@@ -85,7 +94,7 @@ def test_ebitda_bridge_only_and_label(tmp_path: Path):
 
 def test_ebitda_label_falls_back_to_unadjusted(tmp_path: Path):
     path = _build(tmp_path, ebitda_label="LTM EBITDA")
-    ws = load_workbook(path).active
+    ws = _ws(path)
     assert ws["A21"].value == "LTM EBITDA Bridge"
     assert ws["A26"].value == "(=) LTM EBITDA"
 
@@ -101,7 +110,7 @@ def test_segments_and_bridges_accept_plain_tuples(tmp_path: Path):
             ("Q3 2025 YTD Revenue", 2138.0, True),
         ],
     )
-    ws = load_workbook(path).active
+    ws = _ws(path)
     assert ws["A3"].value == "Revenue segmentation: Geography"
     # 3 segments -> data rows 8-10, total row 11.
     assert ws["B11"].value == "=SUM(B8:B10)"
@@ -112,7 +121,7 @@ def test_segments_and_bridges_accept_plain_tuples(tmp_path: Path):
 
 def test_bridges_optional(tmp_path: Path):
     path = _build(tmp_path, revenue_bridge=None, ebitda_bridge=None)
-    ws = load_workbook(path).active
+    ws = _ws(path)
     # Only the overview block is present; no bridge section rows.
     assert ws["A6"].value == "LTM Revenue Overview"
     assert ws["A14"].value is None
@@ -140,7 +149,7 @@ def test_extra_bridges_append_after_ebitda(tmp_path: Path):
             ),
         ],
     )
-    ws = load_workbook(path).active
+    ws = _ws(path)
     assert ws["A28"].value == "LTM Net Income Bridge"
     assert ws["A33"].value == "(=) LTM Net Income"
     assert ws["B33"].value == "=B30+B31-B32"
@@ -161,7 +170,7 @@ def test_extra_bridges_accept_dicts(tmp_path: Path):
             },
         ],
     )
-    ws = load_workbook(path).active
+    ws = _ws(path)
     assert ws["A28"].value == "LTM Gross Profit Bridge"
     assert ws["A33"].value == "(=) LTM Gross Profit"
     assert ws["B33"].value == "=B30+B31-B32"
@@ -169,7 +178,7 @@ def test_extra_bridges_accept_dicts(tmp_path: Path):
 
 def test_extra_bridges_default_none_leaves_workbook_unchanged(tmp_path: Path):
     # Without extra_bridges the workbook ends at the EBITDA bridge (result row 26).
-    ws = load_workbook(_build(tmp_path)).active
+    ws = _ws(_build(tmp_path))
     assert ws["A28"].value is None
 
 
@@ -184,7 +193,7 @@ def test_segment_source_written_as_cell_comment(tmp_path: Path):
             RevenueSegment("Segment B", 888.0),  # no source -> no comment
         ],
     )
-    ws = load_workbook(path).active
+    ws = _ws(path)
     assert ws["B8"].comment is not None
     assert ws["B8"].comment.text == "Source: Q3 2026 10-Q, revenue disaggregation note"
     assert ws["B9"].comment is None
@@ -200,7 +209,7 @@ def test_bridge_component_source_written_as_cell_comment(tmp_path: Path):
                             source="Q3 2026 10-Q, comparative prior-year period"),
         ],
     )
-    ws = load_workbook(path).active
+    ws = _ws(path)
     # Default 4-segment fixture geometry: bridge section 14, header 15, data 16-18.
     assert ws["B16"].comment is not None
     assert ws["B16"].comment.text == "Source: FY2025 10-K, income statement"
@@ -218,7 +227,7 @@ def test_tuple_forms_accept_trailing_source(tmp_path: Path):
             ("Q3 2025 YTD Revenue", 2138.0, True),
         ],
     )
-    ws = load_workbook(path).active
+    ws = _ws(path)
     assert ws["B8"].comment.text == "Source: Q3 10-Q, segment note"
     # 2 segments -> total row 10, spacer 11, bridge section 12, header 13, data 14-16.
     assert ws["B14"].comment.text == "Source: FY2025 10-K, income statement"

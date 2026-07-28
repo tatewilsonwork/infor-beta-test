@@ -371,7 +371,19 @@ def assemble_earnings_update_deck(
             deck_path=output_path,
             workbook_path=captable_workbook_path,
             output_path=output_path,
-            slide_index=summary_at,
+            # The OVERVIEW slide, not the earnings summary. `Rectangle 3` is the
+            # overview's "Capitalization Summary" placeholder (library slide 6 ->
+            # assembled index 1); the summary slide has no such shape, so
+            # targeting it raises KeyError and fails the whole deck stage.
+            #
+            # v0.5.40 (Phase C) replaced the hardcoded `slide_index=1` with
+            # `summary_at` while converting indices to marker lookups — the right
+            # migration, the wrong marker. It shipped because the only two tests
+            # covering this insertion were both invisible on a dev box: the Excel
+            # one behind the opt-in `excel_com` gate, the LibreOffice one behind
+            # `skipif win32`. Deleting COM removed the reason for both guards, and
+            # un-gating them surfaced this immediately.
+            slide_index=overview_at,
             placeholder_name=_CAP_TABLE_PLACEHOLDER,
             sheet_name=CAP_TABLE_SHEET,
             source_range=cap_table_picture_range(captable_workbook_path),

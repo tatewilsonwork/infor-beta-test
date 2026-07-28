@@ -1,6 +1,6 @@
-"""Build a standalone LTM metrics workbook for the earnings update.
+"""Write the deal workbook's `ltm-metrics` tab.
 
-One "LTM Metrics" tab stacks three blocks, separated by a blank spacer row:
+The tab stacks three blocks, separated by a blank spacer row:
 
 1. **LTM Revenue overview** — revenue split by segment, with `% of total` and a
    total row. Feeds the overview slide's deferred LTM revenue pie.
@@ -16,7 +16,8 @@ Each hand-extracted input (a segment's LTM revenue, a bridge component) can
 carry a ``source`` citation — the filing + statement/note it came from — which
 is written as a ``Source: …`` cell comment on the amount cell (shared
 `comment_citations` helper), so the figures stay auditable in the artefact
-itself; the workbook aggregator carries the comments into the combined file.
+itself — and since Phase D that artefact *is* the deal workbook, so nothing has
+to carry the comments anywhere.
 """
 
 from __future__ import annotations
@@ -24,17 +25,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
 from comment_citations import append_source_text_to_comment
-from naming import safe_filename
+from deal_workbook import TAB_LTM_METRICS, TabSpec, write_tab
 
-# No template_layout anchors here: this workbook is authored from scratch (no
-# shipped template to shift), and every downstream reader locates its blocks by
-# label, not address (financial_charts.ltm_revenue_overview_range, the
-# aggregator's `(=) LTM …` label scan, financial-summary's MATCH-keyed links).
+# No template_layout anchors here: this tab is authored from scratch (no shipped
+# template to shift), and every downstream reader locates its blocks by label,
+# not address (financial_charts.ltm_revenue_overview_range, financial-summary's
+# MATCH-keyed links).
 
 # INFOR mid-blue header fill / Palatino body, mirroring the deck brand.
 _HEADER_FILL = PatternFill("solid", fgColor="1F3864")
@@ -232,10 +232,14 @@ def build_ltm_metrics_workbook(
     ebitda_bridge: list[BridgeComponent] | list[tuple] | None = None,
     ebitda_label: str = "LTM Adj. EBITDA",
     extra_bridges: "list[Bridge] | list[dict] | None" = None,
-    output_dir: Path | str,
-    file_stem: str | None = None,
+    deal_workbook: Path | str,
 ) -> Path:
-    """Write an LTM metrics .xlsx (overview + bridges) and return its path.
+    """Write the `ltm-metrics` tab (overview + bridges) into the deal workbook.
+
+    Returns the deal workbook's path. Since Phase D there is no standalone LTM
+    metrics file: the tab is written straight into the deal's single workbook, so
+    the `financial-summary` tab's `=INDEX('ltm-metrics'!…)` links resolve as soon
+    as both tabs exist rather than only after an aggregation step.
 
     `segments` and the bridge components may be dataclasses or plain tuples
     (`(name, value[, source])` for segments; `(name, value[, subtract[, source]])`
@@ -259,14 +263,38 @@ def build_ltm_metrics_workbook(
     ebitda_components = _coerce_components(ebitda_bridge)
     extra = _coerce_bridges(extra_bridges)
 
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = file_stem or f"{safe_filename(company_name, default='Company')} - LTM Metrics"
-    output_path = out_dir / f"{stem}.xlsx"
+    def _write(_wb, ws) -> None:
+        _fill_ltm_metrics_tab(
+            ws,
+            company_name=company_name,
+            period_label=period_label,
+            currency=currency,
+            segmentation_basis=segmentation_basis,
+            rows=rows,
+            rev_components=rev_components,
+            ebitda_components=ebitda_components,
+            ebitda_label=ebitda_label,
+            extra=extra,
+        )
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "LTM Metrics"
+    write_tab(deal_workbook, TAB_LTM_METRICS, TabSpec(create=True, write=_write))
+    return Path(deal_workbook)
+
+
+def _fill_ltm_metrics_tab(
+    ws: Worksheet,
+    *,
+    company_name: str,
+    period_label: str,
+    currency: str,
+    segmentation_basis: str,
+    rows: list[RevenueSegment],
+    rev_components: list[BridgeComponent],
+    ebitda_components: list[BridgeComponent],
+    ebitda_label: str,
+    extra: list[Bridge],
+) -> None:
+    """Write the tab's three blocks. Layout unchanged from the standalone workbook."""
     ws.sheet_view.showGridLines = False
 
     ws["A1"] = f"{company_name} — LTM Metrics"
@@ -358,6 +386,3 @@ def build_ltm_metrics_workbook(
     ws.column_dimensions["A"].width = 42
     ws.column_dimensions["B"].width = 22
     ws.column_dimensions["C"].width = 14
-
-    wb.save(output_path)
-    return output_path

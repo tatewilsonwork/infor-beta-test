@@ -1,6 +1,6 @@
-"""Build the standalone Financial Summary data tab for the pitch deck.
+"""Write the deal workbook's `financial-summary` data tab for the pitch deck.
 
-One **"Financial Summary"** tab holds the data behind the deck's Financial Summary
+The tab holds the data behind the deck's Financial Summary
 slide(s) (slide-library entry 8): the **metrics the `financial-summary` skill selected**
 — four per deck slide, so 4 by default or 8 when the deck spec asks for two Financial
 Summary slides — each with its **last 5 fiscal years** plus an **LTM** column. The
@@ -23,9 +23,8 @@ Chart-ready layout contract (rely on this from the future chart step)::
         B..F = five NUMERIC fiscal-year values, chronological
         LTM cell:
             * flow metric  -> =INDEX('ltm-metrics'!$B:$B, MATCH("(=) <result_label>", 'ltm-metrics'!$A:$A, 0))
-              (a label-keyed link into the post-aggregation `ltm-metrics` tab; #N/A in
-              the standalone file, resolves in the combined pitch workbook — exactly like
-              the cap table's CapIQ formulas)
+              (a label-keyed link into the `ltm-metrics` tab of the same deal
+              workbook — internal, and live as soon as that tab is written)
             * non-flow metric (balance / ratio that has no LTM bridge) -> the latest
               reported value, written as a literal number (point-in-time fallback)
         <last col> = the metric's units string (e.g. "US$MM", "%")
@@ -46,21 +45,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from comment_citations import append_source_text_to_comment
-from naming import safe_filename
+from deal_workbook import TAB_FINANCIAL_SUMMARY, TAB_LTM_METRICS, TabSpec, write_tab
 
 # No template_layout anchors here: this workbook is authored from scratch (no
 # shipped template to shift), and the chart step re-derives its geometry by
 # label (financial_charts.period_axis_columns / metric_data_rows on the row-5
 # 'Units' header and column-A metric labels), never by stored address.
 
-# INFOR mid-blue header fill / Palatino body, mirroring `ltm_metrics.py` so the
-# folded-in tab matches the rest of the combined workbook.
+# INFOR mid-blue header fill / Palatino body, mirroring `ltm_metrics.py` so this
+# tab matches the rest of the deal workbook.
 _HEADER_FILL = PatternFill("solid", fgColor="1F3864")
 _HEADER_FONT = Font(name="Palatino Linotype", size=11, bold=True, color="FFFFFF")
 _TITLE_FONT = Font(name="Palatino Linotype", size=14, bold=True, color="1F3864")
@@ -70,11 +68,9 @@ _LABEL_FONT = Font(name="Palatino Linotype", size=11, bold=True)
 _THIN = Side(style="thin", color="BFBFBF")
 _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 
-_SHEET_TITLE = "Financial Summary"
-# Tab name the `ltm-metrics` workbook takes inside the combined pitch workbook
-# (the aggregator renames a single-sheet source to its skill key). The LTM link
-# must target this post-aggregation name, not the standalone "LTM Metrics" sheet.
-_DEFAULT_LTM_SHEET = "ltm-metrics"
+#: The `ltm-metrics` tab this tab's LTM links point at. Both tabs live in the
+#: same deal workbook since Phase D, so the link is internal from the start.
+_DEFAULT_LTM_SHEET = TAB_LTM_METRICS
 
 _METRIC_COUNT = 4  # tiles per Financial Summary slide; the default single-slide deck shows four
 # Currency value format for the metric cells (FY values, the LTM literal fallback,
@@ -172,12 +168,12 @@ def _quote_sheet(name: str) -> str:
 
 
 def _ltm_link(ltm_sheet: str, result_label: str) -> str:
-    """A label-keyed lookup of a bridge total on the post-aggregation LTM tab.
+    """A label-keyed lookup of a bridge total on the deal workbook's LTM tab.
 
-    Resolves in the combined workbook (where the ``ltm-metrics`` tab exists);
-    surfaces ``#N/A`` / ``#REF!`` in the standalone file, like the cap table's
-    CapIQ formulas. Keyed on the bridge's ``(=) <result_label>`` row so it
-    survives the bridge's variable row position.
+    An ordinary internal reference: both tabs are in the same file, so this
+    resolves as soon as `ltm-metrics` is written (`ltm-metrics` is scheduled
+    before `financial-summary`'s consumers). Keyed on the bridge's
+    ``(=) <result_label>`` row so it survives the bridge's variable row position.
     """
     sheet = _quote_sheet(ltm_sheet)
     key = f"(=) {result_label}"
@@ -194,10 +190,13 @@ def build_financial_summary_workbook(
     metric_count: int = _METRIC_COUNT,
     show_ltm: bool = True,
     ltm_sheet_name: str = _DEFAULT_LTM_SHEET,
-    output_dir: Path | str,
-    file_stem: str | None = None,
+    deal_workbook: Path | str,
 ) -> Path:
-    """Write the chart-ready Financial Summary .xlsx and return its path.
+    """Write the chart-ready `financial-summary` tab into the deal workbook.
+
+    Returns the deal workbook's path. Since Phase D each flow metric's
+    `=INDEX('ltm-metrics'!…)` LTM link resolves as soon as the `ltm-metrics` tab
+    exists in the same file — it is no longer `#N/A` until an aggregation step.
 
     ``fiscal_labels`` are the five fiscal-year column headers in chronological
     order (oldest -> newest). ``metrics`` must hold exactly ``metric_count``
@@ -247,14 +246,36 @@ def build_financial_summary_workbook(
                 f"result_label to link to the ltm-metrics tab)"
             )
 
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = file_stem or f"{safe_filename(company_name, default='Company')} - Financial Summary"
-    output_path = out_dir / f"{stem}.xlsx"
+    def _write(_wb, ws) -> None:
+        _fill_financial_summary_tab(
+            ws,
+            company_name=company_name,
+            currency_note=currency_note,
+            period_note=period_note,
+            fiscal_labels=fiscal_labels,
+            rows=rows,
+            n_fy=n_fy,
+            show_ltm=show_ltm,
+            ltm_sheet_name=ltm_sheet_name,
+        )
 
-    wb = Workbook()
-    ws: Worksheet = wb.active
-    ws.title = _SHEET_TITLE
+    write_tab(deal_workbook, TAB_FINANCIAL_SUMMARY, TabSpec(create=True, write=_write))
+    return Path(deal_workbook)
+
+
+def _fill_financial_summary_tab(
+    ws: Worksheet,
+    *,
+    company_name: str,
+    currency_note: str,
+    period_note: str,
+    fiscal_labels: list[str],
+    rows: list[MetricSeries],
+    n_fy: int,
+    show_ltm: bool,
+    ltm_sheet_name: str,
+) -> None:
+    """Write the chart-ready tab. Layout unchanged from the standalone workbook."""
     ws.sheet_view.showGridLines = False
 
     ws["A1"] = f"{company_name} — Financial Summary"
@@ -331,6 +352,3 @@ def build_financial_summary_workbook(
     for col in range(2, units_col):
         ws.column_dimensions[get_column_letter(col)].width = 13
     ws.column_dimensions[get_column_letter(units_col)].width = 10
-
-    wb.save(output_path)
-    return output_path

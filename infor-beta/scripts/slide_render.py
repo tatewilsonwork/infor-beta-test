@@ -12,17 +12,13 @@ before v0.5.35 Windows dev rendered through PowerPoint COM instead, which meant
 a production rendering bug could not be reproduced locally. One renderer
 everywhere closes that gap.
 
-The **PowerPoint COM** backend (`Slide.Export(path, "PNG")`, Windows +
-PowerPoint only) is still reachable, but only on an explicit opt-in:
-
-    render_deck_to_png(deck, out, backend="powerpoint")
-    # or, for a whole session: INFOR_SLIDE_RENDER_BACKEND=powerpoint
-
-There is deliberately **no automatic fallback** from LibreOffice to COM. A
-silent fallback is what produced the dev/prod divergence in the first place: a
-missing LibreOffice should be a loud failure telling you to install it, not a
-quiet switch back to a renderer production does not have. Phase D deletes the
-COM path outright.
+Phase D deleted the **PowerPoint COM** backend (`Slide.Export(path, "PNG")`),
+which Phase A had already demoted to an explicit opt-in. Two reasons it is gone
+rather than merely unused: it was a second renderer whose output no analyst ever
+receives, and it is where the dev/prod divergence lived — keeping it reachable
+kept a route back to measuring the wrong engine. A missing LibreOffice is now a
+loud failure telling you to install it, which is the only correct outcome when
+LibreOffice is the renderer production has.
 """
 
 from __future__ import annotations
@@ -39,7 +35,6 @@ import zipfile
 from pathlib import Path
 
 BACKEND_LIBREOFFICE = "libreoffice"
-BACKEND_POWERPOINT = "powerpoint"
 BACKEND_ENV_VAR = "INFOR_SLIDE_RENDER_BACKEND"
 CACHE_ENV_VAR = "INFOR_RENDER_CACHE"
 
@@ -56,10 +51,11 @@ def render_deck_to_png(
 
     `slide_indices` is zero-based; None renders every slide.
 
-    `backend` selects the renderer: ``"libreoffice"`` (default, and the only
-    backend production has) or ``"powerpoint"`` (Windows + PowerPoint COM,
-    explicit opt-in only — Phase D removes it). Omitting it honours
-    ``INFOR_SLIDE_RENDER_BACKEND`` before defaulting to LibreOffice.
+    `backend` exists only to reject a stale caller: ``"libreoffice"`` is the one
+    renderer, on every platform. ``INFOR_SLIDE_RENDER_BACKEND`` is still honoured
+    so a leftover ``=libreoffice`` in an environment keeps working, and anything
+    else — notably the removed ``"powerpoint"`` — raises rather than silently
+    rendering through a different engine.
     """
     deck = Path(deck_path).resolve()
     if not deck.exists():
@@ -68,28 +64,24 @@ def render_deck_to_png(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     resolved = (backend or os.environ.get(BACKEND_ENV_VAR) or BACKEND_LIBREOFFICE).strip().lower()
-    if resolved == BACKEND_POWERPOINT:
-        return _powerpoint_com_render(deck, out_dir, slide_indices)
     if resolved != BACKEND_LIBREOFFICE:
         raise ValueError(
-            f"unknown slide-render backend {resolved!r}; "
-            f"expected {BACKEND_LIBREOFFICE!r} or {BACKEND_POWERPOINT!r}"
+            f"unknown slide-render backend {resolved!r}; only "
+            f"{BACKEND_LIBREOFFICE!r} exists (Phase D deleted the PowerPoint-COM "
+            f"backend)"
         )
     return _libreoffice_render(deck, out_dir, slide_indices, dpi)
 
 
 # ─── Render a private copy, never the caller's file ──────────────────────────
-# A renderer has no business holding the source open. PowerPoint's
-# `Presentations.Open` takes it with a share mode that DENIES other readers, and
-# LibreOffice drops a `.~lock.<name>#` beside it. Both matter:
-#
-#   - In the suite, `test_render_parity` and `test_powerpoint_com_render_still_works`
-#     render the shipped slide library through PowerPoint. Once the suite went
-#     distributed, other workers doing an ordinary `Presentation(LIBRARY)` at that
-#     moment failed — and failed *confusingly*, because `zipfile.is_zipfile`
-#     swallows the OSError and returns False, so python-pptx reports
-#     `PackageNotFoundError: Package not found` for a file that is plainly there.
-#   - In a real run, the same applies to the analyst's deck in the deal directory.
+# A renderer has no business holding the source open. LibreOffice drops a
+# `.~lock.<name>#` beside it, and PowerPoint COM (deleted in Phase D) took it with
+# a share mode that DENIED other readers outright. Once the suite went distributed
+# that surfaced *confusingly*: another worker doing an ordinary
+# `Presentation(LIBRARY)` at that moment failed, and failed as
+# `PackageNotFoundError: Package not found` for a file plainly there, because
+# `zipfile.is_zipfile` swallows the OSError and returns False. In a real run the
+# same applies to the analyst's deck in the deal directory.
 #
 # Copying first costs milliseconds against a multi-second conversion.
 def _private_copy(deck: Path, tmp_dir: Path) -> Path:
@@ -101,89 +93,6 @@ def _private_copy(deck: Path, tmp_dir: Path) -> Path:
     copy = tmp_dir / deck.name
     shutil.copyfile(deck, copy)
     return copy
-
-
-def _open_presentation(powerpoint, deck: Path):
-    """`Presentations.Open`, retried — COM activation is load-sensitive.
-
-    Phase I measured this directly on the Excel side: `CoCreateInstanceEx` fails
-    "Server execution failed" when the machine is busy enough for the handoff to
-    miss its window, and the failure is load-dependent rather than deterministic.
-    PowerPoint's `Presentations.Open` fails the same way, and it started doing so
-    once the suite began running distributed (many workers, many soffice
-    processes) where it had been quiet serially.
-
-    One retry, matching what `_convert_to_pdf` already does for a transient
-    soffice exit. A genuinely broken deck or a missing PowerPoint still fails.
-    """
-    problem: Exception | None = None
-    for attempt in range(1, _COM_OPEN_ATTEMPTS + 1):
-        try:
-            # PowerPoint refuses to open with the window fully hidden on some
-            # builds; keep it windowless rather than Visible=False.
-            return powerpoint.Presentations.Open(str(deck), ReadOnly=True, WithWindow=False)
-        except Exception as exc:
-            problem = exc
-            if attempt < _COM_OPEN_ATTEMPTS:
-                print(
-                    f"slide_render: PowerPoint could not open {deck.name} ({exc}) — "
-                    f"retrying ({attempt}/{_COM_OPEN_ATTEMPTS})",
-                    file=sys.stderr,
-                )
-                time.sleep(_COM_OPEN_RETRY_PAUSE_S)
-    raise problem  # type: ignore[misc]
-
-
-_COM_OPEN_ATTEMPTS = 3
-_COM_OPEN_RETRY_PAUSE_S = 3.0
-
-
-def _powerpoint_com_render(deck: Path, out_dir: Path, slide_indices: list[int] | None) -> list[Path]:
-    try:
-        import pythoncom
-        import win32com.client
-    except ImportError as exc:
-        raise RuntimeError("pywin32 is required for PowerPoint COM slide rendering") from exc
-
-    pythoncom.CoInitialize()
-    powerpoint = None
-    paths: list[Path] = []
-    staging = Path(tempfile.mkdtemp(prefix="infor-ppt-render-"))
-    try:
-        powerpoint = win32com.client.DispatchEx("PowerPoint.Application")
-        # A private copy: PowerPoint holds the file it opens against other
-        # readers for the whole render (see `_private_copy`).
-        presentation = _open_presentation(powerpoint, _private_copy(deck, staging))
-        try:
-            count = presentation.Slides.Count
-            indices = slide_indices if slide_indices is not None else list(range(count))
-            for idx in indices:
-                if idx < 0 or idx >= count:
-                    continue
-                png = out_dir / f"slide_{idx + 1}.png"
-                presentation.Slides(idx + 1).Export(str(png), "PNG")
-                paths.append(png)
-        finally:
-            presentation.Close()
-    except Exception as exc:  # COM errors surface as generic pywintypes errors
-        raise RuntimeError(f"PowerPoint COM render failed: {exc}") from exc
-    finally:
-        if powerpoint is not None:
-            # PowerPoint's COM server is a SINGLETON — DispatchEx attaches to the
-            # analyst's already-running instance when one exists, so an
-            # unconditional Quit() would close their open presentations (and a
-            # force-kill of the "leftover" process corrupts Office add-in state —
-            # the CapIQ LoadBehavior=2 incident). Only quit an instance that has
-            # nothing else open, i.e. one this render effectively owns.
-            try:
-                if powerpoint.Presentations.Count == 0:
-                    powerpoint.Quit()
-            except Exception:
-                pass
-        pythoncom.CoUninitialize()
-        shutil.rmtree(staging, ignore_errors=True)
-    return paths
-
 
 # A conversion that starts is normally deterministic, but soffice occasionally
 # exits non-zero (or writes no PDF) on a transient — a stale lock, a font-cache
@@ -441,11 +350,10 @@ def _libreoffice_render(
     soffice = find_soffice()
     if soffice is None:
         raise RuntimeError(
-            "LibreOffice (soffice/libreoffice) not found on PATH; it is the "
-            "default slide renderer on every platform. Install LibreOffice — on "
-            "Windows dev too, so local renders match production. To render "
-            "through PowerPoint instead, opt in explicitly with "
-            f"backend={BACKEND_POWERPOINT!r} (Windows only; removed in Phase D)."
+            "LibreOffice (soffice/libreoffice) not found; it is the ONLY slide "
+            "renderer on every platform since Phase D deleted the PowerPoint-COM "
+            "backend. Install LibreOffice — on Windows dev too, so local renders "
+            "match production."
         )
     try:
         import pypdfium2 as pdfium

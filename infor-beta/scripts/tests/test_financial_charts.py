@@ -6,7 +6,7 @@ backend is environmental (per repo convention) and is exercised by the skill's
 mandatory QA render, not here.
 
 The Excel COM builders' *cleanup ordering* and error normalization ARE covered,
-via the fake COM stack in ``tests/fake_com.py`` — no Excel is spawned, which is
+with no Excel involved at all — Phase D deleted the COM builders, which is
 the point: spawning it is what leaks. Their render *fidelity* remains
 environmental.
 """
@@ -18,6 +18,12 @@ import pytest
 
 import financial_charts
 from openpyxl import load_workbook
+
+from deal_workbook import (
+    TAB_FINANCIAL_SUMMARY,
+    TAB_LTM_METRICS,
+    init_deal_workbook,
+)
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Inches
@@ -45,11 +51,6 @@ def _chart_part_count(xlsx_path: Path) -> int:
             for n in z.namelist()
             if n.startswith("xl/charts/chart") and n.endswith(".xml")
         )
-
-
-def _raise_runtime(*_args, **_kwargs):
-    """A stand-in backend that mimics 'Excel COM unavailable' (RuntimeError)."""
-    raise RuntimeError("excel COM unavailable in test")
 
 
 def _no_libreoffice(monkeypatch):
@@ -93,26 +94,28 @@ def _fs_workbook(tmp_path: Path, **overrides) -> Path:
         period_note="FY = fiscal year; LTM = trailing twelve months as of Q3 2026",
         fiscal_labels=_FISCAL,
         metrics=_metrics(),
-        output_dir=tmp_path,
+        deal_workbook=init_deal_workbook(
+            deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+        ),
     )
     kwargs.update(overrides)
     return build_financial_summary_workbook(**kwargs)
 
 
 def test_period_axis_columns_with_ltm(tmp_path: Path):
-    ws = load_workbook(_fs_workbook(tmp_path)).active
+    ws = load_workbook(_fs_workbook(tmp_path))[TAB_FINANCIAL_SUMMARY]
     # Metric | FY1..FY5 | LTM | Units -> period axis B..G.
     assert period_axis_columns(ws) == (2, 7)
 
 
 def test_period_axis_columns_suppressed_ltm(tmp_path: Path):
-    ws = load_workbook(_fs_workbook(tmp_path, show_ltm=False)).active
+    ws = load_workbook(_fs_workbook(tmp_path, show_ltm=False))[TAB_FINANCIAL_SUMMARY]
     # Metric | FY1..FY5 | Units -> period axis B..F.
     assert period_axis_columns(ws) == (2, 6)
 
 
 def test_make_openpyxl_chart_applies_infor_formatting(tmp_path: Path):
-    ws = load_workbook(_fs_workbook(tmp_path)).active
+    ws = load_workbook(_fs_workbook(tmp_path))[TAB_FINANCIAL_SUMMARY]
     chart = _make_openpyxl_chart(ws, data_row=6, first_col=2, last_col=7)
 
     assert chart.type == "col"
@@ -210,7 +213,7 @@ def test_insert_missing_placeholder_raises(tmp_path: Path):
 
 def test_single_value_chart_has_black_axis_and_no_border(tmp_path: Path):
     # v0.5.17 border/axis fix also applies to the LibreOffice single-value renderer.
-    ws = load_workbook(_fs_workbook(tmp_path)).active
+    ws = load_workbook(_fs_workbook(tmp_path))[TAB_FINANCIAL_SUMMARY]
     chart = _make_single_value_chart(ws, 6)
     assert chart.graphical_properties.line.noFill is True
     assert chart.x_axis.spPr.line.solidFill.srgbClr == "000000"
@@ -229,8 +232,13 @@ def test_single_value_chart_has_black_axis_and_no_border(tmp_path: Path):
 # --- LTM revenue pie (overview slide) ---------------------------------------
 
 
-def _ltm_workbook(tmp_path: Path, segments=None, sheet_name: str = "ltm-metrics") -> Path:
-    """Build an ltm-metrics workbook, renaming its tab to the combined-workbook name."""
+def _ltm_workbook(tmp_path: Path, segments=None, sheet_name: str = TAB_LTM_METRICS) -> Path:
+    """Write the `ltm-metrics` tab into a deal workbook and return its path.
+
+    Phase D dropped the rename this helper used to do: the tab is created with the
+    name the chart step looks for, because there is no aggregation step to rename
+    a single-sheet source workbook.
+    """
     segs = segments if segments is not None else [
         RevenueSegment("Cloud Services", 1932.0),
         RevenueSegment("Customer Support", 1480.0),
@@ -245,16 +253,19 @@ def _ltm_workbook(tmp_path: Path, segments=None, sheet_name: str = "ltm-metrics"
         segments=segs,
         revenue_bridge=None,
         ebitda_bridge=None,
-        output_dir=tmp_path,
+        deal_workbook=init_deal_workbook(
+            deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+        ),
     )
-    wb = load_workbook(path)
-    wb.active.title = sheet_name
-    wb.save(path)
+    if sheet_name != TAB_LTM_METRICS:
+        wb = load_workbook(path)
+        wb[TAB_LTM_METRICS].title = sheet_name
+        wb.save(path)
     return path
 
 
 def test_ltm_revenue_overview_range_locates_block(tmp_path: Path):
-    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    ws = load_workbook(_ltm_workbook(tmp_path))[TAB_LTM_METRICS]
     rng = ltm_revenue_overview_range(ws)
     # Section row 6, header row 7, four segments at rows 8-11; Total (row 12) excluded.
     assert rng == (8, 11)
@@ -285,7 +296,7 @@ def test_ltm_revenue_overview_range_none_when_absent(tmp_path: Path):
 def test_make_openpyxl_pie_applies_infor_formatting(tmp_path: Path):
     from openpyxl.chart import PieChart
 
-    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    ws = load_workbook(_ltm_workbook(tmp_path))[TAB_LTM_METRICS]
     first, last = ltm_revenue_overview_range(ws)
     n = last - first + 1
     pie = _make_openpyxl_pie(ws, first, last)
@@ -315,7 +326,7 @@ def test_make_openpyxl_pie_applies_infor_formatting(tmp_path: Path):
 def test_make_openpyxl_pie_pins_plot_area_left_of_legend(tmp_path: Path):
     # v0.5.22: the pie's plot area is pinned to the LEFT of the chart box via a
     # manual layout so it sits clear of the right-docked legend.
-    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    ws = load_workbook(_ltm_workbook(tmp_path))[TAB_LTM_METRICS]
     first, last = ltm_revenue_overview_range(ws)
     pie = _make_openpyxl_pie(ws, first, last)
     manual = pie.layout.manualLayout
@@ -376,7 +387,7 @@ def test_pie_groups_more_than_five_segments_into_top4_other(tmp_path: Path):
         RevenueSegment("Fora Direct Lending", 13.1),
         RevenueSegment("Other Revenue", 4.0),
     ]
-    ws = load_workbook(_ltm_workbook(tmp_path, segments=segs)).active
+    ws = load_workbook(_ltm_workbook(tmp_path, segments=segs))[TAB_LTM_METRICS]
     first, last = ltm_revenue_overview_range(ws)
     assert last - first + 1 == 7
     total_row = last + 1
@@ -405,14 +416,14 @@ def test_pie_source_block_rerun_replaces_stale_rows(tmp_path: Path):
     segs7 = [RevenueSegment(f"Segment {i}", 100.0 - i) for i in range(7)]
     path = _ltm_workbook(tmp_path, segments=segs7)
     wb = load_workbook(path)
-    ws = wb.active
+    ws = wb[TAB_LTM_METRICS]
     first, last = ltm_revenue_overview_range(ws)
     _make_openpyxl_pie(ws, first, last)
     assert ws.cell(row=first + 4, column=5).value == "Other"
 
     segs3 = [RevenueSegment(f"Segment {i}", 100.0 - i) for i in range(3)]
     path3 = _ltm_workbook(tmp_path / "smaller", segments=segs3)
-    ws3 = load_workbook(path3).active
+    ws3 = load_workbook(path3)[TAB_LTM_METRICS]
     f3, l3 = ltm_revenue_overview_range(ws3)
     _make_openpyxl_pie(ws3, f3, l3)
     _make_openpyxl_pie(ws3, f3, l3)  # idempotent re-run
@@ -428,7 +439,7 @@ def test_pie_data_labels_show_value_only_with_percent_format(tmp_path: Path):
     # percentage flags all off) and carry the "%" number format, so the source
     # block's fraction renders e.g. 0.452 as "45.2%". Since v0.5.22 the config
     # lives on the series-level dLbls.
-    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    ws = load_workbook(_ltm_workbook(tmp_path))[TAB_LTM_METRICS]
     first, last = ltm_revenue_overview_range(ws)
     pie = _make_openpyxl_pie(ws, first, last)
     labels = pie.series[0].dLbls
@@ -449,7 +460,7 @@ def test_pie_labels_inside_end_and_white(tmp_path: Path):
     # small-slice labels outside the pie in the live run) and renders white —
     # black is unreadable inside the dark accent fills. The legend keeps its
     # black Palatino 8.
-    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    ws = load_workbook(_ltm_workbook(tmp_path))[TAB_LTM_METRICS]
     first, last = ltm_revenue_overview_range(ws)
     pie = _make_openpyxl_pie(ws, first, last)
     labels = pie.series[0].dLbls
@@ -480,7 +491,7 @@ def test_pie_labels_only_on_slices_above_3pct(tmp_path: Path):
         RevenueSegment("License", 100.0),
         RevenueSegment("Other", 30.0),
     ]
-    ws = load_workbook(_ltm_workbook(tmp_path, segments=segs)).active
+    ws = load_workbook(_ltm_workbook(tmp_path, segments=segs))[TAB_LTM_METRICS]
     first, last = ltm_revenue_overview_range(ws)
     pie = _make_openpyxl_pie(ws, first, last)
     suppressed = pie.series[0].dLbls.dLbl
@@ -552,7 +563,7 @@ def test_render_pie_returns_none_without_ltm_tab(tmp_path: Path):
     deck = _deck_with_pie_placeholder(tmp_path)
     out = render_ltm_revenue_pie_into_deck(
         deck_path=deck,
-        combined_workbook_path=combined,
+        deal_workbook=combined,
         slide_index=0,
         output_path=deck,
     )
@@ -628,10 +639,9 @@ def test_fs_orchestrator_degrades_to_none_when_render_unavailable(tmp_path: Path
     deck = _deck_with_placeholder(tmp_path)
     before = deck.read_bytes()
     # Force both backends to the "charts saved, no PNGs" outcome on any platform.
-    monkeypatch.setattr(financial_charts, "_build_charts_com", _raise_runtime)
     monkeypatch.setattr(financial_charts, "_build_charts_openpyxl_libreoffice", lambda *a, **k: {})
 
-    out = render_financial_summary_charts_into_deck(deck_path=deck, combined_workbook_path=path)
+    out = render_financial_summary_charts_into_deck(deck_path=deck, deal_workbook=path)
 
     assert out is None
     assert deck.read_bytes() == before  # deck untouched — placeholders preserved
@@ -641,7 +651,7 @@ def test_pie_persists_when_libreoffice_missing(tmp_path: Path, monkeypatch):
     """Issue 3 parity: the native pie is saved on the `ltm-metrics` tab even when
     LibreOffice is absent. The backend returns None (no PNG) instead of raising."""
     path = _ltm_workbook(tmp_path)
-    first, last = ltm_revenue_overview_range(load_workbook(path).active)
+    first, last = ltm_revenue_overview_range(load_workbook(path)[TAB_LTM_METRICS])
     _no_libreoffice(monkeypatch)
 
     png = financial_charts._build_pie_openpyxl_libreoffice(path, "ltm-metrics", first, last)
@@ -656,11 +666,10 @@ def test_pie_orchestrator_degrades_to_none_when_render_unavailable(tmp_path: Pat
     path = _ltm_workbook(tmp_path)
     deck = _deck_with_pie_placeholder(tmp_path)
     before = deck.read_bytes()
-    monkeypatch.setattr(financial_charts, "_build_pie_com", _raise_runtime)
     monkeypatch.setattr(financial_charts, "_build_pie_openpyxl_libreoffice", lambda *a, **k: None)
 
     out = render_ltm_revenue_pie_into_deck(
-        deck_path=deck, combined_workbook_path=path, slide_index=0
+        deck_path=deck, deal_workbook=path, slide_index=0
     )
 
     assert out is None
@@ -671,20 +680,16 @@ def test_pie_orchestrator_degrades_to_none_when_render_unavailable(tmp_path: Pat
 
 
 def _combined_workbook(dir_path: Path) -> Path:
-    """A combined pitch workbook carrying BOTH the `financial-summary` and
-    `ltm-metrics` tabs — the real financial-charts input, where the FS-chart and
-    pie steps run back-to-back against the same file."""
+    """A deal workbook carrying BOTH the `financial-summary` and `ltm-metrics` tabs.
+
+    The real financial-charts input, where the FS-chart and pie steps run
+    back-to-back against the same file. Since Phase D that is simply what the deal
+    workbook is: the two producers write their own tabs into it, so this no longer
+    has to fake a merge by copying cells between workbooks.
+    """
     dir_path.mkdir(parents=True, exist_ok=True)
-    fs = load_workbook(_fs_workbook(dir_path))
-    fs.active.title = "financial-summary"
-    ltm_ws = load_workbook(_ltm_workbook(dir_path)).active
-    dst = fs.create_sheet("ltm-metrics")
-    for row in ltm_ws.iter_rows():
-        for cell in row:
-            dst.cell(row=cell.row, column=cell.column, value=cell.value)
-    combined = dir_path / "pitch-SampleCo.xlsx"
-    fs.save(combined)
-    return combined
+    _fs_workbook(dir_path)
+    return _ltm_workbook(dir_path)
 
 
 def test_fs_charts_and_pie_coexist_on_combined_workbook(tmp_path: Path, monkeypatch):
@@ -726,7 +731,7 @@ def test_pie_legend_pinned_full_right_side_at_8pt(tmp_path: Path):
     """The legend is pinned to the full remaining right side of the chart box at
     Palatino 8 — Excel's auto legend wrapped every entry and silently dropped
     the ones that no longer fit (the "Other" entry vanished in the live run)."""
-    ws = load_workbook(_ltm_workbook(tmp_path)).active
+    ws = load_workbook(_ltm_workbook(tmp_path))[TAB_LTM_METRICS]
     first, last = ltm_revenue_overview_range(ws)
     pie = _make_openpyxl_pie(ws, first, last)
     manual = pie.legend.layout.manualLayout
@@ -757,11 +762,11 @@ def _metrics8() -> list[MetricSeries]:
 
 
 def test_metric_data_rows_four_and_eight(tmp_path: Path):
-    ws4 = load_workbook(_fs_workbook(tmp_path)).active
+    ws4 = load_workbook(_fs_workbook(tmp_path))[TAB_FINANCIAL_SUMMARY]
     assert financial_charts.metric_data_rows(ws4) == [6, 7, 8, 9]
     ws8 = load_workbook(
-        _fs_workbook(tmp_path, metrics=_metrics8(), metric_count=8, file_stem="EightMetrics")
-    ).active
+        _fs_workbook(tmp_path, metrics=_metrics8(), metric_count=8)
+    )[TAB_FINANCIAL_SUMMARY]
     assert financial_charts.metric_data_rows(ws8) == [6, 7, 8, 9, 10, 11, 12, 13]
 
 
@@ -835,14 +840,13 @@ def test_orchestrator_inserts_eight_charts_across_two_fs_slides(tmp_path: Path, 
     wb.save(path)
     deck = _deck_with_fs_slides(tmp_path, 2)
     rows = list(range(6, 14))
-    monkeypatch.setattr(financial_charts, "_build_charts_com", _raise_runtime)
     monkeypatch.setattr(
         financial_charts,
         "_build_charts_openpyxl_libreoffice",
         lambda *a, **k: {r: _PNG_1X1 for r in rows},
     )
 
-    out = render_financial_summary_charts_into_deck(deck_path=deck, combined_workbook_path=path)
+    out = render_financial_summary_charts_into_deck(deck_path=deck, deal_workbook=path)
 
     prs = Presentation(out)
     # The non-FS slide is untouched; each FS slide got its four pictures.
@@ -862,180 +866,10 @@ def test_orchestrator_raises_on_row_slide_mismatch(tmp_path: Path, monkeypatch):
     wb.active.title = "financial-summary"
     wb.save(path)
     deck = _deck_with_fs_slides(tmp_path, 2)
-    monkeypatch.setattr(financial_charts, "_build_charts_com", _raise_runtime)
     monkeypatch.setattr(
         financial_charts,
         "_build_charts_openpyxl_libreoffice",
         lambda *a, **k: {r: _PNG_1X1 for r in (6, 7, 8, 9)},
     )
     with pytest.raises(ValueError):
-        render_financial_summary_charts_into_deck(deck_path=deck, combined_workbook_path=path)
-
-
-# ─── COM chart builders: cleanup ordering (v0.5.38) ───────────────────────────
-#
-# `_build_charts_com` / `_build_pie_com` had NO pytest coverage before v0.5.38 —
-# the fallback tests above stub them out entirely — so their restructuring onto
-# `excel_com_app` would otherwise have shipped unverified. The fake COM stack
-# spawns no Excel, which is the point: spawning it is what leaks.
-
-
-class _FakeChartCells:
-    Left = 10.0
-    Top = 20.0
-
-
-class _FakeSeriesCollection:
-    def __init__(self):
-        self.Count = 0
-
-    def __call__(self, _i=None):
-        return self
-
-    def NewSeries(self):
-        return _FakeSeries()
-
-    def Delete(self):
-        pass
-
-
-class _FakeSeries:
-    Values = None
-    XValues = None
-
-
-class _FakeComChart:
-    ChartType = None
-
-    def __init__(self, log):
-        self._log = log
-        self._sc = _FakeSeriesCollection()
-
-    def SeriesCollection(self, _i=None):
-        return self._sc
-
-    def Export(self, Filename, FilterName):  # noqa: N803
-        self._log.append("Export")
-        Path(Filename).write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
-
-
-class _FakeChartObject:
-    Left = 0.0
-    Top = 0.0
-
-    def __init__(self, log):
-        self.Chart = _FakeComChart(log)
-
-
-class _FakeChartObjects:
-    def __init__(self, log):
-        self._log = log
-
-    def Delete(self):
-        self._log.append("ChartObjects.Delete")
-
-    def Add(self, **_kwargs):
-        return _FakeChartObject(self._log)
-
-
-class _FakeChartWorksheet:
-    def __init__(self, log):
-        self._log = log
-
-    def ChartObjects(self):
-        return _FakeChartObjects(self._log)
-
-    def Cells(self, _r, _c=None):
-        return _FakeChartCells()
-
-    def Range(self, _a, _b=None):
-        return object()
-
-
-class _FakeChartWorkbook:
-    def __init__(self, log):
-        self._log = log
-
-    def Worksheets(self, _name):
-        return _FakeChartWorksheet(self._log)
-
-    def Save(self):
-        self._log.append("wb.Save")
-
-    def Close(self, SaveChanges):  # noqa: N803
-        self._log.append("wb.Close")
-
-
-def _install_chart_com_fakes(monkeypatch, log):
-    from tests.fake_com import FakeExcelApp, install_fake_com
-
-    class _Workbooks:
-        def Open(self, _path, **_kwargs):
-            return _FakeChartWorkbook(log)
-
-    class _App(FakeExcelApp):
-        Workbooks = _Workbooks()
-
-        def CalculateFull(self):
-            pass
-
-        def Calculate(self):
-            pass
-
-    install_fake_com(monkeypatch, log, _App(log))
-
-
-def test_com_chart_build_closes_workbook_before_quit(tmp_path: Path, monkeypatch):
-    from tests.fake_com import assert_released_before_quit
-
-    log: list[str] = []
-    _install_chart_com_fakes(monkeypatch, log)
-    monkeypatch.setattr(financial_charts, "_format_com_chart", lambda *_a: None)
-
-    pngs = financial_charts._build_charts_com(
-        tmp_path / "combined.xlsx", "financial-summary", 2, 7, [6, 7, 8, 9]
-    )
-
-    assert sorted(pngs) == [6, 7, 8, 9]
-    assert all(v.startswith(b"\x89PNG") for v in pngs.values())
-    assert log.count("Export") == 4, "one chart exported per metric row"
-    assert_released_before_quit(log, "wb.Save", "wb.Close")
-
-
-def test_com_pie_build_closes_workbook_before_quit(tmp_path: Path, monkeypatch):
-    from tests.fake_com import assert_released_before_quit
-
-    log: list[str] = []
-    _install_chart_com_fakes(monkeypatch, log)
-    monkeypatch.setattr(financial_charts, "_format_com_pie", lambda *_a: None)
-    monkeypatch.setattr(
-        financial_charts, "_write_pie_source_block_com", lambda _ws, _f, _l: (30, 34, [1.0, 2.0])
-    )
-
-    png = financial_charts._build_pie_com(tmp_path / "combined.xlsx", "ltm-metrics", 10, 14)
-
-    assert png.startswith(b"\x89PNG")
-    assert_released_before_quit(log, "wb.Save", "wb.Close")
-
-
-@pytest.mark.parametrize(
-    "builder, args",
-    [
-        ("_build_charts_com", ("financial-summary", 2, 7, [6])),
-        ("_build_pie_com", ("ltm-metrics", 10, 14)),
-    ],
-)
-def test_com_chart_startup_failure_is_runtime_error(tmp_path: Path, monkeypatch, builder, args):
-    """A failed startup must read as RuntimeError so the documented fallback to
-    openpyxl + LibreOffice engages — and must not be double-wrapped."""
-    from tests.fake_com import install_fake_com
-
-    log: list[str] = []
-    install_fake_com(monkeypatch, log, None)  # DispatchEx raises
-
-    with pytest.raises(RuntimeError, match="Excel COM unavailable") as exc_info:
-        getattr(financial_charts, builder)(tmp_path / "combined.xlsx", *args)
-
-    assert "chart build failed" not in str(exc_info.value), "no double wrapping"
-    assert "pie build failed" not in str(exc_info.value)
-    assert log[-1] == "CoUninitialize"
+        render_financial_summary_charts_into_deck(deck_path=deck, deal_workbook=path)

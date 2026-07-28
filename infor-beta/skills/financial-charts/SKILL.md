@@ -1,13 +1,12 @@
 ---
 name: financial-charts
 description: >
-  Use this skill as the pitch plan's post-aggregation `financial-charts` stage. It builds the
-  INFOR-formatted clustered-column charts for the deck's Financial Summary slide(s) — one per
-  metric row, four per slide — on the combined pitch workbook's `financial-summary` tab — where
-  each flow metric's LTM link resolves — then renders them into each FS slide's four chart
-  placeholders. It also builds the overview slide's LTM revenue-by-segment pie on the combined
-  workbook's `ltm-metrics` tab and drops it into the "[Pie Chart Placeholder]". Runs after
-  `workbook-aggregation`.
+  Use this skill as the pitch plan's `financial-charts` stage. It builds the INFOR-formatted
+  clustered-column charts for the deck's Financial Summary slide(s) — one per metric row, four
+  per slide — on the deal workbook's `financial-summary` tab, then renders them into each FS
+  slide's four chart placeholders. It also builds the overview slide's LTM revenue-by-segment pie
+  on the deal workbook's `ltm-metrics` tab and drops it into the "[Pie Chart Placeholder]". Runs
+  after `deck`, the deck it edits.
 allowed-tools: [Read, Write, Bash]
 ---
 
@@ -22,8 +21,8 @@ placeholder and detects the metric rows from the tab, so 4-metric and 8-metric d
 call.
 
 It also fills the **overview** slide's deferred **LTM revenue pie** — see the section below. Both
-the FS charts and the pie ride this single post-aggregation stage because the data live on the same
-combined workbook (FS charts off the `financial-summary` tab, the pie off the `ltm-metrics` tab).
+the FS charts and the pie ride this single stage because the data live on the same
+deal workbook (FS charts off the `financial-summary` tab, the pie off the `ltm-metrics` tab).
 
 ## Mandatory: build the charts with the helper (no hand-rolling)
 
@@ -36,7 +35,7 @@ charts on the workbook, not flat pictures.
 
 Each helper does two things that are both required and must not be split apart:
 
-1. **Persists native chart objects on the combined workbook** — the clustered-column charts
+1. **Persists native chart objects on the deal workbook** — the clustered-column charts
    on the `financial-summary` tab and the pie on the `ltm-metrics` tab — so opening
    `pitch-<codename>.xlsx` shows real Excel chart objects.
 2. **Inserts the rendered charts into the deck** — the four chart placeholders on each Financial
@@ -56,38 +55,40 @@ tool. It never re-assembles, re-clones, or re-saves a fresh deck.** It only open
 placeholders, and saves it back in place. Its `allowed-tools` are `[Read, Write, Bash]` precisely
 so it *cannot* dispatch another skill — do not work around that by shelling out to one.
 
-**Why this is load-bearing:** this stage runs **after `workbook-aggregation`**, which folds the
-standalone `captable` / `ownership` source workbooks into the combined `pitch-<codename>.xlsx` and
-then **deletes them**. The `deck-assembler` rebuilds the deck from the slide library and re-pastes
-the cap-table and ownership tables from those *standalone* workbooks — which no longer exist. So
-re-running it here re-saves a clean deck and **reverts the cap-table and ownership tables to empty
-placeholders** (the exact regression seen in a live run). Building charts is the *last* mutation of
-the deck; nothing may re-assemble it afterward.
+**Why this is load-bearing:** building charts is the *last* mutation of the deck, and re-running
+the assembler here would re-save a clean deck over the top of it. Nothing may re-assemble the deck
+afterward.
+
+Before Phase D there was a second, sharper reason: this stage ran after `workbook-aggregation`,
+which folded the standalone `captable` / `ownership` workbooks into a combined file and then
+**deleted them** — so a re-assembly re-pasted tables from files that no longer existed and
+reverted them to empty placeholders (a real regression from a live run). The deal owns one workbook
+now, nothing is deleted, and the tabs the assembler reads are still there — but the rule stands,
+because a re-assembly still discards this stage's charts.
 
 **If a table ever genuinely needs re-inserting** (it should not — `deck` already did it), read it
-from the **combined workbook's `captable` / `Ownership` tabs** (the standalone sources are gone
-post-aggregation) and paste it with `excel_to_powerpoint.insert_excel_into_placeholder`. Never call
-the assembler to do it.
+from the deal workbook's `captable` / `Ownership` tabs and paste it with
+`excel_to_powerpoint.insert_excel_into_placeholder`. Never call the assembler to do it.
 
-## Why it runs after `workbook-aggregation`
+## Why it runs after `deck`
 
-Each **flow** metric's LTM cell on the `financial-summary` tab is a label-keyed lookup
-`=INDEX('ltm-metrics'!$B:$B, MATCH("(=) <result_label>", 'ltm-metrics'!$A:$A, 0))`. It is `#N/A`
-in the standalone Financial Summary file and resolves **only** in the combined
-`pitch-<codename>.xlsx`, where the `ltm-metrics` tab co-exists. So the charts are built on the
-**combined workbook's `financial-summary` tab** (after the aggregator folds everything in and a
-recalc resolves the links — Excel does the math), and the native charts persist there for the
-analyst. The rendered charts are then inserted into the assembled deck.
+Only because it edits the deck `deck` produces. It has no workbook-ordering constraint: each
+**flow** metric's LTM cell on the `financial-summary` tab is a label-keyed lookup
+`=INDEX('ltm-metrics'!$B:$B, MATCH("(=) <result_label>", 'ltm-metrics'!$A:$A, 0))`, and since both
+tabs live in the deal's single workbook that is an ordinary internal reference, live from the moment
+`ltm-metrics` is written. (Before Phase D it read `#N/A` until `workbook-aggregation` merged the two
+standalone files, which is why this used to be a post-aggregation stage.) The native charts persist
+on the tab for the analyst; the rendered copies go into the assembled deck.
 
 ## Conductor-mode handoff
 
 When invoked as a stage, the environment carries `$STAGE_INPUTS`, `$STAGE_OUTPUTS`, `$DEAL_DIR`:
 
 - Read inputs from `$STAGE_INPUTS`:
-  - `combined_workbook_path` — the combined `pitch-<codename>.xlsx` from `workbook-aggregation`.
+  - `deal_workbook` — the deal's single workbook, `pitch-<codename>.xlsx`.
   - `deck_path` — the assembled pitch deck from `deck`.
   - `deal_dir` — deal directory root (used for the QA render output).
-- If `combined_workbook_path` has no `financial-summary` tab (the financial-summary stage produced
+- If `deal_workbook` has no `financial-summary` tab (the financial-summary stage produced
   nothing), the slide is left with its placeholders — write the handoff and report the skip.
 - If a required field is missing, write `{"error": "missing input: <field>"}` to `$STAGE_OUTPUTS`
   and stop.
@@ -132,7 +133,7 @@ Each placeholder is 4.53" × 2.51"; the rendered chart is stretched to its box.
 
 The overview ("Introduction to {company}") slide carries a deferred `[Pie Chart Placeholder]`
 (shape `Rectangle 4`, box 4.51" × 1.77") under the "LTM Revenue Breakdown" label. This stage fills
-it with a by-segment pie built on the combined workbook's **`ltm-metrics`** tab, off the
+it with a by-segment pie built on the deal workbook's **`ltm-metrics`** tab, off the
 **"LTM Revenue Overview"** block (located by its section title — no hardcoded row numbers; the
 **Total** row is excluded).
 
@@ -160,14 +161,14 @@ grouped fractions from the literal $ column — the analyst's workbook still cha
 - Data labels **only on slices larger than 3%** of the total — smaller slices carry no label
   (their labels overlap each other in the short box); the slice itself still renders
 
-When the combined workbook has no `ltm-metrics` tab or no "LTM Revenue Overview" block, the pie is
+When the deal workbook has no `ltm-metrics` tab or no "LTM Revenue Overview" block, the pie is
 skipped and the placeholder is left in place (the null path).
 
 ## Workflow
 
 1. Read `$STAGE_INPUTS`.
 2. Call `render_financial_summary_charts_into_deck(...)` (see the reference command). It builds one
-   chart per metric row on the combined workbook's `financial-summary` tab and inserts them into
+   chart per metric row on the deal workbook's `financial-summary` tab and inserts them into
    every FS slide in the deck (four per slide, discovered by scanning).
 3. Call `render_ltm_revenue_pie_into_deck(...)` on the **deck written by step 2** (chain the same
    path) to build + insert the overview LTM revenue pie. A `None` return means the pie was skipped
@@ -210,13 +211,13 @@ from slide_render import render_deck_to_png
 inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())
 deal_dir = Path(os.environ.get("DEAL_DIR", "."))
 deck_path = inputs["deck_path"]
-combined = inputs["combined_workbook_path"]
+deal_workbook = inputs["deal_workbook"]
 
 # 1) Financial Summary charts — one per metric row, inserted into every FS
 #    slide (discovered by scanning the deck); modifies the deck in place.
 fs_deck = render_financial_summary_charts_into_deck(
     deck_path=deck_path,
-    combined_workbook_path=combined,
+    deal_workbook=deal_workbook,
 )
 fs_inserted = fs_deck is not None
 deck_path = str(fs_deck) if fs_deck is not None else deck_path
@@ -224,7 +225,7 @@ deck_path = str(fs_deck) if fs_deck is not None else deck_path
 # 2) Overview LTM revenue pie (slide 6) — chained onto the FS-charts deck.
 pie_deck = render_ltm_revenue_pie_into_deck(
     deck_path=deck_path,
-    combined_workbook_path=combined,
+    deal_workbook=deal_workbook,
 )
 pie_inserted = pie_deck is not None
 deck_path = str(pie_deck) if pie_deck is not None else deck_path

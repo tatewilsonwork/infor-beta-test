@@ -34,13 +34,14 @@ common shares are still written (the analyst can toggle col H to exclude them).
 from __future__ import annotations
 
 import re
-import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
+
+from deal_workbook import TAB_CAPTABLE, TAB_OWNERSHIP, TabSpec, write_tab
 from openpyxl.comments import Comment
 from openpyxl.styles import Font
 from openpyxl.utils import range_boundaries
@@ -174,24 +175,30 @@ def _normalize(insider: "InsiderHolding | dict") -> InsiderHolding:
 
 
 def read_basic_shares_from_cap_table(captable_path: Path | str) -> int | None:
-    """Return total basic shares outstanding (full units) from a cap table, or None.
+    """Return total basic shares outstanding (full units) from the cap table, or None.
 
-    Sources ``F35`` for the ownership workbook from the companion cap table.
-    Reads the cap table's Section VII basic-share **input** rows (``Cap with
-    Links`` col F, rows 168-185, in millions) and sums them, converting to full
-    units. The captable skill writes those as hardcoded literals (not formulas),
-    so they read reliably with openpyxl regardless of recalc state — unlike the
-    Section VII total ``F186`` (a ``SUM`` formula whose cached value openpyxl may
-    not see). Sub-event rows (e.g. a buyback's negative row) net in correctly
-    because they live in the same column. Returns None when the file is
-    missing/unreadable or the sum is non-positive, so the caller can leave
-    ``F35`` blank for the analyst.
+    Sources ``F35`` of the `Ownership` tab from the `captable` tab of the same
+    deal workbook — `captable_path` is the deal workbook (Phase D), though a
+    standalone cap table with the original ``Cap with Links`` sheet still reads.
+    Sums the Section VII basic-share **input** rows (col F, rows 168-185, in
+    millions) and converts to full units. The captable skill writes those as
+    hardcoded literals (not formulas), so they read reliably with openpyxl
+    regardless of recalc state — unlike the Section VII total ``F186`` (a ``SUM``
+    formula whose cached value openpyxl may not see). Sub-event rows (e.g. a
+    buyback's negative row) net in correctly because they live in the same
+    column. Returns None when the file is missing/unreadable or the sum is
+    non-positive, so the caller can leave ``F35`` blank for the analyst.
     """
     try:
         wb = load_workbook(Path(captable_path), data_only=False)
     except Exception:
         return None
-    ws = wb[CAP_TABLE_SHEET] if CAP_TABLE_SHEET in wb.sheetnames else wb.active
+    for candidate in (TAB_CAPTABLE, CAP_TABLE_SHEET):
+        if candidate in wb.sheetnames:
+            ws = wb[candidate]
+            break
+    else:
+        ws = wb.active
     # A readable-but-shifted cap table must raise, not silently sum the wrong
     # window: verify the Section VII sentinels before reading the input rows.
     verify_anchors(ws, CAP_TABLE_SECTION_VII_ANCHORS, template=Path(captable_path).name)
@@ -527,15 +534,20 @@ def _write_bloomberg_side(
 
 def build_ownership_workbook(
     *,
-    template_path: Path | str,
     insiders: "list[InsiderHolding | dict]",
     total_shares_outstanding: int | None,
-    output_path: Path | str,
+    deal_workbook: Path | str,
     bloomberg_export_path: Path | str | None = None,
     bloomberg_adjusted_names: dict[str, str] | None = None,
     bloomberg_include_overrides: dict[str, int] | None = None,
 ) -> Path:
-    """Fill the ownership template's insider block and return the saved path.
+    """Fill the deal workbook's `Ownership` tab; return the workbook path.
+
+    Since Phase D there is no standalone ownership file and no template to copy:
+    the `Ownership` and `Bloomberg Output` tabs are already in the deal workbook,
+    carried in from `INFOR Deal Workbook Template.xlsx` at deal-init — as a PAIR,
+    so the Ownership tab's `XLOOKUP` rows against `'Bloomberg Output'` are an
+    internal reference rather than a link back to the template.
 
     ``insiders`` lists the issuer's **current** insiders only — those whose
     SEDI "Ceased to be Insider" is "Not Applicable". ``total_shares_outstanding``
@@ -553,17 +565,36 @@ def build_ownership_workbook(
     """
     insiders = [_normalize(i) for i in insiders]
 
-    template = Path(template_path)
-    if not template.exists():
-        raise FileNotFoundError(f"ownership template not found: {template}")
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(template, out)
+    def _write(wb, ws) -> None:
+        _fill_ownership_tab(
+            wb,
+            ws,
+            insiders=insiders,
+            total_shares_outstanding=total_shares_outstanding,
+            bloomberg_export_path=bloomberg_export_path,
+            bloomberg_adjusted_names=bloomberg_adjusted_names,
+            bloomberg_include_overrides=bloomberg_include_overrides,
+        )
 
-    wb = load_workbook(out)  # preserve formulas (no data_only)
-    if _SHEET not in wb.sheetnames:
-        raise KeyError(f"sheet {_SHEET!r} not found in ownership template (have {wb.sheetnames})")
-    ws = wb[_SHEET]
+    write_tab(
+        deal_workbook,
+        TAB_OWNERSHIP,
+        TabSpec(write=_write, verify_names=(NAME_OWN_INSIDER_BLOCK, NAME_OWN_TOTAL_SHARES)),
+    )
+    return Path(deal_workbook)
+
+
+def _fill_ownership_tab(
+    wb,
+    ws,
+    *,
+    insiders: "list[InsiderHolding]",
+    total_shares_outstanding: int | None,
+    bloomberg_export_path: Path | str | None,
+    bloomberg_adjusted_names: dict[str, str] | None,
+    bloomberg_include_overrides: dict[str, int] | None,
+) -> None:
+    """Write the insider block, the % denominator and (optionally) the BBG side."""
     # Verify the template layout before writing: the insider block (header row
     # 38 + the row-67 lower bound as shipped) and the % denominator, each
     # cross-checked against the defined name the writes resolve through.
@@ -620,6 +651,3 @@ def build_ownership_workbook(
             adjusted_overrides=bloomberg_adjusted_names or {},
             include_overrides=bloomberg_include_overrides or {},
         )
-
-    wb.save(out)
-    return out

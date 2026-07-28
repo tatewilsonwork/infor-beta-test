@@ -97,7 +97,6 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "ltm-metrics",
         "captable",
         "deck",
-        "workbook-aggregation",
     ]
     assert [stage.skill for stage in plan.stages] == [
         "earningsupdate-wireframe",
@@ -105,7 +104,6 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
         "ltm-metrics",
         "captable",
         "deck-assembler",
-        "workbook-aggregator",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     captable_stage = next(s for s in plan.stages if s.id == "captable")

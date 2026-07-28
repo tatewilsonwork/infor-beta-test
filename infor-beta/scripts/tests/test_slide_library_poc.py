@@ -287,15 +287,15 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
         "ltm-metrics",
         "captable",
         "deck",
-        "workbook-aggregation",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["captable_workbook_path"] == "$stages.captable.workbook_path"
     assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
-    # Aggregation runs last so the deck stage can still read the standalone cap table.
-    assert plan.stages[-1].id == "workbook-aggregation"
+    # Since Phase D the deck stage is last: there is no aggregation stage, because
+    # every producer wrote its own tab of the deal's single workbook.
+    assert plan.stages[-1].id == "deck"
     # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before workbook aggregation produces the final artefact.
+    # assembled deck before delivery.
     assert deck_stage.checkpoint == "required"
     assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
 
@@ -314,7 +314,6 @@ def test_pitch_library_poc_plan_stage_order():
         "comps",
         "precedents",
         "deck",
-        "workbook-aggregation",
         "financial-charts",
     ]
     assert plan.stages[0].skill == "pitch-wireframe"
@@ -326,14 +325,15 @@ def test_pitch_library_poc_plan_stage_order():
     assert plan.stages[6].skill == "comps"
     assert plan.stages[7].skill == "precedents"
     assert plan.stages[8].skill == "deck-assembler"
-    assert plan.stages[9].skill == "workbook-aggregator"
-    assert plan.stages[10].skill == "financial-charts"
-    # financial-charts runs last: it charts the combined workbook and edits the deck.
+    assert plan.stages[9].skill == "financial-charts"
+    # financial-charts runs last: it charts the deal workbook and edits the deck.
+    # Since Phase D its only ordering constraint is `deck` — the aggregation stage
+    # it used to wait for is gone, along with the combined workbook it produced.
     fc_stage = next(s for s in plan.stages if s.id == "financial-charts")
-    assert fc_stage.inputs["combined_workbook_path"] == "$stages.workbook-aggregation.combined_workbook_path"
+    assert fc_stage.inputs["deal_workbook"] == "$deal.deal_workbook"
     assert fc_stage.inputs["deck_path"] == "$stages.deck.deck_path"
     # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before aggregation + charts produce the final artefacts.
+    # assembled deck before the charts produce the final artefact.
     assert next(s for s in plan.stages if s.id == "deck").checkpoint == "required"
     assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
     deck_stage = next(s for s in plan.stages if s.id == "deck")
@@ -365,14 +365,13 @@ def test_pitch_library_poc_plan_stage_order():
     captable_stage = next(s for s in plan.stages if s.id == "captable")
     assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
-    # The LTM, financial-summary, ownership, comps and precedents workbooks fold into
-    # the combined pitch workbook.
-    agg_stage = next(s for s in plan.stages if s.id == "workbook-aggregation")
-    assert agg_stage.inputs["workbooks"]["ltm-metrics"] == "$stages.ltm-metrics.workbook_path"
-    assert agg_stage.inputs["workbooks"]["financial-summary"] == "$stages.financial-summary.workbook_path"
-    assert agg_stage.inputs["workbooks"]["ownership"] == "$stages.ownership.workbook_path"
-    assert agg_stage.inputs["workbooks"]["comps"] == "$stages.comps.workbook_path"
-    assert agg_stage.inputs["workbooks"]["precedents"] == "$stages.precedents.workbook_path"
+    # Every workbook-producing stage writes a tab of the deal's ONE workbook, so
+    # each is handed the same `$deal.deal_workbook` instead of emitting a
+    # standalone file for a later merge to consolidate.
+    for stage_id in ("ltm-metrics", "financial-summary", "ownership", "comps",
+                     "precedents", "captable"):
+        stage = next(s for s in plan.stages if s.id == stage_id)
+        assert stage.inputs["deal_workbook"] == "$deal.deal_workbook", stage_id
 
 
 # ─── Helpers for the post-review fixes ───────────────────────────────────────
@@ -796,11 +795,7 @@ def test_pitch_wireframe_expands_market_entry_slides():
     assert len(default_plan.slides) == 19
 
 
-# ─── Fix 2: cap table pasted onto slide 7 + footnote currency ────────────────
-
-@pytest.mark.excel_com
 def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
-    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
     workbook = _write_sample_cap_table(tmp_path / "cap-table.xlsx", currency="USD")
     deck_path = _assemble(tmp_path, _sample_content(), captable_workbook_path=workbook)
     prs = Presentation(deck_path)
@@ -817,27 +812,23 @@ def test_pitch_deck_inserts_cap_table_into_slide7(tmp_path: Path):
     assert "US$MM" in note_hl and "[x]" not in note_hl, "highlights-slide footnote currency derived from the cap table"
 
 
-# ─── Ownership: insider table pasted onto the ownership slide ─────────────────
-
-@pytest.mark.excel_com
 def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
-    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
-    import pywintypes
-
+    from deal_workbook import init_deal_workbook
     from ownership_workbook import build_ownership_workbook, InsiderHolding
 
     own_wb = build_ownership_workbook(
-        template_path=PLUGIN_ROOT / "templates" / "INFOR Ownership Template.xlsx",
+        deal_workbook=init_deal_workbook(
+            deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+        ),
         insiders=[
             InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),
             InsiderHolding("Fowlie, Randy", "Randy Fowlie (Director)", [193000, 0], "2025-12-01"),
         ],
         total_shares_outstanding=261_000_000,
-        output_path=tmp_path / "Ownership.xlsx",
     )
     try:
         deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
-    except (pywintypes.com_error, RuntimeError) as exc:  # Excel/LibreOffice unavailable here
+    except RuntimeError as exc:  # LibreOffice unavailable here
         pytest.skip(f"range render backend unavailable in this environment: {exc}")
 
     prs = Presentation(deck_path)
@@ -852,15 +843,10 @@ def test_pitch_deck_inserts_ownership_into_slide(tmp_path: Path):
     assert "[Placeholder for Insider Ownership]" not in text, "insider placeholder replaced"
     # No Bloomberg export was ingested, so the institutional side stays a placeholder.
     assert "[Placeholder for Institutional Ownership]" in text
-
-
-@pytest.mark.excel_com
 def test_pitch_deck_inserts_institutions_with_bloomberg(tmp_path: Path):
     """With a Bloomberg export ingested, the ownership slide's right
     "Institutions" placeholder (Rectangle 3) is replaced by the
     Select-Institutions block picture alongside the insider side."""
-    pytest.importorskip("win32com.client", reason="picture-based insertion requires pywin32 + Excel")
-    import pywintypes
     from openpyxl import Workbook
 
     from ownership_workbook import build_ownership_workbook, InsiderHolding
@@ -882,19 +868,22 @@ def test_pitch_deck_inserts_institutions_with_bloomberg(tmp_path: Path):
         ws[f"R{14 + i}"] = status
     wb.save(bbg_path)
 
+    from deal_workbook import init_deal_workbook
+
     own_wb = build_ownership_workbook(
-        template_path=PLUGIN_ROOT / "templates" / "INFOR Ownership Template.xlsx",
+        deal_workbook=init_deal_workbook(
+            deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+        ),
         insiders=[
             InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),
             InsiderHolding("Fowlie, Randy", "Randy Fowlie (Director)", [193000, 0], "2025-12-01"),
         ],
         total_shares_outstanding=261_000_000,
-        output_path=tmp_path / "Ownership.xlsx",
         bloomberg_export_path=bbg_path,
     )
     try:
         deck_path = _assemble(tmp_path, _sample_content(), ownership_workbook_path=own_wb)
-    except (pywintypes.com_error, RuntimeError) as exc:  # Excel/LibreOffice unavailable here
+    except RuntimeError as exc:  # LibreOffice unavailable here
         pytest.skip(f"range render backend unavailable in this environment: {exc}")
 
     prs = Presentation(deck_path)

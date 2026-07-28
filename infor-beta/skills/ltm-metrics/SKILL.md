@@ -70,13 +70,13 @@ unchanged: only the Revenue and EBITDA bridges are built.
 4. Build the **revenue bridge** components: FY revenue (additive), current-year YTD revenue (additive), prior-year YTD revenue (subtractive). The workbook computes the LTM total via a formula.
 5. Build the **EBITDA bridge** the same way. Prefer **Adjusted EBITDA** if the company discloses it (pass `ebitda_label="LTM Adj. EBITDA"`); fall back to unadjusted EBITDA (`ebitda_label="LTM EBITDA"`) if no Adj. figure is available. If EBITDA is not directly disclosed, derive it from operating income + D&A (+ disclosed adjustments) for each period, and note the basis.
 6. Build the workbook with the shared helper. All arithmetic (% of total, totals, the bridge sums) lives in cell formulas — Excel does the math, not the LLM.
-   - **In-artefact citation — REQUIRED.** Every figure you extract must carry its source ON the cell, so the artefact is auditable without this chat transcript. Set `source=` on **every** `RevenueSegment` and `BridgeComponent`, naming the filing **and** the statement/note it came from (e.g. `"FY2025 10-K, Consolidated Statements of Operations"`, `"Q3 2026 10-Q, revenue disaggregation note"`, or the attached filename plus the section). The builder writes each as a `Source: <…>` cell comment on the amount cell (shared `comment_citations` helper), and the workbook aggregator carries the comments into the combined workbook. Never skip a source — a bridge figure with no citation is indistinguishable from an invented one.
+   - **In-artefact citation — REQUIRED.** Every figure you extract must carry its source ON the cell, so the artefact is auditable without this chat transcript. Set `source=` on **every** `RevenueSegment` and `BridgeComponent`, naming the filing **and** the statement/note it came from (e.g. `"FY2025 10-K, Consolidated Statements of Operations"`, `"Q3 2026 10-Q, revenue disaggregation note"`, or the attached filename plus the section). The builder writes each as a `Source: <…>` cell comment on the amount cell (shared `comment_citations` helper) of the deal workbook's `ltm-metrics` tab. Never skip a source — a bridge figure with no citation is indistinguishable from an invented one.
    - **Units — millions, with an `"MM"` suffix (required).** Pass every bridge component in **millions** of the filing's reporting currency, and set `currency` to a label carrying an `"MM"` suffix (`US$MM`, `C$MM`) — never `US$` / full dollars. In the pitch plan the `financial-summary` tab links these bridge totals **value-for-value** (`=INDEX/MATCH` into the `(=) <result_label>` row), so the scale here must match its columns exactly; a mismatch (e.g. `US$` here vs. `US$MM` there) makes the linked LTM bar 10⁶× off.
-7. Write the workbook to `$DEAL_DIR/artefacts/` (bootstrap the folder if needed), then write `$STAGE_OUTPUTS`:
+7. Write the `ltm-metrics` tab into the deal workbook (`$STAGE_INPUTS["deal_workbook"]` — it already exists; never create a standalone file), then write `$STAGE_OUTPUTS`:
 
 ```json
 {
-  "workbook_path": "/absolute/path/to/<Company> - LTM Metrics.xlsx",
+  "workbook_path": "/absolute/path/to/pitch-<codename>.xlsx",
   "ltm_revenue": 9999.9,
   "ltm_adj_ebitda": 999.9
 }
@@ -100,7 +100,7 @@ from ltm_metrics import build_ltm_metrics_workbook, bridge_total, Bridge, Revenu
 
 inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())
 deal_dir = Path(os.environ.get("DEAL_DIR", "."))
-out_dir = deal_dir / "artefacts"
+deal_workbook = inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `ltm-metrics` tab
 
 # FORMAT ILLUSTRATION ONLY — the segment names / values below are obviously-
 # synthetic placeholders showing the call shape; NEVER reuse them as data.
@@ -148,7 +148,7 @@ workbook_path = build_ltm_metrics_workbook(
     ebitda_bridge=ebitda_bridge,
     ebitda_label="LTM Adj. EBITDA",                # or "LTM EBITDA" if no Adj. disclosed
     extra_bridges=extra_bridges,                   # pitch only; [] for earnings update
-    output_dir=out_dir,
+    deal_workbook=deal_workbook,
 )
 
 # Mirror the workbook's bridge formulas for the typed handoff (filing-currency

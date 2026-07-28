@@ -334,6 +334,24 @@ def _shifted_copy(template: Path, dest: Path, sheet: str, at_row: int) -> Path:
     return dest
 
 
+def _shifted_deal_workbook(tmp_path: Path, tab: str, at_row: int) -> Path:
+    """A deal workbook with one row inserted into `tab`, shifting its layout.
+
+    The Phase D equivalent of `_shifted_copy`: the builders write tabs of the
+    deal workbook now, so a layout shift has to be introduced there for the
+    sentinel/name cross-check to catch it.
+    """
+    from deal_workbook import init_deal_workbook
+
+    deal = init_deal_workbook(
+        deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+    )
+    wb = load_workbook(deal)
+    wb[tab].insert_rows(at_row)
+    wb.save(deal)
+    return deal
+
+
 def test_shifted_cap_table_fails_ltm_anchor_verification(tmp_path: Path):
     # A row inserted above the LTM block shifts D47/D48 — the anchors must
     # catch it and the message must name template, address, expected and found.
@@ -360,13 +378,14 @@ def test_shifted_cap_table_fails_section_vii_read(tmp_path: Path):
 def test_shifted_ownership_template_fails_the_builder(tmp_path: Path):
     from ownership_workbook import InsiderHolding, build_ownership_workbook
 
-    shifted = _shifted_copy(OWNERSHIP, tmp_path / "own-template.xlsx", tl.OWNERSHIP_SHEET, 30)
+    from deal_workbook import TAB_OWNERSHIP
+
+    shifted = _shifted_deal_workbook(tmp_path, TAB_OWNERSHIP, 30)
     with pytest.raises(TemplateLayoutError) as exc:
         build_ownership_workbook(
-            template_path=shifted,
             insiders=[InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 500)],
             total_shares_outstanding=1_000_000,
-            output_path=tmp_path / "Ownership.xlsx",
+            deal_workbook=shifted,
         )
     msg = str(exc.value)
     assert tl.OWNERSHIP_TEMPLATE in msg
@@ -376,22 +395,25 @@ def test_shifted_ownership_template_fails_the_builder(tmp_path: Path):
 def test_shifted_comps_template_fails_the_builder(tmp_path: Path):
     from comps_workbook import build_comps_workbook
 
-    shifted = _shifted_copy(COMPS, tmp_path / "comps-template.xlsx", tl.COMPS_SHEET, 8)
+    from deal_workbook import TAB_COMPS
+
+    shifted = _shifted_deal_workbook(tmp_path, TAB_COMPS, 8)
     with pytest.raises(TemplateLayoutError, match="Group Average"):
         build_comps_workbook(
-            template_path=shifted,
             verticals=[{"name": "Vertical A", "companies": [{"ticker": "TSX:RY"}]}],
-            output_path=tmp_path / "Comps.xlsx",
+            deal_workbook=shifted,
         )
 
 
 def test_shifted_precedents_template_fails_the_builder(tmp_path: Path):
     from precedents_workbook import build_precedents_workbook
 
-    shifted = _shifted_copy(PRECEDENTS, tmp_path / "prec-template.xlsx", tl.PRECEDENTS_SHEET, 3)
+    from deal_workbook import TAB_PRECEDENTS
+
+    shifted = _shifted_deal_workbook(tmp_path, TAB_PRECEDENTS, 3)
     with pytest.raises(TemplateLayoutError) as exc:
         build_precedents_workbook(
-            template_path=shifted,
+            deal_workbook=shifted,
             groups=[
                 {
                     "name": "Group A",
@@ -408,48 +430,8 @@ def test_shifted_precedents_template_fails_the_builder(tmp_path: Path):
                     ],
                 }
             ],
-            output_path=tmp_path / "Precedents.xlsx",
         )
     assert "'Currency'" in str(exc.value)
-
-
-def test_combine_workbooks_pre_flight_halts_before_merging(tmp_path: Path, monkeypatch):
-    # The aggregator's relink pre-flight runs on the shared layer BEFORE either
-    # backend: a captable whose LTM anchors shifted must abort the merge with
-    # nothing written and no source deleted.
-    from workbook_aggregator import combine_workbooks
-
-    monkeypatch.setattr("workbook_aggregator.sys.platform", "linux")
-
-    cap = tmp_path / "cap.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    ws.title = tl.CAP_TABLE_SHEET
-    ws["B5"] = "Output Currency:"
-    ws["B7"] = "FX Rate:"
-    ws["D33"] = "LTM"
-    ws["B48"] = "Revenue"  # shifted: the labels sit one row below D47/D48
-    ws["B49"] = "Adj. EBITDA"
-    wb.save(cap)
-    ltm = tmp_path / "ltm.xlsx"
-    wb2 = Workbook()
-    wb2.active.title = "LTM Metrics"
-    wb2.active["A1"] = "(=) LTM Revenue"
-    wb2.active["B1"] = 100
-    wb2.save(ltm)
-
-    with pytest.raises(TemplateLayoutError, match="D47"):
-        combine_workbooks(
-            sources={"captable": cap, "ltm-metrics": ltm},
-            output_dir=tmp_path,
-            deliverable_type="pitch",
-            deal_name="Atlas",
-        )
-    assert not (tmp_path / "pitch-Atlas.xlsx").exists()
-    assert cap.exists() and ltm.exists()  # nothing merged, nothing deleted
-
-
-# ─── (b) a re-ordered slide library raises ────────────────────────────────────
 
 
 def _reordered_library_copy(dest: Path, from_index: int) -> Path:

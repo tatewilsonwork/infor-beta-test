@@ -41,16 +41,14 @@ the build.
 from __future__ import annotations
 
 import re
-import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
-from openpyxl import load_workbook
 from openpyxl.styles import Font
-
 from openpyxl.utils import range_boundaries
 
+from deal_workbook import TAB_PRECEDENTS, TabSpec, write_tab
 from template_layout import (
     NAME_PREC_GROUP_BLOCKS,
     NAME_PREC_GROUP_LABELS,
@@ -276,12 +274,16 @@ def _validate_transaction(tx: PrecedentTransaction, where: str) -> None:
 
 def build_precedents_workbook(
     *,
-    template_path: Path | str,
     groups: "list[PrecedentGroup | dict]",
-    output_path: Path | str,
+    deal_workbook: Path | str,
     output_currency: str = "USD",
 ) -> Path:
-    """Fill the precedents template's group blocks and return the saved path.
+    """Fill the deal workbook's `precedents` tab; return the workbook path.
+
+    Since Phase D there is no standalone precedents file and no template to copy:
+    the `precedents` tab is already in the deal workbook, carried in from
+    `INFOR Deal Workbook Template.xlsx` at deal-init with its formulas and its
+    `infor_prec_*` defined names intact.
 
     ``groups`` lists up to two peer groups, each with up to six precedent
     transactions. For each transaction the builder writes the deal identity
@@ -306,17 +308,19 @@ def build_precedents_workbook(
         for i, tx in enumerate(group.transactions):
             _validate_transaction(tx, f"group {group.name!r} row {i + 1}")
 
-    template = Path(template_path)
-    if not template.exists():
-        raise FileNotFoundError(f"precedents template not found: {template}")
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(template, out)
+    def _write(_wb, ws) -> None:
+        _fill_precedents_tab(ws, groups, output_currency)
 
-    wb = load_workbook(out)  # preserve formulas (no data_only)
-    if _SHEET not in wb.sheetnames:
-        raise KeyError(f"sheet {_SHEET!r} not found in precedents template (have {wb.sheetnames})")
-    ws = wb[_SHEET]
+    write_tab(
+        deal_workbook,
+        TAB_PRECEDENTS,
+        TabSpec(write=_write, verify_names=tuple(NAME_PREC_GROUP_BLOCKS)),
+    )
+    return Path(deal_workbook)
+
+
+def _fill_precedents_tab(ws, groups: "list[PrecedentGroup]", output_currency: str) -> None:
+    """Write the validated groups into the tab. Layout unchanged."""
     # Verify the block/column sentinel anchors (row-4/5 headers + each group's
     # 'Group Average' bound + the 'Output:' label) and cross-check that each
     # defined name still resolves to the region its sentinel pins.
@@ -362,6 +366,3 @@ def build_precedents_workbook(
                 else:
                     cell.value = None       # clear the template's "Link" placeholder
                     cell.hyperlink = None   # and any stray hyperlink, so nothing dangles
-
-    wb.save(out)
-    return out

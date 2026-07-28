@@ -412,11 +412,11 @@ further would mean restructuring `verify_deck`'s two-conversion flow — the dec
 render, then the attribution probe deck that depends on its results — which is
 Phase B's oracle and was deliberately left alone.
 
-## Phase D — One workbook, one backend
+## Phase D — One workbook, one backend — ✅ SHIPPED (v0.5.41, 2026-07-28)
 
-The large one. Single workstream, because deleting the merge deletes most of the
-COM surface with it. (COM appears in exactly four files today: `financial_charts`
-12 hits, `excel_to_powerpoint` 7, `slide_render` 6, `workbook_aggregator` 6.)
+The large one, and the largest single diff of the migration: **net −2,685 lines**
+(2,324 added, 5,009 deleted) against the ≈−2,000 estimate. Single workstream, as
+planned, because deleting the merge deleted most of the COM surface with it.
 
 1. **`scripts/deal_workbook.py`** — the deal owns `pitch-<codename>.xlsx` from
    stage one. Single serialized `write_tab(path, tab_name, TabSpec)`. Templates
@@ -438,12 +438,95 @@ repair bug, external-ref rebinding, order-dependent sheet renames, the v0.5.33
 deletion gate, comment/hyperlink carry-over, and the
 `=INDEX('ltm-metrics'!…)`-resolves-only-in-the-combined-workbook constraint.
 
-> **Open decision — resolve before starting D.** Does anything actually depend on
-> Excel COM preserving **live CapIQ links** through the merge? Per CLAUDE.md the
-> comps and precedents workbooks ship with their CapIQ formulas un-evaluated and
-> the analyst refreshes in Excel anyway, which would make live-link preservation
-> already moot and D a clean deletion. If some artefact does depend on it, D needs
-> a narrow COM-only export step instead. Does not block A–C.
+> **Open decision — RESOLVED, empirically, before any code changed.** Nothing
+> depended on it; D was a clean deletion.
+>
+> The frozen production fixture carries **zero** defined names while the cap-table
+> template ships 33 CapIQ ones including `CIQWBGuid`/`CIQWBInfo`, and the
+> aggregator had no defined-name handling — so the merge already stripped CapIQ's
+> workbook identity in production. The refresh was then measured on copies with
+> the add-in active, over `comps` (where the live `_xll.…SPG` formulas actually
+> are — the cap table's live in *cell comments* by the v0.5.3 design): the merged
+> workbook, a pristine template with `CIQWBGuid` intact, and the merged workbook
+> with the namespace case restored all read **`#PEND`** — Cap IQ's own async-fetch
+> marker, emitted by `SPG` itself. The add-in recognises the merged workbook, and
+> `CIQWBGuid` makes no difference.
+>
+> Two notes for the record. A first probe through `DispatchEx` was discarded as
+> worthless — an automation-started Excel loads no `OPEN=`-registered SNL add-in,
+> so every subject read `#NAME?`, control included; the probe had to relaunch
+> `excel.exe` normally. And values never populated in *any* subject because a Cap
+> IQ sign-in window was waiting — a gate on the environment, identical across all
+> three, so the differential result stands. The cautious branch's requirement was
+> adopted anyway at zero cost: the deal workbook preserves CapIQ's defined names
+> from the outset, which makes the decision non-load-bearing either way.
+>
+> That `DispatchEx` behaviour turned out to be *useful*: it is what lets
+> `tools/build_deal_workbook_template.py` drive Excel for the one-time sheet copy
+> without the Cap IQ add-in ever loading — the objection
+> `add_template_named_ranges.py` correctly raised against COM for template
+> surgery.
+
+### What the phase actually cost, and the two things it found
+
+**The four steps landed as planned**, in three commits (steps 2 and 3 are not
+separable — the moment a producer writes a tab there is nothing for a merge to
+merge, and the aggregator's last two tests merged producer output directly, so
+splitting them would have meant a knowingly red commit).
+
+**`write_tab` had to be serialized, which the plan did not call out.** A wave
+dispatches stages concurrently and openpyxl rewrites the *whole* workbook on
+save, so `comps`, `precedents` and `financial-summary` reaching for one file at
+once would silently drop each other's tabs. A six-thread test fails without the
+lock.
+
+**Templates arrive as a pre-assembled artefact, not assembled at runtime.**
+"Copied in as tabs at init" cannot happen in the runtime: openpyxl cannot move a
+sheet between workbooks, and a cell-by-cell copy is the lossy merge this phase
+deletes. So `tools/build_deal_workbook_template.py` does it once, with an
+add-in-free Excel, and init is a `shutil.copyfile`.
+
+**Finding 1 — Excel AutoSave silently re-saved the shipped templates.** The repo
+lives in a OneDrive folder, where Excel 365 enables AutoSave by default and writes
+the file back *regardless of* `Close(SaveChanges=False)`. An early revision of the
+prep tool opened the four templates in place and re-saved all of them through
+Excel, undoing exactly the byte-level preservation Phase C's zip surgery existed
+to achieve. Any future tool that opens a repo file in Excel must stage a copy
+outside OneDrive first; a source-level test locks it, because reproducing it needs
+Excel *and* OneDrive.
+
+**Finding 2 — Phase C shipped a production-breaking regression that Phase D's own
+deletions exposed.** v0.5.40 converted the earnings assembler's `slide_index=1`
+into a marker lookup and chose `summary_at`; `Rectangle 3` is the **overview**
+slide's placeholder, so every earnings-update run with a cap table raised
+`KeyError` and failed the deck stage. It shipped green because both covering tests
+were invisible on a dev box — one behind the opt-in `excel_com` gate, one behind
+`skipif win32` reading "Windows uses the Excel COM path". Deleting COM made both
+guards false and removing them failed instantly.
+
+The lesson generalises past this phase, and it is the second instance after
+v0.5.36: **a skip guard justified by a platform difference outlives the
+difference, and then hides defects on the platform it exempts.** Both are gone;
+the suite is now **595 passed, 0 skipped**, where six tests previously never ran
+here. A gate that stays off by default is not coverage — it is a promise to
+remember, and this repo has now failed to remember twice.
+
+### The xdist LibreOffice-profile item was already done
+
+The brief proposed per-invocation `-env:UserInstallation` profiles on the
+hypothesis that `slide_render._libreoffice_render` passed none. Phase C had
+already implemented that mechanism, having run the same experiment (2 of 4
+concurrent conversions failed on a shared profile; 4 of 4 with one each). An audit
+confirms both — and only — `soffice` call sites carry the flag. Nothing changed.
+
+Measured anyway, on the finished phase (`-n 6`, uninterrupted): **277.4 / 235.4 /
+181.7 / 240.9 / 249.2 / 197.6 s** — spread **96 s**, median 238 s, against Phase
+C's 137–247 s (median 168) on a suite of almost the same size. There is no
+before/after, because both halves would have been the same code. The spread is
+the box, exactly as Phase C concluded from the same variance — and a first
+attempt had to be discarded because prep-tooling Excel work overlapped it,
+which shows how little else the machine can be doing for the number to mean
+anything.
 
 ## Phase E — Conductor as code
 

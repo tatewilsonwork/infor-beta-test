@@ -12,12 +12,21 @@ from pathlib import Path
 
 import pytest
 from openpyxl import load_workbook
+
+from deal_workbook import TAB_COMPS, init_deal_workbook
 from openpyxl.worksheet.formula import ArrayFormula
 
 from comps_workbook import CompCompany, Vertical, build_comps_workbook
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = PLUGIN_ROOT / "templates" / "INFOR Comps Template.xlsx"
+
+
+def _deal(tmp_path: Path) -> Path:
+    """A fresh deal workbook — the `comps` tab arrives with it, from the template."""
+    return init_deal_workbook(
+        deal_dir=tmp_path, deliverable_type="pitch", deal_name="Project Test"
+    )
 
 
 def _verticals():
@@ -30,9 +39,8 @@ def _verticals():
 
 def _build(tmp_path: Path, verticals=None) -> Path:
     return build_comps_workbook(
-        template_path=TEMPLATE,
+        deal_workbook=_deal(tmp_path),
         verticals=verticals if verticals is not None else _verticals(),
-        output_path=tmp_path / "Comps.xlsx",
     )
 
 
@@ -42,7 +50,7 @@ def _formula_text(cell):
 
 
 def test_writes_labels_tickers_and_descriptions(tmp_path: Path):
-    ws = load_workbook(_build(tmp_path))["Comps"]  # formulas preserved (no data_only)
+    ws = load_workbook(_build(tmp_path))[TAB_COMPS]  # formulas preserved (no data_only)
 
     # Vertical labels -> D9 / D19 / D29.
     assert ws["D9"].value == "Cloud ERP"
@@ -64,7 +72,7 @@ def test_writes_labels_tickers_and_descriptions(tmp_path: Path):
 def test_capiq_array_formulas_preserved(tmp_path: Path):
     """The metric columns are CapIQ array formulas keyed off column B; the build
     must not drop them (openpyxl round-trip regression guard)."""
-    ws = load_workbook(_build(tmp_path))["Comps"]
+    ws = load_workbook(_build(tmp_path))[TAB_COMPS]
 
     # Company-name lookup at the top of each block keys off $B<row>.
     for cell in ("D10", "D20", "D30"):
@@ -78,7 +86,7 @@ def test_capiq_array_formulas_preserved(tmp_path: Path):
 
 def test_only_intended_cells_written(tmp_path: Path):
     """Unused company rows, spacer rows, and unfilled verticals stay as-is."""
-    ws = load_workbook(_build(tmp_path, [Vertical("Solo", [CompCompany("NYSE:AAA", "Only one")])]))["Comps"]
+    ws = load_workbook(_build(tmp_path, [Vertical("Solo", [CompCompany("NYSE:AAA", "Only one")])]))[TAB_COMPS]
 
     assert ws["D9"].value == "Solo"
     assert ws["B10"].value == "NYSE:AAA"
@@ -90,7 +98,7 @@ def test_only_intended_cells_written(tmp_path: Path):
 
 
 def test_empty_description_left_blank(tmp_path: Path):
-    ws = load_workbook(_build(tmp_path, [Vertical("X", [CompCompany("NYSE:A")])]))["Comps"]
+    ws = load_workbook(_build(tmp_path, [Vertical("X", [CompCompany("NYSE:A")])]))[TAB_COMPS]
     assert ws["B10"].value == "NYSE:A"
     assert ws["AA10"].value is None
 
@@ -120,11 +128,10 @@ def test_overlong_description_raises(tmp_path: Path):
 
 def test_accepts_plain_dicts(tmp_path: Path):
     out = build_comps_workbook(
-        template_path=TEMPLATE,
+        deal_workbook=_deal(tmp_path),
         verticals=[{"name": "Dict Vertical", "companies": [{"ticker": "NYSE:ZZZ", "description": "From a dict"}]}],
-        output_path=tmp_path / "Comps.xlsx",
     )
-    ws = load_workbook(out)["Comps"]
+    ws = load_workbook(out)[TAB_COMPS]
     assert ws["D9"].value == "Dict Vertical"
     assert ws["B10"].value == "NYSE:ZZZ"
     assert ws["AA10"].value == "From a dict"
