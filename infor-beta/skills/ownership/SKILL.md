@@ -34,10 +34,13 @@ Today's date is available from the system context (`currentDate`) — do not she
 
 ## Conductor-mode handoff (read first when running under the conductor)
 
-When invoked as a stage of a conductor plan, the environment carries `$STAGE_INPUTS`,
-`$STAGE_OUTPUTS`, and `$DEAL_DIR`:
+Your dispatch envelope carries three paths — plugin root, `inputs.json`, `outputs.json` — and
+every command below takes them **as arguments**
+(`python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"`, read back by
+`stage_io()`). Nothing is exported; nothing is read from the environment.
 
-- Read inputs from `$STAGE_INPUTS`: `company` (facts, to confirm Canadian-public + name), `ticker`,
+- Read inputs from `io.inputs`: `company` (facts, to confirm Canadian-public + name), `ticker`,
+  `deal_workbook` (the deal's ONE workbook, whose `Ownership` + `Bloomberg Output` tabs you write),
   and `captable_workbook_path` (the companion cap table, for total shares outstanding). The SEDI PDF
   — and, optionally, the Bloomberg ownership export (`.xlsm`/`.xlsx`) — are analyst attachments in
   the chat / deal directory. A missing Bloomberg export is **not** an error: build insider-only and
@@ -51,14 +54,11 @@ When invoked as a stage of a conductor plan, the environment carries `$STAGE_INP
   - **No SEDI PDF attached**: write
     `{"workbook_path": null, "note": "no SEDI PDF attached; ownership slide left as placeholder"}`
     and stop — surface the note at the checkpoint so the analyst can attach it and re-run.
-- Otherwise write the workbook to `$DEAL_DIR/artefacts/<SANITIZED_TICKER> - Ownership.xlsx` (bootstrap
-  `artefacts/` if absent). At the end, write the structured handoff:
-  ```bash
-  python -c "import json,os; json.dump({'workbook_path': os.environ['DEAL_WORKBOOK']}, open(os.environ['STAGE_OUTPUTS'], 'w'))"
-  ```
+- Otherwise write the `Ownership` + `Bloomberg Output` tabs of the deal workbook, then write the
+  structured handoff: `io.write({"workbook_path": str(deal_workbook)})`.
 
-When `$STAGE_OUTPUTS` is **unset** (direct `/ownership` invocation), follow the workflow below as-is —
-output lands in cwd, no JSON handoff needed.
+On **direct `/ownership` invocation** there is no envelope and no handoff: the analyst supplies
+the deal workbook path.
 
 ---
 
@@ -79,16 +79,12 @@ issuer. If it is not attached, ask for it (cite the manual download path in the 
 ### Step 3 — Locate the template and set the output path
 
 The template is resolved **in Python** in Step 10 as
-`Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta")) / "templates" / "INFOR Ownership Template.xlsx"`
-— the same primary location `find_template.sh` searches. (Resolving it in Python, rather than via
+`Path(sys.argv[1]) / "templates" / "INFOR Ownership Template.xlsx"` — the plugin root your
+dispatch envelope passes as the first argument, and the same primary location
+`find_template.sh` searches. (Resolving it in Python, rather than via
 `TEMPLATE=$(bash find_template.sh …)`, avoids the Git-Bash `/c/…` path that `pathlib` mis-reads on
-Windows; this matches the `deck-assembler` / `comps` skills.) Set the sanitized ticker for the
-output filename:
-
-```bash
-SANITIZED_TICKER=$(bash "${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/sanitize_name.sh" "$TICKER")
-DEAL_WORKBOOK="$(python -c "import json,os;print(json.load(open(os.environ['STAGE_INPUTS']))['deal_workbook'])")"
-```
+Windows; this matches the `deck-assembler` / `comps` skills.) The deal workbook path is
+`io.inputs["deal_workbook"]`.
 
 **Do not build the workbook by hand or in any other format.** If the template can't be found, stop
 and tell the analyst to confirm `INFOR Ownership Template.xlsx` exists in the plugin `templates/`.
@@ -98,7 +94,7 @@ and tell the analyst to confirm `INFOR Ownership Template.xlsx` exists in the pl
 Read the attached PDF. It lists every insider the issuer has ever had, each as a block:
 `Insider Name:` … `Insider Relationship:` (codes 1–8) … `Ceased to be Insider:` … then security rows.
 
-SEDI exports are normally clean text (see `references/sedi-extraction.md`), but if a particular report comes through garbled (CID-font scramble, U+FFFD characters, or blank pages), read it via the shared `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/pdf_extract.py` helper (`from pdf_extract import extract_pdf_text`), which detects garble and falls back to rendering + tesseract OCR — never transcribe scrambled glyphs.
+SEDI exports are normally clean text (see `references/sedi-extraction.md`), but if a particular report comes through garbled (CID-font scramble, U+FFFD characters, or blank pages), read it via the shared `<plugin_root>/scripts/pdf_extract.py` helper (`from pdf_extract import extract_pdf_text`), which detects garble and falls back to rendering + tesseract OCR — never transcribe scrambled glyphs.
 
 **Keep only insiders whose `Ceased to be Insider:` is `Not Applicable`.** Drop every insider with a
 ceased date — they are former insiders. (See `references/sedi-extraction.md` for the relationship-code
@@ -170,15 +166,20 @@ When attached:
 
 ### Step 10 — Write the workbook
 
+Run as `python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"` — the three paths
+your dispatch envelope prints.
+
 ```python
-import os, sys
+import sys
 from pathlib import Path
 
-plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
-sys.path.insert(0, str(plugin_root / "scripts"))
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
+
+from stage_io import stage_io
 from ownership_workbook import build_ownership_workbook, InsiderHolding
 
-deal_workbook = inputs["deal_workbook"]   # the Ownership + Bloomberg Output tabs are in it
+io = stage_io()
+deal_workbook = io.inputs["deal_workbook"]   # the Ownership + Bloomberg Output tabs are in it
 
 insiders = [
     InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),

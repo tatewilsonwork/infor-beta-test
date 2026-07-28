@@ -52,7 +52,7 @@ the PRL-class bug becomes a caught test failure instead of a v0.5.35.
 | I | Windows COM dev-path hygiene (runs between B1 and B2) | B1 | ~+60 |
 | C | Name-based template addressing | B | −350 |
 | D | One workbook, one backend | C | **−2,000** |
-| E | Conductor as code | D | −150 |
+| E | ✅ Conductor as code | D | +536 code / +453 tests / −85 docs (est. −150) |
 | F | Stage granularity | E | −400 |
 | G | Falsification pass | B | +500 |
 | H | Single-surface analyst intake | E (H1: none) | +300 / −200 |
@@ -528,21 +528,92 @@ attempt had to be discarded because prep-tooling Excel work overlapped it,
 which shows how little else the machine can be doing for the number to mean
 anything.
 
-## Phase E — Conductor as code
+## Phase E — Conductor as code — ✅ SHIPPED (v0.5.42, 2026-07-28)
 
-Much smaller now — no barrier, fewer stages.
+Much smaller than D, as forecast — no barrier, fewer stages.
 
-1. Extend `conductor_cli` into `conductor.py` with `run_wave(run_dir, n)`. The
-   model's loop becomes: call it, issue the returned `Task` calls, collect,
-   surface the checkpoint. (`load_plan` / `prep_wave` / `collect_wave` already
-   exist — this finishes the trip they started.)
-2. **Remove the env-var export block** from
-   `skills/conductor/references/stage-envelope.md`. Render resolved inputs inline,
-   or have SKILL.md commands take `sys.argv[1]` instead of `os.environ`. This
-   removes the "did the export survive across the sub-agent's tool calls" failure
-   mode entirely.
-3. `skills/conductor/SKILL.md`: 216 lines → ~80 (intake, dispatch, checkpoints,
-   summary).
+1. **`conductor_cli.py` → `conductor.py`, and the trip finished.** `prep_wave` /
+   `collect_wave` resolved and collected; the model still owned the wave
+   narration, the checkpoint payloads, and the summary. Added: `plan_overview`
+   (plan summary + wave schedule), `prepare_wave` → a typed `WaveDispatch` of
+   `PreparedStage`s each carrying a rendered `Task` prompt, `complete_wave` → a
+   typed `WaveOutcome` with `ok` / `halt` / `is_final` and one `Checkpoint` per
+   stage (the `required` one carrying the code-owned `AskUserQuestion` payload and
+   a plain-text fallback), `run_wave(run_dir, n, dispatch)` composing all three,
+   and `render_run_summary` / `write_run_summary`. Renamed with no shim, per the
+   repo's no-back-compat rule.
+2. **The env-var export block is gone.** Three command-line arguments — plugin
+   root, `inputs.json`, `outputs.json` — rendered into the prompt as the exact
+   invocation and read back by the new `scripts/stage_io.py`; the resolved inputs
+   are *also* inlined in the prompt body. All twelve dispatched skills converted.
+   `deal_dir` is derived by walking up to `deal.json` rather than passed, so
+   finding it is the proof the stage landed somewhere real.
+3. **`skills/conductor/SKILL.md`: 216 → 118 lines.** Above the ~80 target, and
+   deliberately: what is left is intake (Steps 1–4), dispatch, checkpoints and
+   summary, and **the intake is the bulk of it**. The locked-questionnaire
+   principle means the deliverable-specific answer mapping — which dialog option
+   sets which plan input, which defaults are computed rather than asked — is
+   instructions to the model, not code the driver can own. Phase H's `IntakeSpec`
+   is what makes that part shrink; compressing it into ambiguity here would have
+   traded a real property for a line count.
+
+### The −150 estimate was wrong, and wrong in an instructive way
+
+Actual: **+536 lines of runtime code** (`conductor.py` 374 → 766, `stage_io.py`
+144 new), **+453 lines of tests**, **−85 lines of skill docs**. The estimate
+assumed the SKILL.md shrink would dominate. It could not: the 98 lines that left
+the conductor SKILL.md were *instructions the model re-executed by hand on every
+wave*, and replacing them with something that cannot be skipped means code plus
+the tests that lock it. Same for the handoff — a one-line `export` block became a
+144-line module because "read three paths, derive the deal directory, prove it
+exists, write the answer" is what the export block was silently *not* doing.
+
+D's −2,685 came from deleting a subsystem. E's +900 comes from moving behaviour
+out of prose. The "net lines" column measures the first kind well and the second
+kind not at all; F is the first kind again.
+
+### run_wave's signature, and why the model calls its two halves
+
+The plan wrote `run_wave(run_dir, n)` as though one call could hand back the
+`Task` prompts *and* return the checkpoint. It cannot: a function returns once,
+and the dispatch in between is a set of `Task` tool calls no Python callable can
+issue. So `run_wave(run_dir, n, dispatch)` takes the dispatch as a callback and
+composes the whole trip, and the conductor skill calls `prepare_wave` → its `Task`
+calls → `complete_wave` — the same sequence with the model standing in for the
+callback. The callback form is not vestigial: it is what the tests drive a full
+wave through end to end, and it is the seam Phase F's in-process transform stages
+plug into.
+
+### Two defects the move to code exposed
+
+- **A `silent` stage that FAILED did not have to surface.** `silent` suppresses a
+  routine summary; it was never meant to hide the reason a run stopped. Nothing
+  distinguished the two while the behaviour lived in prose. `_checkpoint_for` now
+  surfaces a failure whatever the mode.
+- **The stale 7-wave pitch example** in the conductor SKILL.md is deleted rather
+  than corrected — the skill posts `plan_overview(...).narration()`, so there is
+  no second copy of the number left to go stale. The README's two claims are now
+  the only prose copy, and `test_readme_wave_counts_match_the_scheduler` parses
+  and checks them. Confirmed alongside: the hardcoded aggregator barrier is gone
+  from `plan_schedule.py`, and `compute_waves` returns pitch **10 / 6** and
+  earnings update **5 / 3**.
+
+### Skip-guard audit — the standing check after v0.5.40
+
+Nine `find_soffice() is None` guards are genuine and kept: LibreOffice is the one
+render backend, and a box without it truly cannot run those. Five were stale and
+deleted — four `importorskip("pypdfium2")` (Phase A made it an unconditional
+declared dependency, so a missing one is a broken install that must fail loudly)
+and `test_slide_render`'s `_LIBRARY.exists()` skip, whose **cwd-relative** path
+made "ran pytest from the wrong directory" and "the shipped slide library was
+deleted" produce the same green run.
+
+Two more were not stale but **too broad, which is the same failure with a
+different cause**: `test_slide_library_poc`'s two ownership-slide tests caught
+`RuntimeError` and skipped on it. `_render_range_to_png` raises that for a missing
+LibreOffice *and* for a conversion that failed or produced no PDF, so a genuine
+render defect read as a green skip. Both now carry an explicit `find_soffice`
+skipif and let everything else fail. **625 passed, 0 skipped** (595 before).
 
 ## Phase F — Stage granularity
 

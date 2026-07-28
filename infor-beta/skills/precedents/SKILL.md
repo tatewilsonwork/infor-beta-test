@@ -35,22 +35,20 @@ metric-family decision, transaction-selection criteria, and the reputable-source
 
 ## Conductor-mode handoff (read first when running under the conductor)
 
-When invoked as a stage of a conductor plan, the environment carries `$STAGE_INPUTS`,
-`$STAGE_OUTPUTS`, and `$DEAL_DIR`:
+Your dispatch envelope carries three paths — plugin root, `inputs.json`, `outputs.json` — and
+every command below takes them **as arguments**
+(`python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"`, read back by
+`stage_io()`). Nothing is exported; nothing is read from the environment.
 
-- Read inputs from `$STAGE_INPUTS`: `company` (the subject-company facts, to anchor the metric
-  family and the comparable-deal set) and `ticker` (the target's own symbol, if public — used
-  only to name the file).
-- Write the workbook to `$DEAL_DIR/artefacts/<SANITIZED_NAME> - Precedent Transactions.xlsx`
-  (bootstrap `artefacts/` if absent). At the end, write the structured handoff:
-  ```bash
-  python -c "import json,os; json.dump({'workbook_path': os.environ['OUTPUT']}, open(os.environ['STAGE_OUTPUTS'], 'w'))"
-  ```
-- If `$STAGE_INPUTS` is missing a field you need, write `{"error": "missing input: <field>"}`
-  to `$STAGE_OUTPUTS` and stop.
+- Read inputs from `io.inputs`: `company` (the subject-company facts, to anchor the metric
+  family and the comparable-deal set), `ticker` (the target's own symbol, if public), and
+  `deal_workbook` (the deal's ONE workbook, whose `precedents` tab you write — do NOT create a
+  standalone precedents file).
+- At the end, write the structured handoff: `io.write({"workbook_path": str(deal_workbook)})`.
+- If an input you need is missing, `io.fail("missing input: <field>")` and stop.
 
-When `$STAGE_OUTPUTS` is **unset** (direct `/precedents` invocation), follow the workflow below
-as-is — output lands in cwd, no JSON handoff needed.
+On **direct `/precedents` invocation** there is no envelope and no handoff: the analyst
+supplies the deal workbook path.
 
 ---
 
@@ -116,9 +114,9 @@ list in the reference. The HQ country of the target goes in **column AI as a 3-l
 
 ### Step 4 — Build the workbook
 
-Resolve the template at `$CLAUDE_PLUGIN_ROOT/templates/INFOR Precedents Template.xlsx` **in
-Python** (resolving it in Python avoids the Git-Bash `/c/…` path that breaks `pathlib` on
-Windows) and build with the shared helper — see the reference command below. **Do not build
+Resolve the template at `<plugin_root>/templates/INFOR Precedents Template.xlsx` **in
+Python**, off `sys.argv[1]` (resolving it in Python avoids the Git-Bash `/c/…` path that breaks
+`pathlib` on Windows) and build with the shared helper — see the reference command below. **Do not build
 the workbook by hand or in any other format.** If the template can't be found, stop and tell
 the analyst to confirm `INFOR Precedents Template.xlsx` exists in the plugin `templates/`.
 
@@ -135,17 +133,21 @@ rows.
 
 ## Reference command
 
+Run as `python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"` — the three paths
+your dispatch envelope prints.
+
 ```python
-import json, os, sys
+import sys
 from datetime import date
 from pathlib import Path
 
-plugin_root = Path(os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta"))
-sys.path.insert(0, str(plugin_root / "scripts"))
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
+
+from stage_io import stage_io
 from precedents_workbook import build_precedents_workbook, PrecedentGroup, PrecedentTransaction
 
-inputs = json.loads(Path(os.environ["STAGE_INPUTS"]).read_text())   # conductor mode
-deal_workbook = inputs["deal_workbook"]   # the deal's ONE workbook; the `precedents` tab is in it
+io = stage_io()
+deal_workbook = io.inputs["deal_workbook"]   # the deal's ONE workbook; the `precedents` tab is in it
 
 # Operating-family example (Revenue + EBITDA). Pick ONE family for the whole table.
 # FORMAT ILLUSTRATION ONLY — the deals/figures below are obviously-synthetic
@@ -183,9 +185,7 @@ workbook_path = build_precedents_workbook(
     deal_workbook=deal_workbook,
 )
 
-Path(os.environ["STAGE_OUTPUTS"]).write_text(
-    json.dumps({"workbook_path": str(workbook_path)}, indent=2) + "\n"
-)
+io.write({"workbook_path": str(workbook_path)})
 ```
 
 For a **financial-institution** target, swap the metric inputs: use `net_income_ltm` /

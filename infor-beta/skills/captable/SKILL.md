@@ -16,18 +16,17 @@ Today's date is available from the system context (`currentDate`) — do not she
 
 ## Conductor-mode handoff (read first when running under the conductor)
 
-When invoked as a stage of a conductor plan, the environment carries `$STAGE_INPUTS`, `$STAGE_OUTPUTS`, and `$DEAL_DIR`:
+When invoked as a stage of a conductor plan, your dispatch envelope carries three paths — plugin root, `inputs.json`, `outputs.json` — and every command below takes them **as arguments**. Nothing is exported; nothing is read from the environment.
 
-- Read your inputs (ticker, optional company facts) from `$STAGE_INPUTS` instead of asking the analyst. If `$STAGE_INPUTS` is missing fields you need, surface the gap by writing `{"error": "missing input: <field>"}` to `$STAGE_OUTPUTS` and stop — the conductor halts on that.
-- `$STAGE_INPUTS` may also carry `ltm_revenue` and `ltm_adj_ebitda` (millions, in the **filing's reporting currency**) handed off by the upstream `ltm-metrics` stage. Use them in Step 6b to populate the cap table's LTM valuation column (D47 / D48). They are optional — when absent (e.g. direct `/captable` invocation, or a plan with no `ltm-metrics` stage), Step 6b restores the CapIQ fallback formulas instead.
-- `$STAGE_INPUTS` carries `deal_workbook` — the deal's ONE workbook, whose `captable` tab you write. Do NOT create a standalone cap table file.
-- At the end of Step 8, also write the structured handoff:
-  ```bash
-  python -c "import json,os; json.dump({'workbook_path': os.environ['DEAL_WORKBOOK']}, open(os.environ['STAGE_OUTPUTS'], 'w'))"
+- Read your inputs (ticker, optional company facts) from the resolved inputs instead of asking the analyst. If a field you need is missing, surface the gap with `io.fail("missing input: <field>")` and stop — the conductor halts on that.
+- The inputs may also carry `ltm_revenue` and `ltm_adj_ebitda` (millions, in the **filing's reporting currency**) handed off by the upstream `ltm-metrics` stage. Use them in Step 6b to populate the cap table's LTM valuation column (D47 / D48). They are optional — when absent (e.g. direct `/captable` invocation, or a plan with no `ltm-metrics` stage), Step 6b restores the CapIQ fallback formulas instead.
+- The inputs carry `deal_workbook` — the deal's ONE workbook, whose `captable` tab you write. Do NOT create a standalone cap table file.
+- At the end of Step 8, write the structured handoff — the conductor will not proceed past this stage until `outputs.json` exists and parses as JSON:
+  ```python
+  io.write({"workbook_path": str(deal_workbook)})
   ```
-  The conductor will not proceed past this stage until `$STAGE_OUTPUTS` exists and parses as JSON.
 
-When `$STAGE_OUTPUTS` is **unset** (direct `/captable` invocation), the analyst supplies the deal workbook path; there is no standalone-file mode, and no JSON handoff is needed.
+On **direct `/captable` invocation** there is no envelope and no handoff: the analyst supplies the deal workbook path, and there is no standalone-file mode.
 
 ---
 
@@ -57,28 +56,29 @@ Wait for both the ticker and at least one attached document before proceeding.
 its formulas, its CapIQ refresh comments on the FX / share-price cells, and its `infor_cap_*`
 defined names. Every write below goes into that tab.
 
-Its path arrives as `deal_workbook` in `$STAGE_INPUTS`:
-```bash
-DEAL_WORKBOOK="$(python -c "import json,os;print(json.load(open(os.environ['STAGE_INPUTS']))['deal_workbook'])")"
-ls -lh "$DEAL_WORKBOOK"
-```
+Its path arrives as `deal_workbook` in your resolved inputs.
 
 All writes go through the shared `deal_workbook.write_tab`, which holds an exclusive lock for
 the whole load → mutate → save cycle. That matters: the conductor dispatches a wave's stages
 concurrently, and openpyxl rewrites the entire file on save, so an unsynchronised write would
 drop another stage's tab.
 
+Run as `python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"` — the three paths
+your dispatch envelope prints:
+
 ```python
-import json, os, sys
-sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
+from stage_io import stage_io
 from deal_workbook import TAB_CAPTABLE, TabSpec, write_tab
 
-inputs = json.load(open(os.environ["STAGE_INPUTS"]))
-deal_workbook = inputs["deal_workbook"]
+io = stage_io()
+deal_workbook = io.inputs["deal_workbook"]
 
 def fill(wb, ws):
     ...   # every Step 3-7 write, against `ws`
-    
+
 write_tab(deal_workbook, TAB_CAPTABLE, TabSpec(write=fill))
 ```
 
@@ -99,8 +99,9 @@ All the writes below happen inside the `fill(wb, ws)` callback from Step 2, wher
 **Layout verification — REQUIRED before any write.** The cells named below are the shipped template's positions; resolve each one through its **defined name** rather than typing the address, so a re-saved template that shifted a row still writes to the right cell. Run the shared verification first — it checks the sentinel label beside each address, cross-checks that the defined name resolves to the same cell, and raises `TemplateLayoutError` naming what moved:
 
 ```python
-import sys, os
-sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
 from template_layout import (
     NAME_CAP_TICKER, NAME_CAP_OUTPUT_CCY, NAME_FX_RATE, NAME_SHARE_PRICE,
     NAME_LTM_REVENUE_VALUATION, NAME_LTM_EBITDA_VALUATION,
@@ -137,8 +138,9 @@ Determine the filing's reporting currency from the attached documents. Write bot
 **In-artefact citation — REQUIRED.** Each hand-typed web value must carry its source ON the cell, so the artefact is auditable without this chat transcript. openpyxl allows only one comment per cell and F7/F16's comment slot already holds the CapIQ refresh formula, so **append** a `Source: <url> — retrieved <YYYY-MM-DD>` line to each existing comment via the shared helper — never replace the comment, never write the citation as a second comment:
 
 ```python
-import sys, os
-sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
 from comment_citations import append_source_to_comment
 
 from template_layout import NAME_FX_RATE, NAME_SHARE_PRICE, resolve_name_cell
@@ -164,7 +166,7 @@ Use the actual page URL you read the value from and the retrieval date (today, f
 
 Read the attached documents and extract all items listed in the Domain Reference section below. Use the most recent balance sheet date available.
 
-**Garbled PDFs:** if a filing's text comes through scrambled (CID-font glyph soup, U+FFFD replacement characters, or blank pages), do **not** transcribe the garbage. Use the shared `${CLAUDE_PLUGIN_ROOT:-./infor-beta}/scripts/pdf_extract.py` helper, which detects garble and falls back to rendering the pages + tesseract OCR: `from pdf_extract import extract_pdf_text; r = extract_pdf_text(path)` — read `r.text`, and if `r.garbled` is still true (tesseract unavailable) tell the analyst rather than guessing the numbers.
+**Garbled PDFs:** if a filing's text comes through scrambled (CID-font glyph soup, U+FFFD replacement characters, or blank pages), do **not** transcribe the garbage. Use the shared `<plugin_root>/scripts/pdf_extract.py` helper, which detects garble and falls back to rendering the pages + tesseract OCR: `from pdf_extract import extract_pdf_text; r = extract_pdf_text(path)` — read `r.text`, and if `r.garbled` is still true (tesseract unavailable) tell the analyst rather than guessing the numbers.
 
 **Source tracking:** For every value extracted, record its source in this format:
 `"[Document Name] - Page [#], [Section Name]"`
@@ -249,7 +251,7 @@ The Financial Metrics block reads its **LTM** column from `D47` (Revenue) and `D
 
 **Currency / units.** The CapIQ estimate columns next to them (`E47`/`F47`, `E48`/`F48`) are expressed in the **Output currency (F5), in millions**. Whatever you write to `D47`/`D48` must match: millions, in F5 currency.
 
-**Case A — LTM values supplied (`ltm_revenue` / `ltm_adj_ebitda` in `$STAGE_INPUTS`).** These arrive in the filing's reporting currency, in millions. Convert to the Output currency the same way the rest of the template does — by **multiplying by F7** (Output per Input/filing currency; F7 is `1.0` when the filing currency equals F5, so this is a safe no-op then). Write each as a formula embedding the figure so the conversion stays auditable, and apply blue font (it is an authored hardcoded-derived value, like the Section IV OTM rows):
+**Case A — LTM values supplied (`ltm_revenue` / `ltm_adj_ebitda` in your resolved inputs).** These arrive in the filing's reporting currency, in millions. Convert to the Output currency the same way the rest of the template does — by **multiplying by F7** (Output per Input/filing currency; F7 is `1.0` when the filing currency equals F5, so this is a safe no-op then). Write each as a formula embedding the figure so the conversion stays auditable, and apply blue font (it is an authored hardcoded-derived value, like the Section IV OTM rows):
 
 ```python
 from template_layout import (
