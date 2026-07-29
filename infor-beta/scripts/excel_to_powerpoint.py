@@ -25,6 +25,24 @@ LibreOffice anyway.
 Tune the workbook's column widths and row heights so the natural aspect ratio of
 the source range matches the target placeholder; the picture is stretched to fit
 either way.
+
+Two standing rules govern the temp copy this renders from:
+
+- **A renderer must render a private copy.** Both engines hold the caller's file
+  open (LibreOffice drops a `.~lock`), and `zipfile.is_zipfile` swallows the
+  resulting `OSError` into a bogus `PackageNotFoundError`.
+- **The private copy must print ONE sheet, and the PDF must have exactly one
+  page.** Hiding a sheet does not stop LibreOffice exporting it — neither its
+  print range, nor its whole used range when it is the workbook's active tab. A
+  deal workbook trips both: it inherits print areas from its source templates
+  (`captable` -> `$A$1:$T$187`, `comps` -> `$A$1:$BI$45`) and it opens on
+  `precedents`. So the export was a multi-page PDF whose page 1 was the entire
+  captable sheet, and rendering `pdf[0]` silently returned the cap table for every
+  caller — the wrong-sheet bug that shipped a pitch deck with two cap-table
+  pictures on the ownership slide, byte-identical and therefore deduped by
+  python-pptx into one shared `r:embed`. `_prepare_print_copy` handles both
+  mechanisms; the page-count assertion below is the backstop that makes a third
+  one loud instead of silent.
 """
 
 from __future__ import annotations
@@ -33,13 +51,66 @@ import io
 import shutil
 import subprocess
 import tempfile
+from collections import Counter
 from pathlib import Path
 
 from pptx import Presentation
 
+# The name given to a picture that replaced a placeholder, so an Excel-range
+# picture stays identifiable in the finished deck (`Excel Range: Rectangle 1`)
+# rather than an anonymous `Picture 14`. `assert_range_pictures_are_distinct`
+# scopes itself by this prefix.
+RANGE_PICTURE_PREFIX = "Excel Range: "
 
 
+def range_picture_name(placeholder_name: str) -> str:
+    """The shape name for the picture that replaces ``placeholder_name``."""
+    return f"{RANGE_PICTURE_PREFIX}{placeholder_name}"
 
+
+def _range_picture_embeds(slide) -> "list[tuple[str, str]]":
+    """``(shape name, r:embed id)`` for each Excel-range picture on ``slide``.
+
+    Flat scan: `add_picture` appends to the slide's own shape tree, so a range
+    picture is never inside a group.
+    """
+    return [
+        (shape.name, shape._element.blip_rId)
+        for shape in slide.shapes
+        if shape.name.startswith(RANGE_PICTURE_PREFIX)
+        and getattr(shape._element, "blip_rId", None)
+    ]
+
+
+def assert_range_pictures_are_distinct(prs: Presentation) -> None:
+    """Fail when two Excel-range pictures on one slide share an embedded image.
+
+    The symptom-level guard on the wrong-sheet bug class in the module docstring.
+    python-pptx dedupes image parts by SHA1, so two ranges that rendered
+    byte-identical PNGs ship as *one* picture referenced twice — which is what
+    the ownership slide did when both of its ranges rendered the cap table. The
+    slide is valid XML and python-pptx reports two pictures, so nothing short of
+    comparing the embeds notices.
+
+    Scoped to range pictures on purpose: the credentials slides legitimately show
+    one client logo twice, so an unscoped assertion would fail every pitch deck.
+    """
+    for index, slide in enumerate(prs.slides, start=1):
+        embeds = _range_picture_embeds(slide)
+        counts = Counter(rid for _, rid in embeds)
+        shared = {
+            rid: sorted(name for name, r in embeds if r == rid)
+            for rid, n in counts.items()
+            if n > 1
+        }
+        if shared:
+            raise ValueError(
+                f"slide {index} carries Excel-range pictures sharing one embedded "
+                f"image: {shared}. python-pptx dedupes identical image bytes to a "
+                f"single r:embed, so two ranges rendered the same picture — check "
+                f"that the range renderer is not selecting the wrong sheet's page "
+                f"(see excel_to_powerpoint's one-sheet-one-page rule)."
+            )
 
 
 # LibreOffice recalculates OOXML formulas on load only when told to. openpyxl
@@ -83,7 +154,11 @@ def insert_excel_into_placeholder(
     png_buffer = _render_range_to_png(workbook, sheet_name, source_range)
 
     placeholder._element.getparent().remove(placeholder._element)
-    slide.shapes.add_picture(png_buffer, left, top, width=width, height=height)
+    picture = slide.shapes.add_picture(png_buffer, left, top, width=width, height=height)
+    # Name it after the placeholder it replaced. python-pptx would call it
+    # `Picture <next shape id>`, which says nothing about which range it holds and
+    # gives `assert_range_pictures_are_distinct` nothing to scope itself by.
+    picture.name = range_picture_name(placeholder_name)
 
     out = Path(output_path) if output_path is not None else deck
     prs.save(out)
@@ -216,12 +291,71 @@ def _soffice_convert(soffice: str, src: Path, out_fmt: str, out_dir: Path) -> No
             ) from exc
 
 
+# Stem of the private copy and therefore of LibreOffice's PDF output (it names the
+# output after the input). One constant so the two paths cannot drift apart.
+_PRINT_COPY_STEM = "range_print"
+
+
+def _prepare_print_copy(
+    workbook: Path, sheet_name: str, source_range: str, dest: Path
+) -> None:
+    """Save a private copy of ``workbook`` whose only print area is ``source_range``.
+
+    Makes ``sheet_name`` the only visible sheet **and the selected/active one**,
+    **clears every other sheet's print area**, points the target sheet's at
+    ``source_range`` and forces fit-to-1-page with tight margins.
+
+    Two independent reasons a non-target sheet gets exported anyway, both of which
+    put a foreign page ahead of the requested range — and hiding the sheet stops
+    neither:
+
+    1. **Its print area.** LibreOffice exports a hidden sheet's print range. A deal
+       workbook inherits print areas from its source templates (`captable` ->
+       `'captable'!$A$1:$T$187`, `comps` -> `'comps'!$A$1:$BI$45`), so those two
+       tabs print in full unless cleared.
+    2. **The stored active tab.** A workbook whose active tab is some other sheet
+       exports that sheet's used range in full, hidden or not. The shipped deal
+       workbook template opens on `precedents`, which is how the cap table stayed
+       page 1 even after every stray print area was cleared.
+
+    Together they are why the caller's `pdf[0]` was the cap table for every
+    requested range. See the one-sheet-one-page rule in the module docstring; the
+    page-count assertion in `_libreoffice_range_to_png` is the backstop for a
+    third mechanism nobody has found yet.
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(workbook)
+    if sheet_name not in wb.sheetnames:
+        raise KeyError(
+            f"sheet {sheet_name!r} not found in workbook (available: {wb.sheetnames})"
+        )
+    for name in wb.sheetnames:
+        sheet = wb[name]
+        sheet.sheet_state = "visible" if name == sheet_name else "hidden"
+        if name != sheet_name:
+            sheet.print_area = None
+        for view in sheet.views.sheetView:
+            view.tabSelected = name == sheet_name
+    wb.active = wb.sheetnames.index(sheet_name)
+    ws = wb[sheet_name]
+    ws.print_area = source_range
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins.left = 0.25
+    ws.page_margins.right = 0.25
+    ws.page_margins.top = 0.25
+    ws.page_margins.bottom = 0.25
+    wb.save(dest)
+
+
 def _libreoffice_range_to_png(workbook: Path, sheet_name: str, source_range: str) -> io.BytesIO:
     """Render an Excel range as PNG via LibreOffice headless PDF export.
 
-    Strategy: open the workbook with openpyxl, hide every sheet except the
-    target, set the target sheet's print area to the source range, force
-    fit-to-1-page, and save to a temp copy. Convert that copy to PDF with
+    Strategy: save a temp copy in which the target sheet is the only visible and
+    active one, no other sheet has a print area, and the target's print area is
+    the source range, fit to one page (`_prepare_print_copy`). Convert that copy to PDF with
     headless LibreOffice — **forcing a recalculation on load** so the
     openpyxl-authored (cache-less), manual-calc cap-table formulas actually
     compute (see `_soffice_convert` / `_write_lo_recalc_profile`) — then render
@@ -231,12 +365,14 @@ def _libreoffice_range_to_png(workbook: Path, sheet_name: str, source_range: str
     and resolve to `#NAME?`, which the template's IFERROR wrappers degrade to
     `n/a`; the in-workbook arithmetic and the hardcoded LTM column still compute.
 
+    The export must be exactly one page. A second page means another sheet was
+    exported too, in which case page 1 is not necessarily the requested range — so
+    this raises rather than rendering whatever page 1 happens to be.
+
     Requires LibreOffice (resolved by `find_soffice`) and the `pypdfium2`
     package. Raises RuntimeError with a clear message if either is
     missing — the conductor surfaces this to the analyst.
     """
-    from openpyxl import load_workbook
-
     soffice = find_soffice()
     if soffice is None:
         raise RuntimeError(
@@ -254,35 +390,36 @@ def _libreoffice_range_to_png(workbook: Path, sheet_name: str, source_range: str
         ) from exc
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_xlsx = Path(tmp_dir) / "captable_print.xlsx"
-        wb = load_workbook(workbook)
-        if sheet_name not in wb.sheetnames:
-            raise KeyError(
-                f"sheet {sheet_name!r} not found in workbook (available: {wb.sheetnames})"
-            )
-        for name in wb.sheetnames:
-            wb[name].sheet_state = "visible" if name == sheet_name else "hidden"
-        ws = wb[sheet_name]
-        ws.print_area = source_range
-        ws.page_setup.fitToWidth = 1
-        ws.page_setup.fitToHeight = 1
-        ws.sheet_properties.pageSetUpPr.fitToPage = True
-        ws.page_margins.left = 0.25
-        ws.page_margins.right = 0.25
-        ws.page_margins.top = 0.25
-        ws.page_margins.bottom = 0.25
-        wb.save(tmp_xlsx)
+        tmp_xlsx = Path(tmp_dir) / f"{_PRINT_COPY_STEM}.xlsx"
+        _prepare_print_copy(workbook, sheet_name, source_range, tmp_xlsx)
 
         # Convert to PDF with recalc-on-load forced (the saved xlsx has no cached
         # formula values), so the EV cascade and metric blocks print computed.
         _soffice_convert(soffice, tmp_xlsx, "pdf", Path(tmp_dir))
 
-        pdf_path = Path(tmp_dir) / "captable_print.pdf"
+        pdf_path = Path(tmp_dir) / f"{_PRINT_COPY_STEM}.pdf"
         if not pdf_path.exists():
-            raise RuntimeError("LibreOffice produced no PDF output for the cap-table workbook")
+            raise RuntimeError(
+                f"LibreOffice produced no PDF output for {workbook.name} "
+                f"({sheet_name}!{source_range})"
+            )
 
         pdf = pdfium.PdfDocument(str(pdf_path))
         try:
+            # One sheet in, one page out. More than one page means another sheet
+            # was exported too, and page 1 is then whichever sheet comes first in
+            # the workbook rather than the requested range — the wrong-sheet bug
+            # class, which is silent unless asserted here.
+            if len(pdf) != 1:
+                raise RuntimeError(
+                    f"LibreOffice exported {len(pdf)} PDF pages for "
+                    f"{sheet_name}!{source_range} in {workbook.name}; the range "
+                    f"renderer requires exactly 1 because it renders page 1, and "
+                    f"an extra page means page 1 may be a different sheet. Look for "
+                    f"a sheet LibreOffice exports despite being hidden: a stray "
+                    f"print area, or the stored active tab (_prepare_print_copy "
+                    f"clears both)."
+                )
             page = pdf[0]
             pil_image = page.render(scale=200 / 72).to_pil().convert("RGB")
             pil_image = _trim_white_margins(pil_image)

@@ -31,7 +31,10 @@ from pptx.util import Emu, Inches
 
 from deal_workbook import TAB_CAPTABLE, TAB_OWNERSHIP
 from deck_repair import assert_converged, converge_deck
-from excel_to_powerpoint import insert_excel_into_placeholder
+from excel_to_powerpoint import (
+    assert_range_pictures_are_distinct,
+    insert_excel_into_placeholder,
+)
 from naming import safe_filename
 from pptx_helpers import (
     clone_slide_after,
@@ -791,6 +794,10 @@ def _verify_pitch_output(
             f"assembled pitch deck has {len(prs.slides)} slides; the slide-mix "
             f"layout expected {expected_slides}"
         )
+    # The ownership slide takes TWO range pictures (insiders + institutions), so it
+    # is where a range renderer selecting the wrong sheet shows up as one picture
+    # pasted twice. Checked on every slide, not just that one.
+    assert_range_pictures_are_distinct(prs)
     text = _all_text(prs)
     forbidden = ["[CLIENT NAME]", "[Date]"]
     leftovers = [token for token in forbidden if token in text]
