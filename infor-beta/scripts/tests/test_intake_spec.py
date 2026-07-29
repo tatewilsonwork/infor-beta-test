@@ -21,8 +21,9 @@ These tests are the replacement guarantee, in two layers:
      the other.
 
 Plus the invariants the intake spec has to keep carrying: the
-`*_DIALOG_PLAN_INPUTS` answer mapping, and the attachment gates whose answers
-are deliberately NOT plan inputs.
+`*_DIALOG_PLAN_INPUTS` answer mapping, and the attachments — which as of
+v0.5.50 are asked about in no rendering at all, and reach the analyst as the
+two-section request instead.
 """
 
 from __future__ import annotations
@@ -34,15 +35,16 @@ from pathlib import Path
 import deal_init
 import deck_spec
 from intake_spec import (
+    ATTACHMENT_OPTIONAL_HEADER,
+    ATTACHMENT_REQUIRED_HEADER,
     DIALOG_MAX_QUESTIONS,
     IntakeDefault,
     IntakeField,
-    IntakeNote,
     IntakeOption,
     IntakeSpec,
+    render_attachment_request,
     render_defaults_echo,
     render_dialogs,
-    render_note,
     render_prompt,
 )
 from schemas import Plan
@@ -80,7 +82,6 @@ def _plan(name: str) -> Plan:
 def test_deal_init_renderings_are_generated():
     spec = deal_init.INIT_INTAKE
     assert deal_init.render_init_prompt() == render_prompt(spec)
-    assert deal_init.render_init_filings_note() == render_note(spec)
     assert deal_init.render_init_dialogs(include_deliverable=True) == render_dialogs(
         spec
     )
@@ -96,13 +97,15 @@ def test_deal_init_renderings_are_generated():
 )
 def test_deck_spec_renderings_are_generated(deliverable: str, spec: IntakeSpec):
     assert deck_spec.render_deck_spec_prompt(deliverable) == render_prompt(spec)
-    assert deck_spec.render_deck_spec_documents_note(deliverable) == render_note(spec)
     assert deck_spec.render_deck_spec_dialogs(deliverable) == render_dialogs(
         spec, target_kinds=("plan-input",)
     )
-    assert deck_spec.render_deck_spec_documents_dialogs(
+    # The run's one request merges deal-init's filings with this deliverable's
+    # documents — one generator, so the live message and the two text-fallback
+    # prompts cannot come to name different files.
+    assert deck_spec.render_run_attachment_request(
         deliverable
-    ) == render_dialogs(spec, target_kinds=("attachment",))
+    ) == render_attachment_request(deal_init.INIT_INTAKE, spec)
     echo_values = {
         "client_name": "Example Target Inc.",
         "presentation_date": "July 2026",
@@ -119,10 +122,15 @@ def test_generation_is_deterministic(label: str, spec: IntakeSpec):
     """Same spec in, same bytes out — the locked questionnaire, mechanised."""
     assert render_prompt(spec) == render_prompt(spec)
     assert render_dialogs(spec) == render_dialogs(spec)
-    assert render_note(spec) == render_note(spec)
+    assert render_attachment_request(spec) == render_attachment_request(spec)
     # Fresh payloads every call: a caller mutating one render cannot reach the
     # next, so no deep-copy discipline is needed at the call sites.
     first = render_dialogs(spec)
+    if not first:
+        # One spec has no questions left at all: the earnings-update deck spec
+        # defaults both quarters and takes the EEO snip as an attachment.
+        assert spec is deck_spec.EARNINGS_UPDATE_INTAKE
+        return
     first[0][0]["question"] = "mutated"
     first[0][0]["options"].clear()
     again = render_dialogs(spec)
@@ -148,8 +156,8 @@ def test_dialogs_and_prompt_describe_the_same_items_in_the_same_order(
     prompt = _flat(render_prompt(spec))
     items = spec.prompt_fields()
 
-    # Same items, same order. Attachment gates are in neither list — they are
-    # status gates described by the note (asserted separately below).
+    # Same items, same order. Attachments are in neither list — nothing is
+    # asked about them (asserted separately below).
     dialog_keys = [
         q["header"]
         for dialog in render_dialogs(
@@ -250,26 +258,115 @@ def test_defaults_echo_names_every_missing_computed_value():
 
 
 @pytest.mark.parametrize("label,spec", SPECS, ids=SPEC_IDS)
-def test_note_describes_every_attachment_gate(label: str, spec: IntakeSpec):
-    """A document the run asks about is a document the checklist explains.
+def test_the_request_describes_every_attachment_and_asks_about_none(
+    label: str, spec: IntakeSpec
+):
+    """Every attachment is one request bullet, and a question in no rendering.
 
-    Attachment gates are not numbered prompt items — file bytes cannot come
-    through a dialog, so the note is where the analyst reads what to attach and
-    what degrades without it.
+    This is the v0.5.50 guarantee. An attachment used to be a status dialog
+    (attached / will-drop-next-message / none) whose option descriptions carried
+    the "without it, X stays a placeholder" warning. There is no dialog to hold
+    that any more, so the warning lives in the `checklist` line and the request
+    is where the analyst reads it.
     """
-    note = _flat(render_note(spec))
-    gates = [f for f in spec.fields if f.target_kind == "attachment"]
+    request = _flat(render_attachment_request(spec))
     prompt = _flat(render_prompt(spec))
-    assert note in prompt, "the text prompt must embed the checklist"
-    for f in gates:
-        assert _flat(f.checklist) in note, (
-            f"{label} note does not describe the {f.key!r} attachment"
+    attachments = spec.attachment_fields()
+    assert attachments, f"{label} declares no attachments"
+    assert request in prompt, "the text prompt must embed the request"
+    for f in attachments:
+        assert _flat(f.checklist) in request, (
+            f"{label} request does not describe the {f.key!r} attachment"
         )
+        assert _flat(f.prompt_label) in request
+        # Asked about nowhere: no dialog question, no numbered prompt item, and
+        # no entry in any answer-mapping table.
+        assert not f.is_dialog and not f.is_free_text and f.is_attachment
+        assert not f.question and not f.options and not f.hint
         assert f.key not in spec.targets("plan-input")
-        assert f.key in spec.targets("attachment")
-        # The status answer never becomes a plan input, and the gate is not a
-        # numbered item competing with one.
+        assert f.key not in spec.targets("deal-context")
         assert f not in spec.prompt_fields()
+
+
+@pytest.mark.parametrize("label,spec", SPECS, ids=SPEC_IDS)
+def test_the_request_splits_required_from_optional(label: str, spec: IntakeSpec):
+    """Both sections come from `required`, so neither can list the wrong file."""
+    request = render_attachment_request(spec)
+    required = spec.attachment_fields(required=True)
+    optional = spec.attachment_fields(required=False)
+    assert set(required) | set(optional) == set(spec.attachment_fields())
+    assert not set(required) & set(optional)
+    for header, section in (
+        (ATTACHMENT_REQUIRED_HEADER, required),
+        (ATTACHMENT_OPTIONAL_HEADER, optional),
+    ):
+        # A section header appears exactly when that section has a bullet.
+        assert (header in request) is bool(section)
+    # Requiredness orders the message, not just labels it.
+    if required and optional:
+        assert request.index(ATTACHMENT_REQUIRED_HEADER) < request.index(
+            ATTACHMENT_OPTIONAL_HEADER
+        )
+    for f in required:
+        assert _flat(f.checklist) in _flat(
+            request.split(ATTACHMENT_OPTIONAL_HEADER)[0]
+        )
+
+
+def test_the_request_merges_the_specs_in_order_and_refuses_a_repeat():
+    """One message per run: deal-init's filings, then the deliverable's own."""
+    merged = deck_spec.render_run_attachment_request("pitch")
+    for spec in (deal_init.INIT_INTAKE, deck_spec.PITCH_INTAKE):
+        for f in spec.attachment_fields():
+            assert _flat(f.checklist) in _flat(merged)
+    # deal-init leads, so the G7 filings are the first REQUIRED bullet.
+    filings = deal_init.INIT_INTAKE.attachment_fields()[0]
+    cim = deck_spec.PITCH_INTAKE.attachment_fields()[0]
+    assert _flat(merged).index(_flat(filings.prompt_label)) < _flat(merged).index(
+        _flat(cim.prompt_label)
+    )
+    # The G7 filings were described in deal-init's prose AND again, in different
+    # words, in each deck spec's checklist. Merging from the declarations is what
+    # removed that; a re-declaration is refused rather than listed twice.
+    with pytest.raises(ValueError, match="one document, one declaration"):
+        render_attachment_request(deal_init.INIT_INTAKE, deal_init.INIT_INTAKE)
+
+
+def test_an_attachment_carrying_a_plan_input_matches_the_plan():
+    """The CIM and the EEO snip are attachments whose saved path IS a plan input."""
+    assert deck_spec.PITCH_ATTACHMENT_PLAN_INPUTS == {
+        "cim_path": "CIM / management presentation"
+    }
+    assert deck_spec.EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS == {
+        "eeo_snip_path": "Bloomberg EEO snip"
+    }
+    # A REQUIRED one halts the run when it never arrives, so requiredness has to
+    # be the plan's — checked in full by
+    # `test_declared_requiredness_matches_the_plans` below.
+    assert deck_spec.EARNINGS_UPDATE_INTAKE.attachment_inputs(required=True) == {
+        "eeo_snip_path": "Bloomberg EEO snip"
+    }
+    assert deck_spec.PITCH_INTAKE.attachment_inputs(required=True) == {}
+    # The SEDI report and the Bloomberg export carry no path: the ownership
+    # stage finds them under <deal_dir>/filings/ itself.
+    assert set(deck_spec.PITCH_INTAKE.attachment_inputs()) == {"cim_path"}
+
+
+@pytest.mark.parametrize("label,spec", SPECS, ids=SPEC_IDS)
+def test_attachments_are_not_reachable_through_the_dialog_tables(
+    label: str, spec: IntakeSpec
+):
+    """`targets("attachment")` used to answer `{}` — it now refuses.
+
+    `IntakeSpec.targets` filters on `is_dialog`, so once attachments stopped
+    being dialogs it would have returned an empty table to every caller asking
+    for them, silently. That is how `PITCH_DOCUMENTS_DIALOG_TARGETS` would have
+    survived this change as `{}` and nothing would have failed.
+    """
+    with pytest.raises(ValueError, match="attachments are not dialog questions"):
+        spec.targets("attachment")
+    with pytest.raises(ValueError, match="attachments are not numbered"):
+        spec.item_targets("attachment")
 
 
 # ---------------------------------------------------------------------------
@@ -293,8 +390,12 @@ def test_plan_input_tables_still_key_off_the_dialog_headers():
         ]
         assert set(headers) == set(table)
         assert len(headers) == len(set(headers))
-        # Status gates share the header namespace but never the table.
-        assert not set(spec.targets("attachment")) & set(table)
+        # Attachments share the header namespace but reach no answer table.
+        assert not {f.key for f in spec.attachment_fields()} & set(table)
+        # A plan input is collected exactly one way — asked, attached, or
+        # defaulted, never two of them.
+        assert not set(table.values()) & set(spec.attachment_inputs())
+        assert not set(table.values()) & {d.name for d in spec.defaults}
 
 
 def test_item_tables_number_the_prompt_the_dialogs_render():
@@ -312,20 +413,36 @@ def test_item_tables_number_the_prompt_the_dialogs_render():
 
 
 def test_declared_requiredness_matches_the_plans():
-    """`required` on a field means the plan input has no default — check it."""
+    """`required` means the plan input has no default — for both ways in.
+
+    An asked question and an attached document supply a plan input alike, so both
+    are checked against the plan. This is what stops the earnings-update spec
+    from listing the EEO snip as OPTIONAL while `earnings-update.yaml` declares
+    `eeo_snip_path` required — a run that would then resolve the reference to
+    None and hand a content stage no estimates source.
+    """
     for plan_name, spec in (
         ("pitch.yaml", deck_spec.PITCH_INTAKE),
         ("earnings-update.yaml", deck_spec.EARNINGS_UPDATE_INTAKE),
     ):
         plan_required = {s.name: s.required for s in _plan(plan_name).plan_inputs}
+        checked = 0
         for f in spec.fields:
-            if f.target_kind != "plan-input":
+            if f.is_attachment:
+                if not f.plan_input:
+                    continue  # discovered on disk; not a plan input at all
+                name, how = f.plan_input, "attaches"
+            elif f.target_kind == "plan-input":
+                name, how = f.target, "asks for"
+            else:
                 continue
-            assert f.target in plan_required, f"{f.key} asks for an unknown input"
-            assert f.required is plan_required[f.target], (
+            checked += 1
+            assert name in plan_required, f"{f.key} {how} an unknown input {name!r}"
+            assert f.required is plan_required[name], (
                 f"{f.key} is {'REQUIRED' if f.required else 'optional'} in the "
                 f"questionnaire but the opposite in {plan_name}"
             )
+        assert checked, f"{plan_name} questionnaire supplies no plan input at all"
 
 
 def test_dialog_batches_respect_the_declared_groups():
@@ -340,11 +457,18 @@ def test_dialog_batches_respect_the_declared_groups():
         for dialog in batched:
             groups = {by_key[key].group for key in dialog}
             assert len(groups) == 1, f"dialog {dialog} mixes groups {groups}"
-    # The pitch questionnaire's two declared groups are its two dialogs.
+    # The pitch questionnaire's two question groups are its two dialogs. Its
+    # third group, `documents`, is all attachments and renders no dialog at all
+    # (v0.5.50: the CIM left the content dialog for the request list).
     assert [
         [q["header"] for q in dialog]
         for dialog in deck_spec.render_deck_spec_dialogs("pitch")
-    ] == [["Notes", "CIM", "Valuation", "Risk notes"], ["Targets", "Highlights"]]
+    ] == [["Notes", "Valuation", "Risk notes"], ["Targets", "Highlights"]]
+    assert [f.key for f in deck_spec.PITCH_INTAKE.attachment_fields()] == [
+        "CIM",
+        "SEDI PDF",
+        "BBG export",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -418,14 +542,67 @@ def test_a_free_text_field_needs_a_hint_and_no_question():
         )
 
 
-def test_an_attachment_gate_needs_a_checklist_line():
+def _attachment(**overrides) -> IntakeField:
+    kwargs = dict(
+        key="SEDI PDF",
+        prompt_label="SEDI report",
+        target="consumed by the ownership stage",
+        target_kind="attachment",
+        checklist="Canadian targets only; without it the insider side is blank.",
+        question="",
+        options=(),
+    )
+    kwargs.update(overrides)
+    return IntakeField(**kwargs)
+
+
+def test_an_attachment_needs_a_checklist_line():
     with pytest.raises(ValueError, match="needs a checklist line"):
-        _field(key="SEDI PDF", target_kind="attachment", prompt_label="")
+        _attachment(checklist="")
 
 
-def test_only_an_attachment_gate_contributes_a_checklist_bullet():
-    with pytest.raises(ValueError, match="not an attachment gate"):
+def test_only_an_attachment_contributes_a_checklist_bullet():
+    with pytest.raises(ValueError, match="not an attachment"):
         _field(checklist="Attach the thing.")
+
+
+def test_an_attachment_is_its_own_kind_not_a_dialog_field_about_a_file():
+    """The shape v0.5.50 made unrepresentable: an attachment that is asked about.
+
+    Before, `attachment` was a rider on the dialog/free-text split — an
+    attachment with no options fell through to the free-text branch and was told
+    it needed a `hint`, so every one of them had to carry dialog wording to be
+    constructible at all. Now each of the three kinds is validated as itself.
+    """
+    for wording in (
+        {"question": "Attach the SEDI report?"},
+        {"hint": "drop the PDF in chat"},
+        {
+            "question": "Attached?",
+            "options": (IntakeOption("Yes", "It is."), IntakeOption("No", "Not yet.")),
+        },
+    ):
+        with pytest.raises(ValueError, match="carries dialog wording"):
+            _attachment(**wording)
+    # And the shape that is now legal: no wording at all, just the bullet.
+    field = _attachment()
+    assert field.is_attachment
+    assert not field.is_dialog and not field.is_free_text
+
+
+def test_only_an_attachment_may_carry_a_plan_input():
+    """A question's plan input is its `target`; `plan_input` is a file's path."""
+    with pytest.raises(ValueError, match="is not an attachment"):
+        _field(plan_input="cim_path")
+    assert _attachment(plan_input="cim_path").plan_input == "cim_path"
+
+
+def test_every_field_needs_a_prompt_label():
+    """Including an attachment: the label is the handle its bullet leads with."""
+    with pytest.raises(ValueError, match="needs a prompt_label"):
+        _attachment(prompt_label="")
+    with pytest.raises(ValueError, match="needs a prompt_label"):
+        _field(prompt_label="")
 
 
 def _spec(**overrides) -> IntakeSpec:
@@ -465,15 +642,32 @@ def test_an_input_cannot_be_both_asked_and_defaulted():
         )
 
 
-def test_an_attachment_gate_without_a_note_is_rejected():
-    gate = _field(
-        key="SEDI PDF",
-        prompt_label="",
-        target_kind="attachment",
-        checklist="Attach the SEDI report.",
-    )
-    with pytest.raises(ValueError, match="no note to carry"):
-        _spec(fields=(gate,))
-    # With a note, the gate's bullet lands in it.
-    spec = _spec(fields=(gate,), note=IntakeNote(header="Documents:"))
-    assert "- Attach the SEDI report." in render_note(spec)
+def test_an_attachment_needs_no_note_object_to_be_rendered():
+    """The request's framing is code-owned; a spec declares only the bullets.
+
+    Attachments used to require an `IntakeNote` on the spec to carry their
+    checklist lines, and each deck spec declared one with the same boilerplate
+    header. A merged request cannot honour two headers, and a note's free-prose
+    `bullets` had no required/optional section to go in, so the object went.
+    """
+    spec = _spec(fields=(_attachment(checklist="Attach the SEDI report."),))
+    request = render_attachment_request(spec)
+    assert "- SEDI report — Attach the SEDI report." in request
+    assert ATTACHMENT_OPTIONAL_HEADER in request
+    assert ATTACHMENT_REQUIRED_HEADER not in request
+
+
+def test_a_spec_with_no_attachments_renders_no_request():
+    assert render_attachment_request(_spec()) == ""
+    # And the text prompt then has no request section to embed.
+    assert ATTACHMENT_OPTIONAL_HEADER not in render_prompt(_spec())
+
+
+def test_a_plan_input_cannot_be_both_asked_and_attached():
+    with pytest.raises(ValueError, match="collects plan input"):
+        _spec(
+            fields=(
+                _field(target="cim_path"),
+                _attachment(key="CIM", plan_input="cim_path"),
+            )
+        )

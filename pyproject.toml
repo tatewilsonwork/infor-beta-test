@@ -1,6 +1,6 @@
 [project]
 name = "infor-beta"
-version = "0.5.48"
+version = "0.5.50"
 description = "INFOR Financial Group internal Claude Code plugin — clean-break rebuild of infor-workflows."
 requires-python = ">=3.11"
 dependencies = [

@@ -7,13 +7,14 @@ import pytest
 from deal_init import (
     DEAL_SUBDIRS,
     INIT_DIALOG_FIELDS,
+    INIT_INTAKE,
     load_deal_context,
     load_or_locate_deal,
     render_init_dialogs,
-    render_init_filings_note,
     render_init_prompt,
     save_deal_context,
 )
+from intake_spec import ATTACHMENT_REQUIRED_HEADER, render_attachment_request
 from schemas import Company, DealContext
 
 
@@ -28,20 +29,30 @@ def _ctx(tmp_root: Path, codename: str = "Project OpenText", **overrides) -> Dea
     return DealContext(**kwargs)
 
 
-def test_render_init_prompt_contains_five_questions():
-    """The init prompt asks exactly five numbered items — verify all present."""
+def test_render_init_prompt_contains_four_questions():
+    """The init prompt asks exactly four numbered items — verify all present.
+
+    Five until v0.5.50. The filings item was the fifth, and it was a status
+    question rather than a real one: it asked the analyst to say whether files
+    were attached, which the deal's `filings/` directory already knew. It is now
+    an attachment, so it is a bullet of the request this prompt ends with rather
+    than a numbered item.
+    """
     prompt = render_init_prompt()
-    for n in range(1, 6):
+    for n in range(1, 5):
         assert f"{n}." in prompt, f"prompt missing item {n}"
+    assert "5. " not in prompt, "the filings status question is not a prompt item"
     # The locked field names should appear verbatim
     for label in (
         "Deliverable type:",
         "Subject company name:",
         "Public or private?:",
         "Sector / industry:",
-        "Filings / attachments:",
     ):
         assert label in prompt, f"prompt missing label {label!r}"
+    # The filings are still asked for, as an attachment the prompt requests.
+    assert ATTACHMENT_REQUIRED_HEADER in prompt
+    assert "Financial statements / filings" in prompt
     # The codename is auto-derived, never asked — the prompt says so and no
     # longer carries the old items.
     assert "derived automatically" in prompt
@@ -108,28 +119,42 @@ def test_init_dialogs_render_verbatim_and_immutably():
     assert again[0][0]["options"]
 
 
-def test_init_filings_question_is_a_status_gate():
-    """Filings is a fixed status question — files themselves come via chat."""
-    questions = [q for dialog in render_init_dialogs() for q in dialog]
-    filings_q = next(q for q in questions if q["header"] == "Filings")
-    labels = [opt["label"] for opt in filings_q["options"]]
-    assert labels == [
-        "Attached in this chat",
-        "I'll drop them in my next message",
-        "None for now",
+def test_init_filings_is_an_attachment_not_a_question():
+    """Filings is asked about in no rendering — it is a REQUIRED request bullet.
+
+    Through v0.5.49 this was a three-option status dialog (attached / will drop
+    next message / none for now), and "None for now" was its default — so the
+    one question standing between a run and its only source of financial data
+    defaulted to "no data". The filings are now a REQUIRED attachment, and the
+    analyst answers by dropping the files into chat.
+    """
+    headers = [q["header"] for dialog in render_init_dialogs() for q in dialog]
+    assert "Filings" not in headers
+    headers_with_deliverable = [
+        q["header"]
+        for dialog in render_init_dialogs(include_deliverable=True)
+        for q in dialog
     ]
+    assert "Filings" not in headers_with_deliverable
+    filings = next(f for f in INIT_INTAKE.attachment_fields() if f.key == "Filings")
+    assert filings.required
+    assert not filings.question and not filings.options and not filings.hint
+    assert INIT_INTAKE.attachment_fields(required=True) == (filings,)
+    # No plan input: every data stage reads the filings off <deal_dir>/filings/.
+    assert INIT_INTAKE.attachment_inputs() == {}
 
 
-def test_init_filings_note_keeps_the_ltm_reminder():
-    # The filings checklist stays a text note (attachments can't come
-    # through a dialog) and must keep the LTM-bridge explanation.
-    note = render_init_filings_note()
+def test_init_filings_request_keeps_the_ltm_reminder():
+    # The filings requirement is one generated bullet now, and it must keep the
+    # LTM-bridge explanation that used to sit in the note's prose.
+    request = render_attachment_request(INIT_INTAKE)
     for token in ("LTM", "10-Q", "10-Ks", "five fiscal years"):
-        assert token in note, f"filings note lost {token!r}"
+        assert token in request, f"filings request lost {token!r}"
     # The text-fallback G7 prompt must carry the same requirements.
     prompt = render_init_prompt()
     for token in ("LTM", "10-Q", "10-Ks", "five fiscal years"):
         assert token in prompt
+    assert request.rstrip("\n") in prompt
 
 
 def test_save_deal_context_bootstraps_dirs(tmp_path: Path):
