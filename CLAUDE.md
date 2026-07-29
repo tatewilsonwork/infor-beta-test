@@ -172,13 +172,14 @@ from stage_io import stage_io  # a stage's handoff: THREE ARGV PATHS, never env 
 from stage_transforms import (  # the transform/judgment registry — the ONLY place the kind lives
     TRANSFORMS, is_transform, run_transform, render_vision_review,
 )
-from template_layout import (  # the templates' layout map: defined names + slide markers
+from template_layout import (  # the templates' layout map: names, markers, brand theme
     TemplateLayoutError,
     verify_names, verify_workbook_names, verify_cap_table_before_write,  # pre-flight before any write
     resolve_name_cell, resolve_name_range, resolve_workbook_range, defined_name_ref,
     find_slide_by_marker, find_slides_by_marker, find_optional_slide_by_marker,
     TEMPLATE_NAMED_RANGES,  # the registry tools/add_template_named_ranges.py stamps
     NAME_FX_RATE, MARKER_CONTACT,  # every infor_ NAME_* and every MARKER_* lives here too
+    INFOR_THEME, read_theme,  # the palette a theme-indexed colour resolves against
 )
 from excel_to_powerpoint import (
     find_soffice, insert_excel_into_placeholder,
@@ -224,6 +225,7 @@ Verify before you write: `verify_names` / `verify_workbook_names` / `verify_cap_
 - **One workbook per deal.** `deal_workbook.write_tab` is the only mutation path; never write a standalone `.xlsx`. The workbook aggregator that used to merge six of them is deleted, along with its bug class.
 - **Don't open a shipped template in Excel casually.** The repo is OneDrive-synced and Excel **AutoSave ignores `Close(SaveChanges=False)`** — it silently re-saved all four source templates once already. `tools/build_deal_workbook_template.py` stages its copies outside OneDrive for this reason.
 - After any Excel re-save of a source template, re-run `tools/add_template_named_ranges.py` **then** `tools/build_deal_workbook_template.py`, in that order.
+- **The deal workbook's theme is load-bearing, and the build stamps it.** A theme-indexed colour (`<color theme="4"/>`, any `accent1`) is a *slot number*, not an RGB, so the theme part decides the palette every tab renders in — a workbook can be wrong about its entire appearance with nothing in any cell wrong. `build_deal_workbook_template.py` assembles into a `Workbooks.Add()` workbook carrying **Office's** default theme, so it applies `templates/INFORFG.thmx` before saving and its `--check` fails if the saved palette is not INFOR's (`_theme_problems`). Phase D deleted the aggregator that used to do the stamping and nothing replaced it, so v0.5.41–v0.5.51 shipped an Office-palette template — accent1 `156082` where INFOR is navy `0E213F` — that every deal copied. Assert on the **palette, never the theme's name**: all four source templates are named "Office Theme" and carry the INFOR colours, and `INFORFG.thmx` is the only file here whose theme is named `INFORFG`.
 - Never tidy away the cap table's 33 Capital IQ defined names (`CIQWBGuid`/`CIQWBInfo` identify the workbook to the add-in) or the comps template's 1,245 legacy artefacts. Both counts are pinned by tests.
 - openpyxl chart-label gotcha: a label `numFmt` is source-linked in Excel, so the cell format and the label format must agree. Per-point label suppression is a series-level `dLbls` override with all show-flags off — never a `<c:delete>` shape, which does not survive a load→save round-trip.
 
