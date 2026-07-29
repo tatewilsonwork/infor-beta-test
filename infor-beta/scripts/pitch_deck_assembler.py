@@ -698,10 +698,16 @@ def assemble_pitch_deck(
     # that after the COM insertions would round-trip the pasted pictures for no
     # reason. A picture cannot overflow its box — only text and tables re-grow — so
     # nothing the insertions add needs fitting.
+    #
+    # No `out_dir`: the loop's ~170 renders per deck stage under `tempfile` and are
+    # deleted on the way out. This used to pass `out_dir=out_dir / ".qa"`, which put
+    # them permanently in the analyst's cloud-synced deal directory and cost the
+    # per-file sync overhead that killed eight consecutive live pitch runs. Only a
+    # FAILING converge leaves anything here, and `keep_on_failure` is where.
     if converge:
         assert_converged(
             output_path,
-            converge_deck(output_path, library=template, out_dir=out_dir / ".qa"),
+            converge_deck(output_path, library=template, keep_on_failure=out_dir / ".qa"),
         )
 
     # Paste the generated cap table into the overview slide's placeholder

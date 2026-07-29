@@ -22,6 +22,7 @@ The shipped template is never modified: every test copies it under `tmp_path`.
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -360,3 +361,148 @@ def test_a_held_lock_times_out_with_a_useful_message(deal, monkeypatch):
     with pytest.raises(DealWorkbookError, match="timed out"):
         write_tab(deal, TAB_CAPTABLE, TabSpec(write=lambda _wb, _ws: None))
     lock.unlink()
+
+
+# ─── (b) serialization on a filesystem that cannot delete ────────────────────
+# The deal directory is the analyst's, and can be a cloud-synced mount that
+# refuses unlink(). Everything below is that filesystem.
+
+
+@pytest.fixture
+def unlink_denied(monkeypatch):
+    """Make `unlink()` on a `.lock` raise PermissionError, as the mount does.
+
+    Scoped to the lock file so the rest of the test (and openpyxl) is untouched.
+    """
+    real_unlink = Path.unlink
+
+    def deny(self: Path, *args, **kwargs):
+        if self.suffix == ".lock":
+            raise PermissionError(13, "the mount does not permit unlink")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny)
+
+
+def test_a_denied_unlink_does_not_wedge_the_workbook(deal, unlink_denied):
+    """THE defect: two sequential writes, no 120 s wait, both tabs written.
+
+    The old release unlinked inside `except OSError: pass`, so a denied unlink left
+    the holder's own lock behind silently — and `_break_if_stale` returned False
+    when unlink raised, so it could not recover it either. Every later `write_tab`
+    burned the full `_LOCK_TIMEOUT_S` and then told the analyst to delete a file the
+    filesystem would not let anyone delete. Two sub-agents in one pitch run
+    monkeypatched the lock to get past it.
+    """
+    started = time.monotonic()
+    write_tab(deal, TAB_CAPTABLE, TabSpec(write=lambda _wb, ws: ws.__setitem__("F3", "first")))
+    write_tab(deal, TAB_CAPTABLE, TabSpec(write=lambda _wb, ws: ws.__setitem__("F4", "second")))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 20.0, (
+        f"two writes took {elapsed:.1f}s against a {dw._LOCK_TIMEOUT_S:.0f}s lock "
+        f"timeout — the second write waited out the first one's lock"
+    )
+    ws = load_workbook(deal)[TAB_CAPTABLE]
+    assert ws["F3"].value == "first"
+    assert ws["F4"].value == "second"
+
+    lock = deal.with_suffix(deal.suffix + ".lock")
+    assert lock.exists(), "unlink was denied, so the lock file necessarily survives"
+    assert lock.read_text(encoding="utf-8") == "", (
+        "a released lock must read as EMPTY — emptiness is what marks it free when "
+        "the file itself cannot be removed"
+    )
+
+
+def test_an_empty_lock_file_is_a_free_lock(deal):
+    """The state is the content. An empty lock is not a held one."""
+    lock = deal.with_suffix(deal.suffix + ".lock")
+    lock.write_text("")
+
+    started = time.monotonic()
+    write_tab(deal, TAB_CAPTABLE, TabSpec(write=lambda _wb, ws: ws.__setitem__("F3", "ok")))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 20.0, f"an empty lock was waited out for {elapsed:.1f}s"
+    assert load_workbook(deal)[TAB_CAPTABLE]["F3"].value == "ok"
+
+
+def test_concurrent_writes_stay_serialized_when_unlink_is_denied(deal, unlink_denied):
+    """The fix must not buy liveness with a lock that stopped excluding.
+
+    Every release here leaves an empty lock file behind, so all six writers take
+    the claim-an-empty-lock path rather than the `O_EXCL` fast path. That path is
+    the one that has to be atomic: if two writers could both own an emptied lock,
+    the last save would win and the other tabs would be gone — the exact failure
+    the lock exists to prevent, and the reason there is no lock-free degraded mode.
+    """
+    tabs = [f"nodelete-{i}" for i in range(6)]
+    errors: list[BaseException] = []
+
+    def writer(tab: str) -> None:
+        try:
+            write_tab(deal, tab, TabSpec(create=True,
+                                         write=lambda _wb, ws: ws.cell(1, 1, tab)))
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(tab,)) for tab in tabs]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=180)
+
+    assert errors == [], f"writers raised: {errors}"
+    wb = load_workbook(deal)
+    for tab in tabs:
+        assert tab in wb.sheetnames, f"{tab} was lost; have {wb.sheetnames}"
+        assert wb[tab]["A1"].value == tab
+
+
+def test_the_timeout_message_asks_for_something_the_filesystem_permits(deal, monkeypatch):
+    """A remedy the mount forbids is not a remedy — it is what sent two agents
+    off to patch the lock instead."""
+    lock = deal.with_suffix(deal.suffix + ".lock")
+    lock.write_text("12345")
+    monkeypatch.setattr(dw, "_LOCK_TIMEOUT_S", 0.3)
+
+    with pytest.raises(DealWorkbookError) as excinfo:
+        write_tab(deal, TAB_CAPTABLE, TabSpec(write=lambda _wb, _ws: None))
+
+    message = str(excinfo.value)
+    assert "EMPTY the file" in message, message
+    assert "delete the file" not in message.lower(), (
+        f"the message still instructs a deletion the filesystem may forbid: {message}"
+    )
+    assert "12345" in message, "the message should name the holder it is waiting on"
+    lock.unlink()
+
+
+def test_the_unlink_probe_reports_a_directory_that_denies_deletion(tmp_path, monkeypatch):
+    """deal-init says so out loud, rather than letting it surface mid-wave."""
+
+    def deny(_self, *_args, **_kwargs):
+        raise PermissionError(13, "the mount does not permit unlink")
+
+    monkeypatch.setattr(Path, "unlink", deny)
+    assert dw.deal_dir_permits_unlink(tmp_path, refresh=True) is False
+    # Cached: the answer is a property of the mount and cannot change under a run.
+    assert dw.deal_dir_permits_unlink(tmp_path) is False
+
+    # The probe file it could not delete is the one scrap left, and it explains
+    # itself. Its name is FIXED so repeated probes overwrite it: a unique name
+    # would leave one permanent file per deal-init on the very filesystem whose
+    # inability to clean them up is what is being reported.
+    leftovers = sorted(path.name for path in tmp_path.iterdir())
+    assert leftovers == [dw._UNLINK_PROBE_NAME], leftovers
+    body = (tmp_path / dw._UNLINK_PROBE_NAME).read_text(encoding="utf-8")
+    assert "infor-beta" in body and "permits file deletion" in body
+    dw.deal_dir_permits_unlink(tmp_path, refresh=True)
+    assert sorted(path.name for path in tmp_path.iterdir()) == leftovers
+
+
+def test_the_unlink_probe_leaves_nothing_behind(tmp_path):
+    before = set(tmp_path.iterdir())
+    assert dw.deal_dir_permits_unlink(tmp_path, refresh=True) is True
+    assert set(tmp_path.iterdir()) == before

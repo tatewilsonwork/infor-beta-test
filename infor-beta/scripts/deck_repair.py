@@ -59,10 +59,38 @@ converge — `assert_converged` raises `DeckNotConvergedError`. A deck that stil
 overflows is never saved quietly, because "quietly" is how thirteen of these
 shipped. Vision findings never enter the loop: they are advisory, non-deterministic
 and belong at the `deck` checkpoint where an agent or the analyst reads them.
+
+QA scratch is ephemeral unless the stage fails
+---------------------------------------------
+The loop renders a lot: per measured pass, 19 slide PNGs, 63 attribution PNGs and
+a 1.7 MB probe deck for the verify, plus 8 PNGs and another probe deck for the
+repair — ~170 files and ~10 MB for one deck. **None of it is a deliverable.** So
+`out_dir` defaults to a `tempfile` root this function deletes on the way out, and
+the happy path leaves nothing behind. The assemblers used to point it at the
+deal's artefacts directory, which is cloud-synced: same code and the same warm
+render cache measured 11.7 s for the first repair on local disk and 26.9 s on the
+mount, and eight consecutive live attempts were killed at ~43 s without ever
+converging. Bulk I/O to the mount is *not* slow (60 × 256 KB in 36 ms) — it is
+per-file metadata and sync overhead, which is exactly what ~170 small files buys.
+
+Failure is the one case where the renders are worth keeping, because they are the
+evidence for *why* it would not fit. Pass `keep_on_failure=<artefacts>/.qa` and the
+last pass's renders are copied there before the scratch root goes away, with the
+path named in `DeckNotConvergedError`.
+
+The font the ladder is calibrated against
+-----------------------------------------
+Every size this module chooses is measured in whatever face the render host
+resolves `pptx_helpers.PALATINO` to, and the ladder was calibrated against real
+Palatino Linotype. `font_probe.probe_font_resolution` runs once per converge and
+the resolution goes into the stage log either way, so a silent substitution — the
+worst case, and the one that leaves no trace on disk — becomes a warning instead
+of a mystery.
 """
 
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -82,6 +110,7 @@ from deck_contract import (
     measure_probe_overflow,
     verify_deck,
 )
+from font_probe import FontResolution, probe_font_resolution
 from pptx_helpers import (
     apply_text_scale,
     enable_normal_autofit,
@@ -131,6 +160,10 @@ _ACCEPT_TOL_IN = 0.05
 
 DEFAULT_MAX_ITERATIONS = 3
 
+#: Prefix of the ephemeral scratch root, so a killed run's leftovers are
+#: recognisable as ours in the system temp directory.
+SCRATCH_PREFIX = "deck-repair-"
+
 
 class DeckNotConvergedError(RuntimeError):
     """The deck still violates the contract after the repair budget is spent."""
@@ -144,6 +177,13 @@ class ConvergeResult:
     iterations: int
     findings: list[Finding] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
+    #: What the render host resolved the deck's primary latin typeface to. `None`
+    #: only on a hand-built result; the loop always probes.
+    font: FontResolution | None = None
+    #: Where the failing pass's renders were kept, when the caller asked for that
+    #: and the deck did not converge. `None` on every converged run — the happy
+    #: path leaves no QA scratch anywhere.
+    kept_dir: Path | None = None
 
     @property
     def blocking(self) -> list[Finding]:
@@ -384,6 +424,47 @@ def _repair_pass(deck: Path, findings, work: Path, baseline) -> list[str]:
     return actions
 
 
+# ─── Ephemeral scratch ───────────────────────────────────────────────────────
+
+
+def _latest_pass(root: Path, prefix: str) -> Path | None:
+    """The highest-numbered `<prefix>-N` directory under `root`, if any.
+
+    Read off disk rather than computed from the iteration count, because the loop
+    breaks *before* re-verifying when a pass could apply nothing — so the newest
+    verify directory is not always `verify-<iterations>`.
+    """
+    numbered: list[tuple[int, Path]] = []
+    for path in root.glob(f"{prefix}-*"):
+        suffix = path.name.rsplit("-", 1)[-1]
+        if suffix.isdigit() and path.is_dir():
+            numbered.append((int(suffix), path))
+    if not numbered:
+        return None
+    return max(numbered, key=lambda pair: pair[0])[1]
+
+
+def _keep_failing_artefacts(root: Path, dest: Path | str) -> Path | None:
+    """Copy the LAST verify/repair pass out of the scratch root, for the analyst.
+
+    Only the last pass. Its renders are the ones showing the overflow that
+    survived, and copying every pass is how ~170 files and ~10 MB per deck ended
+    up in the deal directory permanently in the first place.
+    """
+    dest = Path(dest)
+    kept = False
+    for prefix in ("verify", "repair"):
+        src = _latest_pass(root, prefix)
+        if src is None:
+            continue
+        try:
+            shutil.copytree(src, dest / src.name, dirs_exist_ok=True)
+            kept = True
+        except OSError:
+            pass  # a kept render is a diagnostic, never the reason a stage fails
+    return dest if kept else None
+
+
 # ─── The loop ────────────────────────────────────────────────────────────────
 
 
@@ -393,6 +474,7 @@ def converge_deck(
     library: Path | str | None = None,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
     out_dir: Path | str | None = None,
+    keep_on_failure: Path | str | None = None,
     vision: bool = False,
     log=None,
 ) -> ConvergeResult:
@@ -403,10 +485,57 @@ def converge_deck(
 
     Returns the result rather than raising, so a caller can log it and decide.
     `assert_converged` is the raising form the assemblers use.
+
+    `out_dir` is the QA scratch root. **Leave it unset in production**: the
+    default is a `tempfile` directory that this function deletes before
+    returning, which is what keeps ~10 MB of renders per deck out of the
+    analyst's cloud-synced deal directory (see the module docstring). Pass
+    `keep_on_failure` — the assemblers pass `<artefacts>/.qa` — and the last
+    pass's renders survive into it *only* when the deck does not converge, with
+    the path carried on the result and named in `DeckNotConvergedError`.
+
+    Pass an explicit `out_dir` when you want the whole tree to persist (tests, a
+    hands-on debugging session) or when `vision=True`: the advisory findings name
+    render paths, and an ephemeral root deletes what they point at.
     """
     deck = Path(deck)
-    root = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="deck-repair-"))
     emit = log if log is not None else partial(print, file=sys.stderr)
+    ephemeral = out_dir is None
+    root = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX))
+    try:
+        result = _converge_into(
+            deck,
+            root,
+            library=library,
+            max_iterations=max_iterations,
+            vision=vision,
+            emit=emit,
+        )
+        if not result.converged and keep_on_failure is not None:
+            result.kept_dir = _keep_failing_artefacts(root, keep_on_failure)
+            if result.kept_dir is not None:
+                emit(
+                    f"deck_repair: kept the failing pass's renders in "
+                    f"{result.kept_dir}"
+                )
+        return result
+    finally:
+        if ephemeral:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def _converge_into(
+    deck: Path,
+    root: Path,
+    *,
+    library: Path | str | None,
+    max_iterations: int,
+    vision: bool,
+    emit,
+) -> ConvergeResult:
+    """The loop proper, writing every render under `root`."""
+    font = probe_font_resolution()
+    emit(f"deck_repair: {font.log_line()}")
 
     def _verify(tag: str) -> list[Finding]:
         return verify_deck(deck, library=library, vision=vision, out_dir=root / tag)
@@ -444,6 +573,7 @@ def converge_deck(
         iterations=iterations,
         findings=findings,
         actions=actions,
+        font=font,
     )
     emit(f"deck_repair: {result.summary()}")
     return result
@@ -456,6 +586,11 @@ def assert_converged(deck: Path | str, result: ConvergeResult) -> None:
     The message carries every surviving finding and every repair that was tried,
     because the remedy is usually editorial — shorter mitigants, fewer overview
     bullets — and the author needs to know which shape and by how much.
+
+    It also names the kept renders and, when the render host substituted the
+    typeface, says so: a deck that will not fit measured in the wrong metrics is
+    not necessarily over budget in the right ones, so that has to be ruled out
+    before anyone rewrites copy.
     """
     if result.converged:
         return
@@ -468,6 +603,14 @@ def assert_converged(deck: Path | str, result: ConvergeResult) -> None:
     ]
     if result.actions:
         lines += ["", "Repairs applied:", *(f"  {action}" for action in result.actions)]
+    if result.kept_dir is not None:
+        lines += [
+            "",
+            f"The failing pass's renders were kept here: {result.kept_dir}",
+            "(the rest of the QA scratch was ephemeral and has been removed)",
+        ]
+    if result.font is not None and not result.font.ok:
+        lines += ["", result.font.log_line()]
     lines += [
         "",
         "Every automatic remedy shrinks text, and the ladder is spent. The content "
