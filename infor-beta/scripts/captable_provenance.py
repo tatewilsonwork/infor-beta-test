@@ -53,6 +53,7 @@ from pathlib import Path
 from openpyxl.utils import get_column_letter, range_boundaries
 
 from deal_workbook import TAB_CAPTABLE
+from ltm_metrics import RESULT_ROW_PREFIX
 from provenance import FigureProvenance, FigureRef, ProvenanceLedger
 from template_layout import (
     CAP_TABLE_PICTURE_RANGE,
@@ -78,6 +79,18 @@ _REF_RE = re.compile(
 #: references to a regex (`IF`, `SUM`, `LOG10`). A match immediately followed by
 #: `(` is a function call, and a match preceded by a letter is part of a name.
 _FUNCTION_AHEAD = re.compile(r"\s*\(")
+
+#: A label-keyed link into another tab: ``MATCH("(=) LTM Revenue", …)``. The cap
+#: table's LTM valuation cells reach the `ltm-metrics` bridge totals this way — by
+#: label, because the bridges' row positions move with the segment count — so the
+#: figure a cross-tab formula depends on is named in the formula rather than
+#: addressed. That is what makes it followable: the label IS the upstream record's
+#: figure name, so the ref needs no stage and resolves in the run merge. Built from
+#: `ltm_metrics.RESULT_ROW_PREFIX` so a change to the bridge's row label reaches
+#: here too.
+_LINKED_LABEL_RE = re.compile(
+    r'MATCH\(\s*"' + re.escape(RESULT_ROW_PREFIX) + r'(?P<label>[^"]+)"'
+)
 
 #: How deep to follow the formula graph. The cap table's deepest real chain is
 #: EV → Net Debt → Add: Debt → Total Debt → a tranche row: five. The cap is a
@@ -125,6 +138,18 @@ def _cells_in(formula: str) -> list[tuple[str, bool]]:
             for col in range(left, right + 1):
                 out.setdefault(f"{get_column_letter(col)}{row}", True)
     return list(out.items())
+
+
+def _linked_figures(formula: str) -> list[str]:
+    """Figure names a formula reaches on ANOTHER tab, by label-keyed lookup.
+
+    ``=INDEX('ltm-metrics'!$B:$B, MATCH("(=) LTM Revenue", 'ltm-metrics'!$A:$A, 0))*F7``
+    depends on the `ltm-metrics` bridge total called "LTM Revenue" — which is a
+    record in that stage's fragment, not this one's. Without this the cap table's
+    LTM valuation cells (and so `EV / Revenue` and `EV / Adj. EBITDA`) traced only
+    to "a cap-table formula", stopping one tab short of the filing.
+    """
+    return list(dict.fromkeys(m.group("label").strip() for m in _LINKED_LABEL_RE.finditer(formula)))
 
 
 def _is_numeric_format(number_format: str | None) -> bool:
@@ -289,20 +314,24 @@ def record_cap_table_derived_figures(
         if coordinate in done:
             return
         done.add(coordinate)
+        refs = [
+            FigureRef(
+                figure=cap_table_figure_name(ws, c, label_column=label_col),
+                location=_ref(c),
+            )
+            for c in components
+        ]
+        # Plus whatever this formula reaches on another tab. Stage-less on purpose:
+        # the upstream record lives in another stage's fragment, so it resolves in
+        # the run merge — which is what the merge is for.
+        refs += [FigureRef(figure=label) for label in _linked_figures(formula)]
         recorded.append(
             ledger.record(
                 cap_table_figure_name(ws, coordinate, label_column=label_col),
                 value=formula,
                 location=_ref(coordinate),
                 derivation=f"cap-table formula {formula}",
-                derived_from=[
-                    FigureRef(
-                        figure=cap_table_figure_name(ws, c, label_column=label_col),
-                        location=_ref(c),
-                    )
-                    for c in components
-                ]
-                or None,
+                derived_from=refs or None,
             )
         )
 

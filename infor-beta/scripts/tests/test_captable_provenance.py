@@ -31,7 +31,7 @@ from captable_provenance import (
 )
 from tests.conftest import stamp_defined_names
 from deal_workbook import TAB_CAPTABLE
-from provenance import FigureSource, ProvenanceLedger
+from provenance import FigureRef, FigureSource, ProvenanceLedger
 from template_layout import NAME_CAP_PICTURE_RANGE
 
 _CURRENCY = '"$"#,##0.0_);\\("$"#,##0.0\\);"-- "'
@@ -98,6 +98,20 @@ def _cap_tab():
     put("C21", "=SUM(C20:C20)", _SHARES)
 
     stamp_defined_names(ws, {NAME_CAP_PICTURE_RANGE: "B6:C10"})
+    return ws
+
+
+def _with_ltm_link(ws, formula: str):
+    """Add the LTM valuation cell to the pasted block — `D47` on the real template.
+
+    Inside the block because the deck shows it: `EV / Revenue` divides by it, and the
+    whole point of following the link is that a figure on the overview slide reaches
+    the bridge total that computed it.
+    """
+    ws["B11"] = "LTM Revenue (valuation)"
+    ws["C11"] = formula
+    ws["C11"].number_format = _CURRENCY
+    stamp_defined_names(ws, {NAME_CAP_PICTURE_RANGE: "B6:C11"})
     return ws
 
 
@@ -257,3 +271,64 @@ def test_recording_twice_is_idempotent():
     second = record_cap_table_derived_figures(ws, ledger)
     assert first and second == []
     assert len({f.location for f in ledger.figures}) == len(ledger.figures)
+
+
+# ─── The LTM valuation cells link ANOTHER tab ─────────────────────────────────
+#
+# `D47` / `D48` are label-keyed links into the `ltm-metrics` bridge totals
+# (`ltm_metrics.ltm_total_link`), which is the only copy of each figure. The link
+# names its upstream figure in the formula, so the chain continues into the other
+# stage's fragment instead of stopping at "a cap-table formula".
+
+
+def test_a_cross_tab_link_names_the_bridge_total_it_depends_on():
+    from ltm_metrics import ltm_total_formula
+
+    ws = _with_ltm_link(_cap_tab(), ltm_total_formula("LTM Revenue", times="C3"))
+    ledger = _leaf_ledger()
+    record_cap_table_derived_figures(ws, ledger)
+    linked = next(f for f in ledger.figures if f.location == f"{TAB_CAPTABLE}!C11")
+    assert [r.render() for r in linked.derived_from] == [f"{TAB_CAPTABLE}!C3", "LTM Revenue"]
+
+
+def test_the_link_resolves_against_the_ltm_metrics_fragment(tmp_path):
+    # The whole point: EV / Revenue on the overview slide reaches the bridge total,
+    # and the bridge total reaches the filing — across two stages' fragments.
+    from ltm_metrics import ltm_total_formula
+    from provenance import read_run_provenance
+
+    ltm = ProvenanceLedger(stage="ltm-metrics")
+    ltm.record("LTM Revenue — FY2025 revenue", value=5168.4, units="US$MM",
+               location="ltm-metrics!B21",
+               sources=FigureSource(filing="FY2025 10-K",
+                                    statement="Consolidated Statements of Operations", page=142))
+    ltm.record("LTM Revenue", value=5196.1, units="US$MM", location="ltm-metrics!B23",
+               derivation="FY2025 + Q1 2026 YTD − Q1 2025 YTD",
+               derived_from=[FigureRef(location="ltm-metrics!B21")])
+    ltm.write(tmp_path / "stages" / "ltm-metrics")
+
+    ws = _with_ltm_link(_cap_tab(), ltm_total_formula("LTM Revenue", times="C3"))
+    cap = _leaf_ledger()
+    record_cap_table_derived_figures(ws, cap)
+    cap.write(tmp_path / "stages" / "captable")
+
+    merged = read_run_provenance(tmp_path)
+    linked = next(f for f in merged.figures if f.location == f"{TAB_CAPTABLE}!C11")
+    trace = merged.trace(linked)
+    assert trace.resolved, [r.render() for r in trace.unresolved]
+    assert "LTM Revenue" in [c.figure for c in trace.components]
+    assert any("p. 142" in s.render() for s in trace.root_sources)
+
+
+def test_the_capiq_fallback_formula_names_no_upstream_figure():
+    # Case B: no `ltm-metrics` tab, so the cell holds a CapIQ call whose inputs are
+    # a ticker and a date — not another tab's figure.
+    ws = _with_ltm_link(
+        _cap_tab(),
+        '=_xll.SNL.Clients.Office.Excel.Functions.SPG($F$3,"IQ_REV",D$33,$F$6,'
+        '"Options:Mag=Millions,NA=NA,Curr="&$F$5)',
+    )
+    ledger = _leaf_ledger()
+    record_cap_table_derived_figures(ws, ledger)
+    linked = next(f for f in ledger.figures if f.location == f"{TAB_CAPTABLE}!C11")
+    assert all(r.figure != "LTM Revenue" for r in linked.derived_from)
