@@ -2,7 +2,76 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
+## [0.5.50] — 2026-07-29
+
+**Attachments stop being questions.** A pitch run put **three `AskUserQuestion` status gates** in front of the analyst — the G7 filings at deal-init, then the SEDI PDF and the Bloomberg export — asked one dialog at a time, each pausing the run to collect *attached / I'll drop it next message / none*. All three are gone, along with the CIM's and the EEO snip's. Every document a run needs is now one bullet of a **single plain-text request**, posted after every question has been answered, followed by **one** pause while the analyst drops the files into chat.
+
+### What a status gate was actually asking
+
+Nothing a dialog can carry. File bytes never came through the question — they always arrived via the chat input — so the answer was an *assertion about the filesystem*, made by the analyst, about a directory the conductor owns and had just created. It could be wrong in both directions: answer "Attached in this chat" having attached nothing and the run proceeded to a stage with no source; answer "None" and drop the file anyway and the stale answer won. The filings gate was the sharpest case, because its default was **"None for now"** — the one question standing between a run and its only source of financial data defaulted to *no data*.
+
+The three-option shape also cost a turn each. `AskUserQuestion` renders one dialog at a time, so three documents meant three round trips whose entire content was "yes, in a moment, or no".
+
+### The request
+
+`intake_spec.render_attachment_request(*specs)` generates it, and `deck_spec.render_run_attachment_request(<deliverable>)` is the conductor's one call — it merges `deal_init.INIT_INTAKE`'s filings with the deliverable's own documents into one message:
+
+```
+Attachments — drop these into this chat now. Nothing left to answer.
+
+REQUIRED:
+- Financial statements / filings — the latest four annual … for the LTM bridge …
+  Without them no data stage has a source …
+OPTIONAL:
+- CIM / management presentation — … Without it the deck drafts from the filings …
+- SEDI "Insider Information by Issuer" PDF — Canadian public targets only …
+- Bloomberg ownership export (.xlsm) — … institutions side stays a placeholder.
+```
+
+Because the dialog is gone, **the bullet is the only place the consequence of a missing file can live** — that warning used to sit in a status option's description ("Non-Canadian target or no report — the ownership slide's insider side stays a placeholder"). It is now the field's `checklist` line, and `test_the_request_describes_every_attachment_and_asks_about_none` pins every one of them to the request. "None for now" and "Not applicable" have no dialog to live in either: the analyst says it in chat, or the conductor proceeds after the drop with whatever arrived.
+
+Nothing is hand-written. The two sections come from each field's existing `required` flag, the bullets from `checklist`, and the merge from the two specs — so the list cannot drift from the questionnaire it belongs to, which is the whole of H1's argument applied to the one rendering H1 left as prose.
+
+### An attachment is now genuinely its own kind
+
+`IntakeField.__post_init__` validated two shapes, dialog and free-text, with `attachment` riding on top. An attachment with no options fell through to the *free-text* branch and was told it needed a `hint` — so every attachment had to carry dialog wording to be constructible at all, which is a fair part of why they all had dialogs. There are now three branches, and the attachment branch **rejects** `question` / `options` / `hint` outright: the shape "a file the analyst is asked about" is unrepresentable.
+
+`targets("attachment")` was the matching trap. It filters on `is_dialog`, so the moment attachments stopped being dialogs it would have answered `{}` to every caller — `PITCH_DOCUMENTS_DIALOG_TARGETS` and `EARNINGS_UPDATE_DOCUMENTS_DIALOG_TARGETS` would have survived this change as empty dicts with nothing failing. Both are deleted, along with `render_deck_spec_documents_dialogs`, `render_deck_spec_documents_note`, `render_init_filings_note`, `IntakeNote` and `render_note`; `targets("attachment")` and `item_targets("attachment")` now raise and name the accessor to use instead.
+
+### The CIM and the EEO snip: an attachment is an attachment
+
+These two were the interesting case, because their answer became a *plan input* (`cim_path`, `eeo_snip_path`). They moved too, on the grounds that the dialog was never collecting the file: Step 4 already read "**CIM / EEO snip** → the saved path", i.e. the conductor converted a status into a path by looking at what it had just saved. The dialog was a redundant assertion in front of the filesystem.
+
+An attachment field declares `plan_input` for this, and `IntakeSpec.attachment_inputs()` derives the conductor's resolution table (`PITCH_ATTACHMENT_PLAN_INPUTS` → `{"cim_path": …}`, `EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS` → `{"eeo_snip_path": …}`). What survives the move is **requiredness**, and it is code, not prose:
+
+- `cim_path` is optional — no file, no key in `plan_inputs` (never pre-seeded `None`, so the driver resolves the reference to `None` itself).
+- `eeo_snip_path` is REQUIRED — no file, no run. The conductor halts before Step 5 naming the document, rather than letting it reach `prepare_wave` and surface as a reference-resolution error about `$plan_inputs.eeo_snip_path`.
+
+`test_declared_requiredness_matches_the_plans` now checks an attachment's `plan_input` against the plan YAML exactly as it checks a question's `target`, so the questionnaire cannot call the EEO snip optional while `earnings-update.yaml` calls it required.
+
+### The defaults echo moved after the drop
+
+Two of the four pitch defaults are inferred **from the attached interim filing** (`reporting_quarter`, and `comparison_quarter` from it). With attachments arriving after the questions, echoing the defaults first would echo a quarter guessed from the calendar date — which the spec has always forbidden, because fiscal labels depend on the company's fiscal calendar. Step 4 is now: questions → request → wait → save → *infer* → echo → `write_plan_inputs`. If no interim filing arrives, the quarter is asked for in chat rather than guessed.
+
+### An earnings update now asks nothing in Step 4
+
+The EEO snip was its only deck-spec question, so `render_deck_spec_dialogs("earnings-update")` returns `[]` and `EARNINGS_UPDATE_DIALOG_PLAN_INPUTS` / `EARNINGS_UPDATE_ITEM_PLAN_INPUTS` are empty. Both quarters are defaulted, its one document is attached. `render_prompt` handles the no-items case explicitly rather than instructing the analyst to "answer by item number" above an empty list.
+
+Dialog questions left, per deliverable: **earnings update 2** (deal-init's Listing + Sector, plus a plain chat question for the company when it is not preset), **pitch 7** (those two plus Notes / Valuation / Risk notes, Targets / Highlights). Generic conductor entry adds the Deliverable question to either.
+
+### Smaller things
+
+- The G7 filings were described **twice, in different words** — deal-init's note prose and a hand-copied `_G7_FILINGS_BULLET` in each deck spec's checklist. One declaration now, on `INIT_INTAKE`, merged into the request; `render_attachment_request` raises if two specs declare the same document, so the second wording cannot come back.
+- `IntakeNote` is deleted rather than reduced. Its `bullets` were free prose with no requiredness to sort them into a section, and its `header` was per-spec — a merged message cannot honour two headers, and both deck specs declared the same boilerplate one anyway. The request's framing is code-owned constants.
+- `prompt_label` is now required on every field, attachments included (it is the handle each bullet leads with, and what the resolution table maps to). Attachments used to declare `prompt_label=""`.
+- `render_run_attachment_request` returns deal-init's filings alone for a deliverable with no questionnaire (the `overview` stub, `one-off-skill`) instead of raising — a deal needs its filings whether or not there is a deck spec — but still raises on a deliverable type that is not a `DeliverableType`.
+- One dialog description corrected for the new ordering: the pitch **Notes** option "I'll paste notes in my next message" promised "the run waits here", and "here" is no longer a pause of its own. It now points at the single pause, where the analyst can paste the notes alongside the files.
+
+No stage, plan, template or checkpoint mode was touched. Suite: **794 passed, 0 skipped** (783 before).
+
 ## [0.5.49] — 2026-07-29
+
+> **Release-numbering note.** Developed in parallel with 0.5.50, which reserved this number (its entry and four of its comments date the status dialogs "through v0.5.49") and merged first. So the three version files never read `0.5.49` — they went 0.5.48 → 0.5.50, and 0.5.50 is the release that carries both changes. The entry is numbered as it was written; it is the one gap in the version-file sequence.
 
 **The analyst gate is gone — a conductor run goes end to end.** Locked decision A2 always described the path from medium-HITL to autonomous as *configuration, not code*, and that is exactly what it cost: three `checkpoint: required` lines became `informational`. `deck` carried the plugin's only gate, in `pitch.yaml`, `earnings-update.yaml` and the `overview.yaml` stub. The analyst now answers the intake — deal facts, attachments, deck spec — and the run then dispatches every wave to the end without stopping to ask for an approval.
 
@@ -26,7 +95,7 @@ The gate was asking the analyst to approve a mid-run artefact that the later wav
 
 ### Tests
 
-Every assertion of the old behaviour was rewritten rather than deleted; the suite gains one test and loses none.
+Every assertion of the old behaviour was rewritten rather than deleted; the suite gains one test and loses none. **784 passed, 0 skipped** measured against 0.5.48 (783 before); **795 passed, 0 skipped** on the tree that merges this with 0.5.50.
 
 - `test_plan_schedule.test_required_deck_gate_precedes_every_later_wave` → **`test_no_shipped_plan_pauses_for_an_analyst_approval`**: no stage of the three shipped plans is `required`, and all are `informational` (not merely non-`required` — `silent` would run the deck past the analyst without naming the file). The wave ordering it used to justify by the gate is still asserted, for its own reasons, by `test_deckcheck_depends_on_the_final_artefact_stage` and `test_financial_charts_depends_on_deck`.
 - `test_plan.py` and `test_slide_library_poc.py` (×2): the shipped-plan wiring tests now pin `deck` = `informational` and an empty non-`informational` set.

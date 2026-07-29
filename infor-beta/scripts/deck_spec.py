@@ -2,10 +2,10 @@
 
 Each deliverable's questionnaire is declared ONCE as an
 :class:`intake_spec.IntakeSpec` (Phase H1) and every rendering is generated
-from it: the interactive dialogs, the attachment-status dialogs, the documents
-checklist, the defaults echo, and the single-message text fallback. A changed
-option label therefore reaches every surface, which is what makes the
-locked-questionnaire principle structural rather than conventional.
+from it: the interactive dialogs, the attachment request, the defaults echo,
+and the single-message text fallback. A changed option label therefore reaches
+every surface, which is what makes the locked-questionnaire principle
+structural rather than conventional.
 
 The conductor collects the deck spec right after deal-init through the
 interactive question UI (the `AskUserQuestion` tool): it renders each dialog in
@@ -47,19 +47,29 @@ improvised:
     -> ``analyst_notes = NO_NOTES_ANALYST_NOTES`` (a code-owned literal, so the
     no-notes run is reproducible too)
 
-Deliverable-specific attachments get their own locked status dialogs
-(:func:`render_deck_spec_documents_dialogs` — pitch: SEDI PDF + Bloomberg
-export; earnings-update: none), rendered alongside the plain-text checklist
-note (:func:`render_deck_spec_documents_note`). File bytes cannot come
-through a dialog, so the questions gate the run (attached / will drop next
-message / none) while the file itself arrives via the chat input; the
-answers never land in ``plan_inputs``.
+**The analyst is asked nothing about attachments** (v0.5.50). Every document
+the run needs — deal-init's G7 filings and the deliverable's own — is one
+bullet of a single plain-text request, rendered by
+:func:`render_run_attachment_request` and posted *after* every question has
+been answered; the analyst then drops the files into chat and the run continues.
+Attachments were three `AskUserQuestion` status gates per pitch run through
+v0.5.49, asked one dialog at a time: three pauses to collect three assertions
+about files, each of which the deal's ``filings/`` directory already knew and
+could contradict. There is now one request and one pause.
+
+Two of those documents carry a path into ``plan_inputs`` — the pitch CIM
+(``cim_path``, optional) and the earnings-update Bloomberg EEO snip
+(``eeo_snip_path``, REQUIRED). The conductor resolves both from the file it
+saved under ``<deal_dir>/filings/``, through
+:data:`PITCH_ATTACHMENT_PLAN_INPUTS` / :data:`EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS`;
+a missing optional one stays out of ``plan_inputs`` entirely, and a missing
+REQUIRED one halts the run rather than resolving to None.
 
 The single-message text prompt is generated too (:func:`render_deck_spec_prompt`)
 as the fallback for surfaces where the interactive question UI is unavailable;
-it asks the same items in the same order and quotes the same question wording,
-option labels and option descriptions as the dialogs, because both come from
-one spec.
+it asks the same items in the same order, quotes the same question wording,
+option labels and option descriptions as the dialogs, and ends with the same
+attachment bullets, because all of it comes from one spec.
 
 No LLM calls, no dispatch — this module only owns the locked questionnaires and
 answer converters, so the questionnaire (and therefore the deck layout the
@@ -70,18 +80,24 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from typing import get_args
 
+from deal_init import INIT_INTAKE
 from intake_spec import (
     IntakeDefault,
     IntakeField,
-    IntakeNote,
     IntakeOption,
     IntakeSpec,
+    render_attachment_request,
     render_defaults_echo,
     render_dialogs,
-    render_note,
     render_prompt,
 )
+from schemas import DeliverableType
+
+# The declared deliverables, from the one place they are declared. Only two
+# have a questionnaire; the rest still need the deal's filings.
+DELIVERABLE_TYPES: tuple[str, ...] = get_args(DeliverableType)
 
 # ---------------------------------------------------------------------------
 # The declared questionnaires (Phase H1)
@@ -91,29 +107,17 @@ from intake_spec import (
 # characters, multiSelect always False. Each field's `key` is its dialog
 # `header` and doubles as its key in the *_DIALOG_PLAN_INPUTS tables below.
 #
-# Fields with target_kind="attachment" are the fixed status gates. File bytes
-# cannot come through a dialog — the attachment itself always arrives via the
-# chat input (or an absolute path in the Other box); the question is the
-# locked gate that pauses the run until the analyst says attached / will drop
-# next message / none. Their answers are NOT plan inputs (the consuming stages
-# discover the saved files under <deal_dir>/filings/), so they appear in
-# *_DOCUMENTS_DIALOG_TARGETS and never in *_DIALOG_PLAN_INPUTS — a split
-# `intake_spec` derives from target_kind rather than from two hand-kept
-# tables. The G7 filings have their own status question at deal-init; the CIM
-# (pitch) and EEO snip (earnings-update) are plan inputs, so they are asked
-# with the rest of the spec.
+# Fields with target_kind="attachment" are files, and are asked about in no
+# rendering: each is one bullet of the attachment request, carrying a
+# `checklist` line that states what the run loses without it (the warning that
+# used to live in a status dialog's option description). A `plan_input` names
+# the plan input the saved path becomes — the CIM and the EEO snip have one;
+# the SEDI report and the Bloomberg export do not, because the ownership stage
+# finds them under <deal_dir>/filings/ itself. The G7 filings are declared once
+# more, on `deal_init.INIT_INTAKE`, and reach the analyst through the same
+# request; they used to be described a second time here, in different words,
+# which is exactly the drift H1 exists to remove.
 # ---------------------------------------------------------------------------
-
-# Shared across both deliverables' documents checklists.
-_G7_FILINGS_BULLET = (
-    "The G7 filings: latest four annual statements / 10-Ks plus the "
-    "current-year and prior-year interim statements (5-year history + LTM "
-    "bridge)."
-)
-
-_DOCUMENTS_NOTE_HEADER = (
-    "Documents (attach in this chat if not already attached at deal-init):"
-)
 
 # The two quarter defaults are identical for both deliverables — declared once
 # so the pitch and earnings-update specs cannot describe them differently.
@@ -160,33 +164,14 @@ PITCH_INTAKE = IntakeSpec(
             options=(
                 IntakeOption(
                     "I'll paste notes in my next message",
-                    "The run waits here for your notes. Specific "
-                    "acquisition-target names and Key Investment Highlights copy "
-                    "belong in these notes too.",
+                    "Paste them alongside the attachments I ask for next — the run "
+                    "waits there for both. Specific acquisition-target names and "
+                    "Key Investment Highlights copy belong in these notes too.",
                 ),
                 IntakeOption(
                     "Draft from the attached filings + web",
                     "No analyst notes — the content stage drafts everything from "
                     "the deal's filings and public sources.",
-                ),
-            ),
-        ),
-        IntakeField(
-            key="CIM",
-            prompt_label="CIM / management pres.",
-            target="cim_path",
-            group="content",
-            question="Is there a CIM or management presentation to draw from?",
-            options=(
-                IntakeOption(
-                    "None",
-                    "Default — the deck drafts without one.",
-                    default=True,
-                ),
-                IntakeOption(
-                    "Attached in this chat",
-                    "I'll save the attachment under the deal's filings/ "
-                    "directory. Use Other to give an absolute path instead.",
                 ),
             ),
         ),
@@ -270,68 +255,41 @@ PITCH_INTAKE = IntakeSpec(
                 IntakeOption("Omit", "Drops the slide from the deck."),
             ),
         ),
-        # -- attachment status gates (answers are NOT plan inputs) ----------
+        # -- attachments (asked about in no rendering) ----------------------
+        IntakeField(
+            key="CIM",
+            prompt_label="CIM / management presentation",
+            target="consumed by the pitch-content, comps and precedents stages",
+            target_kind="attachment",
+            plan_input="cim_path",
+            group="documents",
+            checklist=(
+                "if one exists; it is the richest single source for the company "
+                "overview and for choosing the comps and precedents verticals. "
+                "Without it the deck drafts from the filings and public sources "
+                "only."
+            ),
+        ),
         IntakeField(
             key="SEDI PDF",
-            prompt_label="",
-            target=(
-                "saved under <deal_dir>/filings/ — consumed by the ownership "
-                "stage (insider side)"
-            ),
+            prompt_label='SEDI "Insider Information by Issuer" PDF',
+            target="consumed by the ownership stage (insider side)",
             target_kind="attachment",
             group="documents",
-            question=(
-                'SEDI "Insider Information by Issuer" PDF '
-                "(Canadian public targets)?"
-            ),
-            options=(
-                IntakeOption(
-                    "Attached in this chat",
-                    "I'll save it under the deal's filings/ directory now.",
-                ),
-                IntakeOption(
-                    "I'll drop it in my next message",
-                    "The run waits here for the PDF — SEDI is bot-walled, so I "
-                    "cannot fetch it myself.",
-                ),
-                IntakeOption(
-                    "Not applicable / none",
-                    "Non-Canadian target or no report — the ownership slide's "
-                    "insider side stays a placeholder.",
-                ),
-            ),
             checklist=(
-                'SEDI "Insider Information by Issuer" PDF — Canadian public '
-                "targets only; without it the ownership slide's insider side "
+                "Canadian public targets only. SEDI is bot-walled, so I cannot "
+                "fetch it myself; without it the ownership slide's insider side "
                 "stays a placeholder."
             ),
         ),
         IntakeField(
             key="BBG export",
-            prompt_label="",
-            target=(
-                "saved under <deal_dir>/filings/ — consumed by the ownership "
-                "stage (institutions side)"
-            ),
+            prompt_label="Bloomberg ownership export (.xlsm)",
+            target="consumed by the ownership stage (institutions side)",
             target_kind="attachment",
             group="documents",
-            question="Bloomberg ownership export (.xlsm)?",
-            options=(
-                IntakeOption(
-                    "Attached in this chat",
-                    "I'll save it under the deal's filings/ directory now.",
-                ),
-                IntakeOption(
-                    "I'll drop it in my next message",
-                    "The run waits here for the export.",
-                ),
-                IntakeOption(
-                    "None",
-                    "The ownership slide's institutions side stays a placeholder.",
-                ),
-            ),
             checklist=(
-                "Bloomberg ownership export (.xlsm) — without it the ownership "
+                "the institutional holders export. Without it the ownership "
                 "slide's institutions side stays a placeholder."
             ),
         ),
@@ -366,10 +324,6 @@ PITCH_INTAKE = IntakeSpec(
             supplied=False,
         ),
     ),
-    note=IntakeNote(
-        header=_DOCUMENTS_NOTE_HEADER,
-        bullets=(_G7_FILINGS_BULLET,),
-    ),
 )
 
 EARNINGS_UPDATE_INTAKE = IntakeSpec(
@@ -379,37 +333,28 @@ EARNINGS_UPDATE_INTAKE = IntakeSpec(
         "The deck itself is the fixed 5-slide earnings-update layout (no slide "
         "options).",
     ),
+    # The earnings-update deck spec asks NOTHING: both quarters are defaulted
+    # (inferred from the attached interim filing) and the EEO snip is an
+    # attachment, so `render_deck_spec_dialogs("earnings-update")` is empty and
+    # Step 4 for this deliverable is the defaults echo plus the request.
     fields=(
         IntakeField(
             key="EEO snip",
             prompt_label="Bloomberg EEO snip",
-            target="eeo_snip_path",
+            target="consumed by the earningsupdate-content stage",
+            target_kind="attachment",
+            plan_input="eeo_snip_path",
             required=True,
-            group="content",
-            question=(
-                "Bloomberg EEO snip (the broker estimates vs. actuals "
-                "screenshot)?"
-            ),
-            options=(
-                IntakeOption(
-                    "Attached in this chat",
-                    "I'll save it under the deal's filings/ directory.",
-                ),
-                IntakeOption(
-                    "I'll attach it in my next message",
-                    "The run waits here for the snip. Use Other to give an "
-                    "absolute path instead.",
-                ),
+            group="documents",
+            checklist=(
+                "the broker estimates vs. actuals screenshot (an image file). "
+                "There is no other source for the estimates-vs-actuals slide and "
+                "no sensible default, so the run halts here until it arrives "
+                "rather than building the deck without it."
             ),
         ),
     ),
     defaults=(_REPORTING_QUARTER_DEFAULT, _COMPARISON_QUARTER_DEFAULT),
-    # Earnings-update has no deliverable-specific attachment gates: the EEO
-    # snip is a plan input asked above, and the G7 filings belong to deal-init.
-    note=IntakeNote(
-        header=_DOCUMENTS_NOTE_HEADER,
-        bullets=(_G7_FILINGS_BULLET,),
-    ),
 )
 
 _INTAKE_SPECS: dict[str, IntakeSpec] = {
@@ -438,18 +383,21 @@ def _spec(deliverable_type: str) -> IntakeSpec:
 # Answer-mapping tables — all derived from the specs above
 # ---------------------------------------------------------------------------
 
-# Documents-dialog question header -> where the answer leads (never a plan
-# input; the files land under <deal_dir>/filings/ and the consuming stage
-# discovers them there).
-PITCH_DOCUMENTS_DIALOG_TARGETS: dict[str, str] = PITCH_INTAKE.targets("attachment")
+# plan_inputs name -> the attached document whose saved path becomes it. The
+# conductor's post-drop resolution table: it saved each file under
+# <deal_dir>/filings/, so it knows which path is which, and this is what stops
+# a dropped CIM from never reaching `cim_path`. An OPTIONAL one that never
+# arrived stays out of plan_inputs entirely (never pre-seeded None); a REQUIRED
+# one that never arrived halts the run — `attachment_inputs(required=True)`.
+PITCH_ATTACHMENT_PLAN_INPUTS: dict[str, str] = PITCH_INTAKE.attachment_inputs()
 
-EARNINGS_UPDATE_DOCUMENTS_DIALOG_TARGETS: dict[str, str] = (
-    EARNINGS_UPDATE_INTAKE.targets("attachment")
+EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS: dict[str, str] = (
+    EARNINGS_UPDATE_INTAKE.attachment_inputs()
 )
 
 # Question header -> plan_inputs name. Every dialog answer maps through one of
 # these; the converters below turn slide-count / include-omit answers into the
-# typed values.
+# typed values. Empty for earnings-update, which asks nothing.
 PITCH_DIALOG_PLAN_INPUTS: dict[str, str] = PITCH_INTAKE.targets("plan-input")
 
 EARNINGS_UPDATE_DIALOG_PLAN_INPUTS: dict[str, str] = (
@@ -506,32 +454,12 @@ def render_deck_spec_dialogs(deliverable_type: str) -> list[list[dict]]:
     mutating the result cannot affect the next render. Raises ValueError for a
     deliverable with no questionnaire (e.g. the `overview` stub).
 
-    The attachment status gates are NOT here — they are their own dialogs
-    (:func:`render_deck_spec_documents_dialogs`) because their answers are not
-    plan inputs.
+    Returns an EMPTY list for **earnings-update**, which has no deck-spec
+    questions left: both quarters are defaulted and the EEO snip is an
+    attachment. Attachments are never here, and never a dialog anywhere — see
+    :func:`render_run_attachment_request`.
     """
     return render_dialogs(_spec(deliverable_type), target_kinds=("plan-input",))
-
-
-def render_deck_spec_documents_dialogs(deliverable_type: str) -> list[list[dict]]:
-    """Return the locked attachment-status dialogs for a deliverable, generated.
-
-    Each inner list is one `AskUserQuestion` call's `questions` payload —
-    render them in order, unchanged, alongside
-    :func:`render_deck_spec_documents_note` (the note carries the checklist
-    detail; these questions are the fixed attached / will-drop / none gate).
-    File bytes cannot come through a dialog: the attachment itself arrives
-    via the chat input, or as an absolute path in the Other box. The answers
-    never land in ``plan_inputs`` — "Attached in this chat" -> save under
-    `<deal_dir>/filings/`; "I'll drop it in my next message" -> wait for the
-    attachment before dispatching; "Not applicable / None" -> proceed (the
-    consuming slide side stays a placeholder).
-
-    Returns an EMPTY list for a deliverable with no deliverable-specific
-    documents (earnings-update — render nothing). Raises ValueError for an
-    unknown deliverable type.
-    """
-    return render_dialogs(_spec(deliverable_type), target_kinds=("attachment",))
 
 
 def render_deck_spec_defaults(
@@ -582,15 +510,38 @@ def render_deck_spec_prompt(deliverable_type: str) -> str:
     return render_prompt(_spec(deliverable_type))
 
 
-def render_deck_spec_documents_note(deliverable_type: str) -> str:
-    """Return the deliverable's documents checklist, generated.
+def render_run_attachment_request(deliverable_type: str | None = None) -> str:
+    """Return THE attachment request for a run: one message, posted once.
 
-    Attachments cannot come through the interactive dialogs, so the conductor
-    posts this as plain text alongside them (the text fallback prompt already
-    embeds it). Each attachment status gate contributes its own bullet, so a
-    document that is asked about is a document the checklist describes.
+    The conductor posts this **after every question in the run has been
+    answered** — deal-init's and the deck spec's — and then waits once for the
+    analyst to drop the files into chat. It is the whole of the attachment
+    conversation: there is no dialog to render, no status to collect, and no
+    second pause.
+
+    The list merges `deal_init.INIT_INTAKE`'s G7 filings with the deliverable's
+    own documents, in that order, split into REQUIRED and OPTIONAL. It reaches
+    across into deal-init deliberately: the filings are the one attachment every
+    deliverable needs, they were formerly re-described in each deck spec in
+    different words, and merging from the declarations is what removed that
+    second wording.
+
+    `deliverable_type=None`, or a declared deliverable with no questionnaire
+    (the `overview` stub, `one-off-skill`), returns deal-init's filings alone
+    rather than raising: a deal still needs its filings when there is no deck
+    spec to add to them. A deliverable type that is not a `DeliverableType` at
+    all still raises — that is a typo, not a stub.
     """
-    return render_note(_spec(deliverable_type))
+    specs = [INIT_INTAKE]
+    if deliverable_type is not None:
+        if deliverable_type not in DELIVERABLE_TYPES:
+            raise ValueError(
+                f"unknown deliverable type {deliverable_type!r}; known: "
+                f"{sorted(DELIVERABLE_TYPES)}"
+            )
+        if deliverable_type in _INTAKE_SPECS:
+            specs.append(_INTAKE_SPECS[deliverable_type])
+    return render_attachment_request(*specs)
 
 
 # ---------------------------------------------------------------------------

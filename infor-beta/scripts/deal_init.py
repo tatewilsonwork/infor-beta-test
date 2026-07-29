@@ -5,12 +5,16 @@ Owns the conductor's deal-init flow (Obsidian note 12, G7 + H5):
   - The G7 questions are declared ONCE, as the `INIT_INTAKE` spec, and asked
     ONCE per deal. Both renderings are *generated* from that spec (Phase H1):
     the interactive dialogs (`render_init_dialogs`, the `AskUserQuestion`
-    payloads), the filings checklist posted alongside them
-    (`render_init_filings_note`), and the single-message text prompt
-    (`render_init_prompt`) kept as the fallback for surfaces without the
-    interactive question UI. The codename is not asked: it is auto-derived via
-    `codename.codename_from_company` ("Project <company>" with corporate
-    suffixes stripped), overridable by the analyst in chat.
+    payloads) and the single-message text prompt (`render_init_prompt`) kept as
+    the fallback for surfaces without the interactive question UI. The codename
+    is not asked: it is auto-derived via `codename.codename_from_company`
+    ("Project <company>" with corporate suffixes stripped), overridable by the
+    analyst in chat.
+  - The G7 filings are an **attachment**, not a question (v0.5.50). They are
+    one bullet of the run's single attachment request, which
+    `deck_spec.render_run_attachment_request` renders from this spec plus the
+    deliverable's — so the requirement is declared here, once, and the
+    conductor posts it once.
   - DealContext is persisted as `<deal_dir>/deal.json`.
   - The deal directory tree is bootstrapped: `facts/`, `filings/`,
     `artefacts/`, `runs/`.
@@ -30,11 +34,9 @@ from typing import Any
 from codename import DEFAULT_DEALS_ROOT, find_existing, resolve
 from intake_spec import (
     IntakeField,
-    IntakeNote,
     IntakeOption,
     IntakeSpec,
     render_dialogs,
-    render_note,
     render_prompt,
 )
 from schemas import DealContext
@@ -67,11 +69,12 @@ DEAL_JSON_NAME = "deal.json"
 #   - the subject company name is pure free text with nothing to suggest, so
 #     it is declared with a `hint` and no options — a numbered item in the
 #     text prompt, a plain chat question in the interactive flow;
-#   - the filings item is a fixed STATUS question ("Filings" below) — files
-#     cannot come through a dialog, so the analyst answers attached / will
-#     drop next message / none, and the files themselves arrive through the
-#     chat input; INIT_FILINGS_NOTE is posted alongside as the checklist
-#     detail (which filings are needed and why);
+#   - the filings item is an ATTACHMENT ("Filings" below), so it is asked about
+#     in no rendering at all. It was a status question through v0.5.49
+#     (attached / will drop next message / none), which asked the analyst to
+#     assert something the deal's filings/ directory already knew and could
+#     contradict. It is now one REQUIRED bullet of the run's single attachment
+#     request, and the analyst answers by dropping the files into chat;
 #   - free-form analyst notes are no longer asked — DealContext.notes stays
 #     settable when the analyst volunteers notes in chat.
 # ---------------------------------------------------------------------------
@@ -167,52 +170,29 @@ INIT_INTAKE = IntakeSpec(
         ),
         IntakeField(
             key="Filings",
-            prompt_label="Filings / attachments",
+            prompt_label="Financial statements / filings",
             target=(
-                "filings (attachments persisted to <deal_dir>/filings/; "
-                "'I'll drop them in my next message' -> the run waits for them)"
+                "persisted to <deal_dir>/filings/ and appended to ctx.filings as "
+                "Filing entries; every data stage reads them from there"
             ),
-            target_kind="deal-context",
+            target_kind="attachment",
+            required=True,
             group="deal",
-            question="Filings — how will you provide them?",
-            options=(
-                IntakeOption(
-                    "Attached in this chat",
-                    "I'll save them under the deal's filings/ directory now.",
-                ),
-                IntakeOption(
-                    "I'll drop them in my next message",
-                    "The run waits here for the attachments — the checklist note "
-                    "lists what I need.",
-                ),
-                IntakeOption(
-                    "None for now",
-                    "Continue without filings; attach them in chat at any later "
-                    "point.",
-                    default=True,
-                ),
+            checklist=(
+                "the latest four annual financial statements / 10-Ks (they cover "
+                "five fiscal years for the financial-summary history), plus the "
+                "current-year YTD interim statements / 10-Q and the prior-year "
+                "same-period interim statements / 10-Q for the LTM bridge (LTM = "
+                "full fiscal year + current YTD − prior-year YTD, so a single "
+                "filing isn't enough). The cap table is built off the most recent "
+                "statement; the older filings are only for the 5-year history and "
+                "the LTM math. Without them no data stage has a source and the "
+                "deck's figures stay placeholders — and I cannot infer the "
+                "reporting quarter, so I will have to ask you for it."
             ),
-        ),
-    ),
-    note=IntakeNote(
-        header='Filings / attachments (drop in this chat now, or say "none for now"):',
-        body=(
-            "For pitch and earnings-update deliverables I need the latest four "
-            "annual financial statements / 10-Ks (they cover five fiscal years "
-            "for the financial-summary history), plus the current-year YTD "
-            "interim statements / 10-Q and the prior-year same-period interim "
-            "statements / 10-Q for the LTM bridge (LTM = full fiscal year + "
-            "current YTD − prior-year YTD, so a single filing isn't enough). "
-            "The cap table is still built off the most recent statement; the "
-            "older filings are only for the 5-year history and the LTM math.",
         ),
     ),
 )
-
-# G7 item 6 — the filings checklist. Attachments cannot come through the
-# interactive dialogs, so this is always posted as plain text (alongside the
-# dialogs, and embedded in the text-fallback prompt).
-INIT_FILINGS_NOTE = render_note(INIT_INTAKE)
 
 # Question header -> where the answer lands on the DealContext. Derived from
 # the spec's dialog fields, so it cannot list a question that is not asked.
@@ -229,13 +209,15 @@ def render_init_dialogs(*, include_deliverable: bool = False) -> list[list[dict]
     named). Fresh payloads every call, so a caller mutating the result cannot
     affect the next render.
 
-    Post INIT_FILINGS_NOTE (plain text) alongside these — it is the
-    checklist detail behind the "Filings" status question; file bytes cannot
-    come through a dialog, so the attachments themselves arrive via the chat
-    input — and ask for the subject company name as a plain chat question
-    when it was not preset. The codename is never a dialog question: derive
-    it silently with `codename.codename_from_company(<subject company
-    name>)` (the analyst can override it in chat).
+    Ask for the subject company name as a plain chat question when it was not
+    preset. The codename is never a dialog question: derive it silently with
+    `codename.codename_from_company(<subject company name>)` (the analyst can
+    override it in chat).
+
+    Nothing here asks about attachments. The G7 filings reach the analyst
+    through the run's one attachment request
+    (`deck_spec.render_run_attachment_request`), posted after every question in
+    the run has been answered — not as a status dialog per document.
     """
     omit = () if include_deliverable else (DELIVERABLE_FIELD_KEY,)
     return render_dialogs(INIT_INTAKE, omit=omit)
@@ -247,14 +229,11 @@ def render_init_prompt() -> str:
     This is the FALLBACK for surfaces where the interactive question UI
     (`AskUserQuestion`) is unavailable; `render_init_dialogs` is the primary
     rendering. Both come from the same spec, so they ask the same items in the
-    same order with the same options.
+    same order with the same options, and the prompt ends with deal-init's half
+    of the attachment request — the G7 filings, in the words the live request
+    uses.
     """
     return render_prompt(INIT_INTAKE)
-
-
-def render_init_filings_note() -> str:
-    """Return the G7 filings checklist (item 6), verbatim plain text."""
-    return INIT_FILINGS_NOTE
 
 
 def _bootstrap_dirs(deal_dir: Path) -> None:
