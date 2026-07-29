@@ -556,3 +556,127 @@ def test_build_with_bloomberg_stays_excel_clean(tmp_path: Path):
     cleaned = load_workbook(out)
     assert list(getattr(cleaned, "_external_links", [])) == []
     assert set(cleaned.defined_names) == baseline
+
+
+# ─── Provenance: the SEDI report, the export, and the cap-table denominator ──
+#
+# Every share count here is a figure read off an attached document, and the tab
+# recorded none of them — a run's ledger held 70 records with `ownership`
+# contributing zero, so every percentage on the ownership slide was untraceable.
+# F35 is the interesting one: it is DERIVED from the cap table, in another stage's
+# fragment, so its ref resolves only in the run merge.
+
+_SEDI = "SEDI Insider Information by Issuer report"
+
+
+def _sedi_source(name: str, page: int = 3):
+    from provenance import FigureSource
+
+    return FigureSource(filing=_SEDI, statement=name, page=page)
+
+
+def test_each_insider_holding_is_recorded_against_the_sedi_report(tmp_path: Path):
+    from provenance import ProvenanceLedger
+
+    ledger = ProvenanceLedger(stage="ownership")
+    out = build_ownership_workbook(
+        deal_workbook=_deal(tmp_path),
+        insiders=[
+            InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)",
+                           1_219_092, "2026-03-31",
+                           source=_sedi_source("Barrenechea, Mark James")),
+            InsiderHolding("Fowlie, Randy", "Randy Fowlie (Director)", [193_000, 5_000],
+                           "2026-12-01", source=_sedi_source("Fowlie, Randy", page=4)),
+        ],
+        total_shares_outstanding=261_000_000,
+        provenance=ledger,
+    )
+
+    holdings = [f for f in ledger.figures if f.figure.startswith("Insider holding")]
+    assert [f.figure for f in holdings] == [
+        "Insider holding — Mark Barrenechea (CEO & Director)",
+        "Insider holding — Randy Fowlie (Director)",
+    ]
+    assert holdings[0].value == 1_219_092
+    # A multi-tranche holding is a sum FORMULA in the cell, and the record holds
+    # exactly what the cell holds — Excel does the math, not the record.
+    assert holdings[1].value == "=193000+5000"
+    assert holdings[1].citation_lines == (f"{_SEDI}, Fowlie, Randy, p. 4",)
+    assert holdings[0].location == "Ownership!F39"
+
+    # The comment on the share cell is rendered FROM the record.
+    comment = load_workbook(out)["Ownership"]["F39"].comment
+    assert comment is not None and comment.text.endswith(
+        f"Source: {_SEDI}, Barrenechea, Mark James, p. 3"
+    )
+
+
+def test_the_percentage_denominator_is_recorded_as_derived_from_the_cap_table(tmp_path: Path):
+    from provenance import ProvenanceLedger
+
+    ledger = ProvenanceLedger(stage="ownership")
+    build_ownership_workbook(
+        deal_workbook=_deal(tmp_path),
+        insiders=[InsiderHolding("A, B", "B A (Director)", 1, "2026-01-01",
+                                 source=_sedi_source("A, B"))],
+        total_shares_outstanding=261_000_000,
+        provenance=ledger,
+    )
+
+    total = next(f for f in ledger.figures if f.figure.startswith("Total basic shares"))
+    assert total.sources == (), "the denominator is not read off a filing here"
+    assert total.derived and "cap table" in total.derivation
+    assert [r.render() for r in total.derived_from] == ["Total Basic Shares Outstanding"]
+    assert total.location == "Ownership!F35"
+
+
+def test_the_denominators_ref_resolves_against_the_cap_table_stages_fragment(tmp_path: Path):
+    # The cross-stage join: on its own the ownership fragment cannot see the cap
+    # table's record, and in the merge it can — which is what lets a reviewer walk
+    # an ownership percentage back to the capital-stock note.
+    from provenance import FigureRef, FigureSource, ProvenanceLedger, read_run_provenance
+
+    captable = ProvenanceLedger(stage="captable")
+    captable.record("Common shares", value=261.0, location="captable!F168",
+                    sources=FigureSource(filing="FY2025 10-K",
+                                         statement="Capital stock note", page=95))
+    captable.record("Total Basic Shares Outstanding", value="=SUM(F168:F185)",
+                    location="captable!F186", derivation="cap-table formula =SUM(F168:F185)",
+                    derived_from=[FigureRef(location="captable!F168")])
+    captable.write(tmp_path / "run" / "stages" / "captable")
+
+    ownership = ProvenanceLedger(stage="ownership")
+    build_ownership_workbook(
+        deal_workbook=_deal(tmp_path),
+        insiders=[InsiderHolding("A, B", "B A (Director)", 1, "2026-01-01",
+                                 source=_sedi_source("A, B"))],
+        total_shares_outstanding=261_000_000,
+        provenance=ownership,
+    )
+    ownership.write(tmp_path / "run" / "stages" / "ownership")
+
+    merged = read_run_provenance(tmp_path / "run")
+    total = next(f for f in merged.figures if f.figure.startswith("Total basic shares"))
+    trace = merged.trace(total)
+    assert trace.resolved
+    assert any("Capital stock note" in s.render() for s in trace.root_sources)
+
+
+def test_each_institutional_position_is_recorded_against_the_attached_export(tmp_path: Path):
+    from provenance import ProvenanceLedger
+
+    ledger = ProvenanceLedger(stage="ownership")
+    _build_with_bbg(tmp_path, provenance=ledger)
+
+    positions = [f for f in ledger.figures if f.figure.startswith("Institutional position")]
+    assert positions, "the Bloomberg side recorded nothing"
+    assert all(f.citation_lines == ("bbg.xlsx, Summary View",) for f in positions)
+    assert all(f.location.startswith("Bloomberg Output!L") for f in positions)
+
+
+def test_a_citation_string_instead_of_a_source_record_raises(tmp_path: Path):
+    from provenance import ProvenanceError
+
+    with pytest.raises(ProvenanceError, match="no longer a source record"):
+        _build(tmp_path, [InsiderHolding("A, B", "B A (Director)", 1, "2026-01-01",
+                                         source="the SEDI report, page 3")])

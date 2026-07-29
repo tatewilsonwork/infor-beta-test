@@ -48,6 +48,16 @@ def test_reads_the_three_paths_and_loads_the_inputs(handoff):
     assert io.stage_dir == inputs.parent.resolve()
 
 
+def test_stage_id_is_the_plans_id_not_the_skill_name(handoff):
+    # What a ProvenanceLedger labels itself with. It has to be derived: the pitch
+    # plan runs the `pitch-content` skill as its `content` stage, so a hardcoded
+    # skill name would label the fragment with a stage the plan does not have — and
+    # the merge only stamps the directory name onto a fragment carrying *none*, so a
+    # confidently-wrong label survives it.
+    _, inputs, outputs = handoff
+    assert stage_io(_argv(inputs, outputs)).stage_id == "comps"
+
+
 def test_defaults_to_sys_argv(handoff, monkeypatch):
     """A snippet run as `python script.py <root> <in> <out>` needs no arguments here."""
     _, inputs, outputs = handoff

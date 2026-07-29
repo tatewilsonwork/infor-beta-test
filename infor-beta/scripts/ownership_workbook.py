@@ -57,6 +57,8 @@ from openpyxl.comments import Comment
 from openpyxl.styles import Font
 from openpyxl.utils import range_boundaries
 
+from comment_citations import cite_cell
+from provenance import FigureRef, FigureSource, ProvenanceError, ProvenanceLedger
 from template_layout import (
     CAP_TABLE_SECTION_VII_NAMES,
     CAP_TABLE_SOURCE_SHEET,
@@ -153,12 +155,18 @@ class InsiderHolding:
       holder tranche counts (direct, RRSP, Holdco, ...) which is written as a
       sum formula -> col F. Common shares ONLY — never options/RSU/PSU/DSU.
     - ``most_recent_date``: the latest common-share transaction date -> col G.
+    - ``source``: the :class:`provenance.FigureSource` for the share count — the
+      SEDI report the analyst attached, and the page this insider's holdings are
+      on: ``FigureSource(filing="SEDI Insider Information by Issuer report",
+      statement="<insider name>", page=4)``. Recorded in the stage's ledger and
+      rendered as the amount cell's ``Source: …`` comment.
     """
 
     sedi_name: str
     adjusted_name: str
     common_shares: int | list[int]
     most_recent_date: date | str | None = None
+    source: "FigureSource | None" = None
 
 
 def _coerce_date(value: date | str | None) -> date | None:
@@ -185,14 +193,37 @@ def _basic_shares_cell_value(common_shares: int | list[int]):
     return int(common_shares)
 
 
+def _coerce_source(owner: str, source):
+    """Validate one insider's source record — a citation string is not one.
+
+    Same rule and same reason as `ltm_metrics._coerce_source`: a string would build
+    a record with the whole sentence in ``filing`` and no statement or page, which
+    reads like provenance and cannot be followed.
+    """
+    if source is None or isinstance(source, FigureSource):
+        return source
+    raise ProvenanceError(
+        f"{owner!r} has a source of type {type(source).__name__} ({source!r}); pass "
+        f"FigureSource(filing=…, statement=…, page=…) — a citation string is no "
+        f"longer a source record."
+    )
+
+
 def _normalize(insider: "InsiderHolding | dict") -> InsiderHolding:
     if isinstance(insider, InsiderHolding):
-        return insider
+        return InsiderHolding(
+            sedi_name=insider.sedi_name,
+            adjusted_name=insider.adjusted_name,
+            common_shares=insider.common_shares,
+            most_recent_date=insider.most_recent_date,
+            source=_coerce_source(insider.sedi_name, insider.source),
+        )
     return InsiderHolding(
         sedi_name=insider["sedi_name"],
         adjusted_name=insider["adjusted_name"],
         common_shares=insider["common_shares"],
         most_recent_date=insider.get("most_recent_date"),
+        source=_coerce_source(insider["sedi_name"], insider.get("source")),
     )
 
 
@@ -468,6 +499,8 @@ def _write_bloomberg_side(
     sedi_names: "list[str]",
     adjusted_overrides: dict[str, str],
     include_overrides: dict[str, int],
+    ledger: "ProvenanceLedger | None" = None,
+    source_name: str | None = None,
 ) -> None:
     """Fill 'Bloomberg Output' + the Ownership tab's institutional link rows."""
     if TAB_BLOOMBERG_OUTPUT not in wb.sheetnames:
@@ -512,6 +545,10 @@ def _write_bloomberg_side(
 
     matches = match_bloomberg_to_sedi([h.name for h in holders], sedi_names)
 
+    position_col = next(
+        (col for col, header in _BBG_EXPECTED_HEADERS.items() if header == "Position"), None
+    )
+
     for offset, holder in enumerate(holders):
         bbg_row = bbg_rows[offset]
         for col, value in holder.values.items():
@@ -520,6 +557,21 @@ def _write_bloomberg_side(
             fmt = holder.number_formats.get(col)
             if fmt and fmt != "General":
                 cell.number_format = fmt
+
+        if ledger is not None and position_col is not None:
+            # The institutional side's source is the attached export, not a filing —
+            # Bloomberg is where the position was read, and the export is the
+            # document in the deal directory that says so.
+            ledger.record(
+                f"Institutional position — {holder.name}",
+                sources=FigureSource(
+                    filing=source_name or "Bloomberg ownership export",
+                    statement="Summary View",
+                ),
+                value=holder.values.get(position_col),
+                units="shares",
+                location=f"{TAB_BLOOMBERG_OUTPUT}!{position_col}{bbg_row}",
+            )
 
         own_row = own_rows[offset]
         include = include_overrides.get(holder.name, 0 if holder.name in matches else 1)
@@ -619,6 +671,7 @@ def build_ownership_workbook(
     bloomberg_export_path: Path | str | None = None,
     bloomberg_adjusted_names: dict[str, str] | None = None,
     bloomberg_include_overrides: dict[str, int] | None = None,
+    provenance: "ProvenanceLedger | None" = None,
 ) -> Path:
     """Fill the deal workbook's `Ownership` tab; return the workbook path.
 
@@ -641,6 +694,14 @@ def build_ownership_workbook(
     suffix-stripped display name per Bloomberg holder name;
     ``bloomberg_include_overrides`` (holder name -> 0/1) overrides the
     computed SEDI-duplicate exclusion for individual rows.
+
+    ``provenance`` is filled **in place**: one record per insider share count (from
+    that insider's ``source``), one for each institutional position (the attached
+    Bloomberg export), and one for the ``F35`` denominator as a **derived** figure
+    referring to the cap table's basic shares — the cross-tab link that makes the
+    ownership slide's percentages traceable to the filing the share count came
+    from. Pass the stage's ledger and write it afterwards
+    (`ledger.write(io.stage_dir)`).
     """
     insiders = [_normalize(i) for i in insiders]
 
@@ -653,6 +714,7 @@ def build_ownership_workbook(
             bloomberg_export_path=bloomberg_export_path,
             bloomberg_adjusted_names=bloomberg_adjusted_names,
             bloomberg_include_overrides=bloomberg_include_overrides,
+            ledger=provenance,
         )
 
     write_tab(
@@ -672,6 +734,7 @@ def _fill_ownership_tab(
     bloomberg_export_path: Path | str | None,
     bloomberg_adjusted_names: dict[str, str] | None,
     bloomberg_include_overrides: dict[str, int] | None,
+    ledger: "ProvenanceLedger | None" = None,
 ) -> None:
     """Write the insider block, the % denominator and (optionally) the BBG side."""
     # Verify the names the writes resolve through — the insider block, the %
@@ -700,6 +763,18 @@ def _fill_ownership_tab(
         basic_cell = ws[f"{_COL_BASIC}{row}"]
         basic_cell.value = _basic_shares_cell_value(insider.common_shares)
         basic_cell.font = _blue(basic_cell)
+        if ledger is not None and insider.source is not None:
+            # The record first, the comment rendered from it — never the reverse.
+            cite_cell(
+                basic_cell,
+                ledger.record(
+                    f"Insider holding — {insider.adjusted_name}",
+                    sources=insider.source,
+                    value=basic_cell.value,
+                    units="shares",
+                    location=f"{TAB_OWNERSHIP}!{_COL_BASIC}{row}",
+                ),
+            )
 
         date_cell = ws[f"{_COL_DATE}{row}"]
         coerced = _coerce_date(insider.most_recent_date)
@@ -713,7 +788,8 @@ def _fill_ownership_tab(
         adj_cell.font = _blue(adj_cell)
 
     if total_shares_outstanding is not None:
-        total_cell = ws[resolve_name_cell(ws, NAME_OWN_TOTAL_SHARES, template=OWNERSHIP_TEMPLATE)]
+        total_ref = resolve_name_cell(ws, NAME_OWN_TOTAL_SHARES, template=OWNERSHIP_TEMPLATE)
+        total_cell = ws[total_ref]
         total_cell.value = int(total_shares_outstanding)
         # Leave the cell's font untouched — the template ships it Palatino (bold), and
         # the aggregator later relinks it to the cap table's basic shares. Setting
@@ -722,6 +798,23 @@ def _fill_ownership_tab(
             "Total basic shares outstanding (full units) - from the companion cap table.",
             "INFOR",
         )
+        if ledger is not None:
+            # Every percentage on the ownership slide divides by this cell, and its
+            # provenance is the cap table's — `read_basic_shares_from_cap_table`
+            # summed the Section VII input rows, which the captable stage recorded
+            # against the filing they came from. The ref is by figure name, not by
+            # cell: it crosses stages, so it resolves in the run merge.
+            ledger.record(
+                "Total basic shares outstanding (% denominator)",
+                value=int(total_shares_outstanding),
+                units="shares",
+                location=f"{TAB_OWNERSHIP}!{total_ref}",
+                derivation=(
+                    "the cap table's Section VII basic-share input rows, converted "
+                    "from millions to full units"
+                ),
+                derived_from=[FigureRef(figure="Total Basic Shares Outstanding")],
+            )
 
     if bloomberg_export_path is not None:
         _write_bloomberg_side(
@@ -730,6 +823,8 @@ def _fill_ownership_tab(
             sedi_names=[i.sedi_name for i in insiders],
             adjusted_overrides=bloomberg_adjusted_names or {},
             include_overrides=bloomberg_include_overrides or {},
+            ledger=ledger,
+            source_name=Path(bloomberg_export_path).name,
         )
 
     # Both display blocks, unconditionally: an issuer with fewer than 12

@@ -24,7 +24,9 @@ import pytest
 
 from provenance import (
     PROVENANCE_FILENAME,
+    DeckPlacement,
     FigureProvenance,
+    FigureRef,
     FigureSource,
     ProvenanceError,
     ProvenanceLedger,
@@ -198,3 +200,224 @@ def test_write_run_provenance_is_idempotent(tmp_path: Path):
     second = write_run_provenance(tmp_path).read_text(encoding="utf-8")
     assert first == second
     assert (tmp_path / PROVENANCE_FILENAME).is_file()
+
+
+def test_a_fragment_lands_in_its_own_stage_directory_and_nowhere_else(tmp_path: Path):
+    # The shape of the whole scheme: `ledger.write(io.stage_dir)` writes one file,
+    # inside that stage's directory, and touches nothing shared.
+    ledger = ProvenanceLedger(stage="comps")
+    ledger.record("Comps peer — NYSE:AAAA", sources=FigureSource(url="https://example.com/ir",
+                                                                retrieved="2026-07-29"))
+    stage_dir = tmp_path / "stages" / "comps"
+    path = ledger.write(stage_dir)
+
+    assert path == stage_dir / PROVENANCE_FILENAME
+    assert [p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.json")] == [
+        "stages/comps/provenance.json"
+    ], "a stage wrote something outside its own directory"
+
+
+def test_two_stages_writing_at_the_same_time_both_survive_the_merge(tmp_path: Path):
+    # Why fragments exist at all: wave-mates run CONCURRENTLY as separate
+    # sub-agents. A shared provenance.json would be a read-modify-write race — the
+    # second writer would land on a file the first had already replaced, and one
+    # stage's figures would simply be gone with nothing failing.
+    import threading
+
+    stages = {
+        "comps": [f"Comps peer — NYSE:AAA{i}" for i in range(40)],
+        "precedents": [f"Example Target {i} Inc. / Example Buyer Inc. — tev" for i in range(40)],
+        "ownership": [f"Insider holding — Insider {i}" for i in range(40)],
+    }
+    start = threading.Barrier(len(stages))
+
+    def write(stage: str, figures: list[str]) -> None:
+        ledger = ProvenanceLedger(stage=stage)
+        for name in figures:
+            ledger.record(name, sources=FigureSource(filing=f"{stage} source"), value=1.0)
+        start.wait(timeout=10)  # every thread writes in the same instant
+        ledger.write(tmp_path / "stages" / stage)
+
+    threads = [threading.Thread(target=write, args=(s, f)) for s, f in stages.items()]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert not any(thread.is_alive() for thread in threads)
+
+    merged = read_run_provenance(tmp_path)
+    assert len(merged) == sum(len(f) for f in stages.values())
+    assert merged.stages == ("comps", "ownership", "precedents")
+    for stage, figures in stages.items():
+        assert {f.figure for f in merged.figures if f.stage == stage} == set(figures)
+
+    # And the consolidated file is that same merge, written once by `deckcheck`.
+    consolidated = ProvenanceLedger.read(write_run_provenance(tmp_path))
+    assert len(consolidated) == len(merged)
+
+
+# ─── A derivation a machine can follow ───────────────────────────────────────
+
+
+def _bridge_ledger() -> ProvenanceLedger:
+    """An LTM bridge: three sourced components and a total derived from them."""
+    ledger = ProvenanceLedger(stage="ltm-metrics")
+    for name, value, filing, page in (
+        ("LTM Revenue — FY2025 revenue", 5168.4, "FY2025 10-K", 142),
+        ("LTM Revenue — Q1 2026 YTD", 166.1, "Q1 2026 10-Q", 4),
+        ("LTM Revenue — Q1 2025 YTD", 138.4, "Q1 2026 10-Q", 4),
+    ):
+        ledger.record(
+            name,
+            sources=FigureSource(filing=filing, statement="Consolidated Statements of Operations",
+                                 page=page),
+            value=value,
+            units="US$MM",
+            location=f"ltm-metrics!B{20 + len(ledger)}",
+        )
+    ledger.record(
+        "LTM Revenue",
+        value=5196.1,
+        units="US$MM",
+        location="ltm-metrics!B23",
+        derivation="FY2025 revenue + Q1 2026 YTD − Q1 2025 YTD",
+        derived_from=[FigureRef(location=f.location, figure=f.figure) for f in ledger.figures],
+    )
+    return ledger
+
+
+def test_a_structured_derivation_resolves_to_its_upstream_records():
+    ledger = _bridge_ledger()
+    trace = ledger.trace(ledger.figures[-1])
+
+    assert trace.structured and trace.resolved
+    assert [c.figure for c in trace.components] == [f.figure for f in ledger.figures[:3]]
+    # The point of resolving it: the total reaches the filing PAGES underneath.
+    assert {s.render() for s in trace.root_sources} == {
+        "FY2025 10-K, Consolidated Statements of Operations, p. 142",
+        "Q1 2026 10-Q, Consolidated Statements of Operations, p. 4",
+    }
+
+
+def test_an_unresolvable_component_is_reported_as_unresolvable():
+    # A stage claiming a figure was built from something with no record is exactly
+    # the gap prose could not express: "derived from an upstream record" and
+    # "unsourced" used to read identically.
+    ledger = ProvenanceLedger(stage="ltm-metrics")
+    entry = ledger.record(
+        "LTM Adj. EBITDA",
+        value=1840.4,
+        derivation="FY2025 + Q1 2026 YTD − Q1 2025 YTD",
+        derived_from=["FY2025 Adj. EBITDA", FigureRef(location="ltm-metrics!B99")],
+    )
+    trace = ledger.trace(entry)
+
+    assert trace.structured and not trace.resolved
+    assert trace.components == () and trace.root_sources == ()
+    assert [r.render() for r in trace.unresolved] == ["FY2025 Adj. EBITDA", "ltm-metrics!B99"]
+    assert "UNRESOLVABLE: FY2025 Adj. EBITDA, ltm-metrics!B99" in trace.render()
+
+
+def test_a_prose_only_derivation_is_reported_as_unstructured():
+    # The eleven records a real run left like this: legal, and honestly labelled as
+    # not followable rather than printed beside the resolved ones.
+    ledger = ProvenanceLedger(stage="financial-summary")
+    entry = ledger.record("Revenue LTM", value=6062.0,
+                          derivation="ltm-metrics stage handoff, converted to CAD by *F7")
+    trace = ledger.trace(entry)
+    assert not trace.structured and not trace.resolved
+    assert trace.render() == "ltm-metrics stage handoff, converted to CAD by *F7"
+
+
+def test_a_derivation_ref_resolves_across_stage_fragments(tmp_path: Path):
+    # The `financial-summary` LTM cell links a bridge total in ANOTHER stage's
+    # fragment, so the ref names no stage and resolves only in the merge — which is
+    # what the merge is for.
+    _bridge_ledger().write(tmp_path / "stages" / "ltm-metrics")
+    fs = ProvenanceLedger(stage="financial-summary")
+    fs.record("Revenue LTM", value=5196.1, units="US$MM", location="financial-summary!G6",
+              derivation="link to the ltm-metrics tab's '(=) LTM Revenue' bridge total",
+              derived_from=[FigureRef(figure="LTM Revenue")])
+    fs.write(tmp_path / "stages" / "financial-summary")
+
+    fragment = ProvenanceLedger.read(tmp_path / "stages" / "financial-summary")
+    alone = fragment.trace(fragment.figures[0])
+    assert not alone.resolved, "on its own a fragment cannot see the other stage's record"
+
+    merged = read_run_provenance(tmp_path)
+    linked = next(f for f in merged.figures if f.figure == "Revenue LTM")
+    trace = merged.trace(linked)
+    assert trace.resolved
+    assert [c.figure for c in trace.components] == ["LTM Revenue"]
+    assert any("FY2025 10-K" in s.render() for s in trace.root_sources)
+
+
+def test_a_circular_derivation_does_not_hang():
+    # Nothing generates one deliberately; an analyst editing a workbook can.
+    ledger = ProvenanceLedger(stage="captable")
+    ledger.record("A", value="=B1", location="captable!A1",
+                  derived_from=[FigureRef(location="captable!B1")])
+    ledger.record("B", value="=A1", location="captable!B1",
+                  derived_from=[FigureRef(location="captable!A1")])
+    trace = ledger.trace(ledger.figures[0])
+    assert [c.figure for c in trace.components] == ["B"]
+    assert trace.unresolved == ()
+
+
+def test_a_record_may_be_derived_with_refs_and_no_prose():
+    entry = FigureProvenance(figure="Enterprise Value", derived_from=[FigureRef(location="captable!F28")])
+    assert entry.derived
+    assert entry.derivation_line == "derived from captable!F28"
+
+
+def test_a_figure_with_neither_a_source_nor_any_derivation_still_raises():
+    with pytest.raises(ProvenanceError, match="no source and no derivation"):
+        FigureProvenance(figure="Enterprise Value", value=15796.0)
+
+
+# ─── Placement: where a figure lands ─────────────────────────────────────────
+
+
+def test_a_placement_needs_to_name_somewhere():
+    with pytest.raises(ProvenanceError, match="must name a slide"):
+        DeckPlacement()
+
+
+def test_a_placement_slide_is_one_based():
+    with pytest.raises(ProvenanceError, match="1-based"):
+        DeckPlacement(slide=0, field="executive_summary_bullets[0]")
+
+
+def test_a_ref_needs_a_figure_or_a_location():
+    with pytest.raises(ProvenanceError, match="figure name or a location"):
+        FigureRef()
+
+
+def test_a_location_ref_ignores_absolute_markers_and_sheet_quoting():
+    ledger = ProvenanceLedger(stage="captable")
+    ledger.record("Basic Shares Outstanding", value="=F186", location="captable!F17",
+                  derivation="cap-table formula =F186")
+    assert ledger.find(FigureRef(location="captable!$F$17")).figure == "Basic Shares Outstanding"
+    assert ledger.find(FigureRef(location="'captable'!f17")) is not None
+    assert ledger.find(FigureRef(location="captable!F18")) is None
+
+
+def test_placement_and_refs_round_trip_through_json(tmp_path: Path):
+    ledger = ProvenanceLedger(stage="content")
+    ledger.record(
+        "ARR",
+        sources=FigureSource(filing="Q1 2026 10-Q", statement="MD&A — key metrics", page=7),
+        value=4190.5,
+        units="US$MM",
+        placement=DeckPlacement(slide=2, field="executive_summary_bullets[1]"),
+    )
+    ledger.record("ARR as % of revenue", value=81.0, units="%",
+                  derivation="ARR ÷ FY2025 revenue",
+                  derived_from=[FigureRef(figure="ARR", stage="content")],
+                  placement=DeckPlacement(slide=2, field="executive_summary_bullets[1]"))
+
+    reloaded = ProvenanceLedger.read(ledger.write(tmp_path))
+    assert [f.to_dict() for f in reloaded.figures] == [f.to_dict() for f in ledger.figures]
+    assert reloaded.figures[0].placement == DeckPlacement(slide=2,
+                                                         field="executive_summary_bullets[1]")
+    assert reloaded.trace(reloaded.figures[1]).resolved

@@ -165,6 +165,33 @@ When attached:
    `bloomberg_adjusted_names={"<Holder Name>": "<display name>"}` (e.g. restore `"T. Rowe Price"`
    punctuation). Do not shorten person names.
 
+### Step 9b — Provenance — REQUIRED, and structured
+
+**Every share count carries a record.** Each insider's holding is a figure you read off the
+analyst-attached SEDI report, and each institutional position is a figure you read off the Bloomberg
+export — but until now this stage recorded neither, so a run's provenance ledger held 70 records with
+`ownership` contributing zero and every percentage on the ownership slide untraceable.
+
+Give each `InsiderHolding` a `source`: a `provenance.FigureSource` naming the **SEDI report** as the
+filing, the insider as the statement/section, and the **page** their holdings are on —
+`FigureSource(filing="SEDI Insider Information by Issuer report", statement="<insider name>",
+page=99)`. A **citation string is rejected**: it would build a record with the whole sentence in
+`filing` and no statement or page, which reads like provenance and cannot be followed. The builder
+records each one and renders the share cell's `Source: …` comment **from** the record, so the
+artefact and the machine-readable record cannot disagree. The Bloomberg side is recorded for you from
+the attached export's filename — you supply nothing extra.
+
+**`F35` is recorded as a DERIVED figure.** Every percentage on the slide divides by it, and its
+provenance is the cap table's: the builder records it with a `derived_from` ref to the cap table's
+`Total Basic Shares Outstanding`, which the `captable` stage recorded against the filing it read the
+share count from. That cross-stage ref resolves in the run's merged record — which is what lets
+`deckcheck` walk an ownership percentage back to a capital-stock note instead of stopping at "from
+the companion cap table".
+
+Write the fragment with `ledger.write(io.stage_dir)` — your **own** stage directory, never a shared
+file, because wave-mates run concurrently and a shared ledger would be a read-modify-write race
+between sub-agents. `deckcheck` merges every stage's fragment into the run's record.
+
 ### Step 10 — Write the workbook
 
 Run as `python <script.py> "<plugin_root>" "<inputs.json>" "<outputs.json>"` — the three paths
@@ -178,14 +205,20 @@ sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
 
 from stage_io import stage_io
 from ownership_workbook import build_ownership_workbook, InsiderHolding
+from provenance import FigureSource, ProvenanceLedger
 
 io = stage_io()
 deal_workbook = io.inputs["deal_workbook"]   # the Ownership + Bloomberg Output tabs are in it
+ledger = ProvenanceLedger(stage=io.stage_id)   # one record per holding; written at the end
+
+SEDI = "SEDI Insider Information by Issuer report"   # the attached PDF
 
 insiders = [
-    InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31"),
-    InsiderHolding("Fowlie, Randy", "Randy Fowlie (Director)", [193000, 0, 0, 0, 0], "2025-12-01"),
-    # ... one InsiderHolding per current insider ...
+    InsiderHolding("Barrenechea, Mark James", "Mark Barrenechea (CEO & Director)", 1219092, "2025-03-31",
+                   source=FigureSource(filing=SEDI, statement="Barrenechea, Mark James", page=99)),
+    InsiderHolding("Fowlie, Randy", "Randy Fowlie (Director)", [193000, 0, 0, 0, 0], "2025-12-01",
+                   source=FigureSource(filing=SEDI, statement="Fowlie, Randy", page=99)),
+    # ... one InsiderHolding per current insider, each with the page you read it on ...
 ]
 build_ownership_workbook(
 
@@ -193,9 +226,14 @@ build_ownership_workbook(
     total_shares_outstanding=total,   # full units, or None
     deal_workbook=deal_workbook,
     bloomberg_export_path=BBG_PATH,   # or None / omit when no export is attached
+    provenance=ledger,                # filled in place: insiders, institutions, and F35
     # bloomberg_adjusted_names={"T Rowe Price Group Inc": "T. Rowe Price"},   # optional
     # bloomberg_include_overrides={"Some Holder": 0},                         # optional
 )
+
+# The stage's provenance fragment, beside its inputs/outputs. `deckcheck` merges
+# every stage's fragment into the run's <run_dir>/provenance.json.
+ledger.write(io.stage_dir)
 ```
 
 The builder writes the SEDI name (B), common shares (F, plain or sum formula), date (G), and adjusted
