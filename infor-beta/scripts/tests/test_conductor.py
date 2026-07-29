@@ -496,11 +496,16 @@ def test_run_wave_end_to_end_reaches_the_gate(run_dir: Path):
     assert second.gate is not None and second.gate.stage_id == "beta"
 
 
-# ─── The `deck` gate, with `deck` as a transform (Phase F exit criterion) ────
+# ─── A `required` gate on a transform (the mode, kept supported) ─────────────
 
-#: Both shipped plans in miniature: a research root, a `required` gate alone in
-#: its own wave, and a downstream wave for that gate to hold. `beta` stands in for
-#: `deck` (an in-process transform) and `gamma` for `deckcheck`.
+#: A plan built here, not a shipped one: a research root, a `required` gate alone
+#: in its own wave, and a downstream wave for that gate to hold. `beta` stands in
+#: for an in-process transform and `gamma` for a dispatched review.
+#:
+#: v0.5.49 removed the analyst gate from all three shipped plans, so `required` is
+#: no longer used anywhere — but the mode is still supported, and these tests are
+#: what keeps it honest for the plan that eventually has a real authorisation step
+#: to gate on (buyer-list approval, D-series). Nothing here reads a shipped plan.
 _GATED_PLAN_YAML = f"""\
 deliverable_type: pitch
 description: gated test plan
@@ -573,14 +578,15 @@ def _drive(run_dir: Path, *, approve: bool) -> tuple[list[str], str | None]:
 
 
 def test_the_required_gate_halts_the_run_when_the_analyst_rejects(gated_run_dir: Path):
-    """Rejecting the gate stops the downstream wave dead — `deck` being an
+    """Rejecting the gate stops the downstream wave dead — the gated stage being an
     in-process transform changes nothing about that.
 
-    The gate is the plugin's only one, and it is the analyst's pre-delivery
-    approval of a deck built from untrusted external inputs. Phase F moved the
-    stage behind it from a sub-agent to a driver call, so this asserts the property
-    that move could have broken: the checkpoint still fires at the wave boundary,
-    and nothing downstream runs on a rejection.
+    Two things this locks. Phase F moved the stage behind the gate from a sub-agent
+    to a driver call, so the checkpoint must still fire at the wave boundary off
+    `outputs.json` whoever wrote it. And v0.5.49 removed the last `required`
+    checkpoint from the shipped plans without removing the *mode*: this is now the
+    only exercise of the `required` branch, so it is what stops the machinery rotting
+    before the plan that needs it (a real authorisation step) arrives.
     """
     dispatched, halted_at = _drive(gated_run_dir, approve=False)
 
@@ -610,6 +616,37 @@ def test_the_gate_on_a_transform_still_carries_the_locked_dialog(gated_run_dir: 
     assert [o["label"] for o in gate.question["options"]] == [APPROVE_LABEL, HALT_LABEL]
     assert "the remaining waves" in gate.question["question"]  # a wave is being held
     assert "/deals/artefacts/Pitch.pptx" in gate.surface
+
+
+def test_a_stage_failure_halts_the_run_with_no_checkpoint_involved(gated_run_dir: Path):
+    """A failure is not a checkpoint, and it is the only mid-run stop left.
+
+    v0.5.49 removed the analyst gate from every shipped plan, which makes this the
+    property that keeps a broken run from continuing: `complete_wave` reads the
+    stage's own `outputs.json`, reports `ok=False`, and `outcome.halt` is True
+    whatever the checkpoint mode said. `alpha` is `informational`, so no part of the
+    gate machinery is in the path — and the wave that would have followed never
+    resolves its inputs, let alone runs.
+    """
+    def dispatch(prepared):  # a sub-agent reporting failure, i.e. `io.fail(...)`
+        for stage in prepared.judgment:
+            stage.outputs_path.write_text(json.dumps({"error": "comps found no peers"}))
+
+    halted_at, outcome = None, None
+    for wave in range(1, plan_overview(gated_run_dir).wave_count + 1):
+        outcome = run_wave(gated_run_dir, wave, dispatch, plugin_root=_PLUGIN_ROOT)
+        if outcome.halt:
+            halted_at = outcome.results[0].stage_id
+            break
+
+    assert halted_at == "alpha"
+    assert not outcome.ok and outcome.halt
+    assert outcome.gate is None, "a failure must not be dressed up as an approval"
+    surface = outcome.narration()
+    assert "FAILED" in surface and "comps found no peers" in surface
+    for held in ("beta", "gamma"):
+        assert not (stage_dir(gated_run_dir, held) / "inputs.json").exists()
+        assert not (stage_dir(gated_run_dir, held) / "outputs.json").exists()
 
 
 # ─── Reference pre-flight ────────────────────────────────────────────────────

@@ -15,4 +15,4 @@ stages:
   - id: placeholder
     skill: overview-wireframe   # not built yet — replace when the overview plan is designed
     inputs: {}
-    checkpoint: required
+    checkpoint: informational

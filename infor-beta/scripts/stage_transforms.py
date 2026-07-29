@@ -27,9 +27,9 @@ commands, and they keep the same handoff object the dispatched form had —
 **A transform is not a shortcut past the checkpoint.** Every stage still writes
 `inputs.json` and `outputs.json`, still carries its `$stages` dependency edges
 into `plan_schedule.compute_waves`, and still reports through
-`conductor.complete_wave` — so `deck`'s `required` gate holds the downstream waves
-exactly as before. What changed is who issues the call, not what the run looks
-like.
+`conductor.complete_wave` — so a checkpoint (or a failure) on a transform behaves
+exactly as it would on a sub-agent. What changed is who issues the call, not what
+the run looks like.
 
 **What the reclassification could have quietly dropped, and where it went.** Two
 of these skills ended in a *mandatory* analyst-facing QA section — the
@@ -38,8 +38,9 @@ those are judgment, not transform. Deleting the SKILL.md would have deleted them
 with nothing failing. Both are preserved as *evidence for a reader who is already
 reading*: `deck-assembler` writes a vision review (the agenda `deck_contract`
 already builds, plus the renders and picture crops) and hands back
-`vision_review_path`, which lands in the `required` gate's own surface — so the
-analyst being asked to approve the deck is told which slides to look at and why.
+`vision_review_path`, which the wave-boundary surface and the run summary name — so
+the analyst is told which slides to look at and why. Since v0.5.49 they read it
+while the run carries on rather than at a gate; it is the same review either way.
 `financial-charts` renders the overview + Financial Summary slides and hands back
 `charts_inserted` / `pie_inserted`, which makes a skipped chart visible at the wave
 boundary where it used to depend on a sub-agent remembering to mention it. The
@@ -54,8 +55,8 @@ from pathlib import Path
 from stage_io import StageIO
 
 #: Filename of the vision-review note the `deck` transform writes into its stage
-#: directory. Referenced by the gate surface through the `vision_review_path`
-#: output, so the analyst can open it from the checkpoint.
+#: directory. Reported through the `vision_review_path` output, so the analyst can
+#: open it from the wave-boundary surface and from the run summary.
 VISION_REVIEW_NAME = "vision_review.md"
 
 
@@ -174,9 +175,9 @@ def render_vision_review(deck: Path | str, vision) -> str:
 def _write_vision_review(io: StageIO, deck: Path) -> str | None:
     """Build the vision review for `deck` and return the path to it.
 
-    A failure here must not fail the stage — the deck exists and the gate still
-    has to be put to the analyst — but it must not vanish either, so the reason is
-    written into the review the gate points at.
+    A failure here must not fail the stage — the deck exists and the run carries on
+    — but it must not vanish either, so the reason is written into the file
+    `vision_review_path` points at, where the analyst will look for the review.
     """
     path = io.stage_dir / VISION_REVIEW_NAME
     try:
@@ -189,7 +190,7 @@ def _write_vision_review(io: StageIO, deck: Path) -> str | None:
             f"# Deck vision review — {deck.name}\n\n"
             f"**The review could not be built: {type(exc).__name__}: {exc}**\n\n"
             f"The deck itself assembled and converged. Read every slide of "
-            f"`{deck}` by hand before approving it.\n"
+            f"`{deck}` by hand before it goes out.\n"
         )
     path.write_text(body, encoding="utf-8")
     return str(path)

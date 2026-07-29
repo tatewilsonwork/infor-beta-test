@@ -21,10 +21,10 @@ components are the right three quarters. A model has to read the filing for that
 Advisory, always
 ----------------
 Every finding here is `SEVERITY_ADVISORY` and :class:`CheckFinding` refuses to be
-constructed otherwise. This is a review pass surfaced at a checkpoint, not a gate:
-the plans' one `required` gate is on `deck`, and it stays there. A falsification
-pass that could halt a run would be a pass that has to be right about a target's
-financial statements, and nothing here is that confident.
+constructed otherwise. This is a review pass surfaced at a checkpoint, not a gate —
+and since v0.5.49 no shipped stage gates at all, so this would be the only one. A
+falsification pass that could halt a run would be a pass that has to be right about
+a target's financial statements, and nothing here is that confident.
 
 What is NOT a finding
 ---------------------
@@ -496,8 +496,8 @@ class CheckFinding:
         if self.severity != SEVERITY_ADVISORY:
             raise ValueError(
                 f"a deckcheck finding is always {SEVERITY_ADVISORY!r} — this stage is a "
-                f"review surfaced at a checkpoint, not a gate. The run's only required "
-                f"gate is on `deck`."
+                f"review surfaced at a checkpoint, not a gate. No shipped stage gates, "
+                f"and a falsification pass is the last one that should start."
             )
 
     @property
@@ -598,8 +598,8 @@ def render_report(
         f"# Deck check — {company}",
         "",
         "**Advisory review, not a gate.** Every item below is a figure someone should",
-        "look at before this deck leaves the building; nothing here halts a run, and the",
-        "plan's one required approval is on the `deck` stage, which has already passed.",
+        "look at before this deck leaves the building; nothing here halts a run, and no",
+        "stage of this plan stopped to ask for an approval either.",
         "",
         f"- Deck: `{audit.deck}`",
         f"- Provenance record: `{provenance_path}`" if provenance_path else "- Provenance record: (not written)",

@@ -181,15 +181,18 @@ def test_the_reclassification_left_the_shipped_orderings_intact():
     for plan in _shipped_plans():
         waves = compute_waves(plan)
 
-        # 1. `deck` sits ALONE in its wave. The `required` gate fires at the wave
-        #    boundary and holds the waves after its own, never its wave-mates, so a
-        #    wave-mate would run before the analyst had approved anything.
+        # 1. `deck` sits ALONE in its wave. Every other stage either feeds the
+        #    assembly or consumes the assembled file, so a wave-mate would be a
+        #    stage running concurrently with the deck it reads or edits —
+        #    `financial-charts` mutates that file in place.
         deck_wave = next(w for w in waves if "deck" in w)
         assert deck_wave == ["deck"], f"{plan.deliverable_type}: deck must be alone in its wave"
 
-        # 2. There is exactly one gate, and it is `deck`.
+        # 2. Nothing gates. `deck` carried the plugin's only `required` checkpoint
+        #    until v0.5.49; the run is autonomous now, and the deck's QA (the
+        #    converge loop, `vision_review_path`, `deckcheck`) asks no questions.
         gates = [s.id for s in plan.stages if str(s.checkpoint) == "required"]
-        assert gates == ["deck"], f"{plan.deliverable_type}: expected one gate on deck, got {gates}"
+        assert gates == [], f"{plan.deliverable_type}: expected no gates, got {gates}"
 
         # 3. `deckcheck` runs LAST, on the finished artefact — after `deck` and,
         #    for pitch, after `financial-charts`, whose charts carry figures a
@@ -198,7 +201,7 @@ def test_the_reclassification_left_the_shipped_orderings_intact():
             f"{plan.deliverable_type}: deckcheck must be the final wave, alone"
         )
         deck_index = waves.index(deck_wave)
-        assert deck_index < len(waves) - 1, "the gate needs a downstream wave to hold"
+        assert deck_index < len(waves) - 1, "deck is not the last wave — deckcheck follows it"
 
 
 def test_run_transform_refuses_a_judgment_skill(tmp_path: Path):
@@ -374,10 +377,11 @@ def test_deck_transform_rejects_an_unknown_deliverable_type(tmp_path: Path):
 def test_deck_transform_assembles_and_writes_the_vision_review(tmp_path: Path):
     """End to end on the real assembler, including the converge loop.
 
-    This is the transform the `required` gate is attached to, so the assertion is
-    the gate's: a deck in the deal's artefacts directory, and a review the analyst
-    can open before answering the approval dialog. Earnings update rather than
-    pitch — five slides against nineteen, for the same wiring.
+    Both halves of what this stage owes the analyst: a deck in the deal's artefacts
+    directory, and a written review of its slides they can open. Since v0.5.49 there
+    is no approval dialog to hold that review behind, which makes writing it the
+    only thing that gets it read. Earnings update rather than pitch — five slides
+    against nineteen, for the same wiring.
     """
     io = _io(tmp_path, "deck", {})
     io.inputs.update(_deck_inputs(tmp_path, io, pitch=False))
@@ -400,9 +404,9 @@ def test_deck_transform_assembles_and_writes_the_vision_review(tmp_path: Path):
 def test_vision_review_records_the_reason_it_could_not_run(tmp_path: Path):
     """A broken review must not fail the stage — but it must not vanish either.
 
-    The deck exists and the gate still has to be put to the analyst, so the reason
-    is written into the file the gate points at, naming the deck to read by hand.
-    Driven with an unreadable .pptx, which is the shape of every way this can fail.
+    The deck exists and the run carries on, so the reason is written into the file
+    `vision_review_path` points at, naming the deck to read by hand. Driven with an
+    unreadable .pptx, which is the shape of every way this can fail.
     """
     io = _io(tmp_path, "deck", {})
     deck = io.artefacts_dir / "Deck.pptx"
@@ -412,7 +416,7 @@ def test_vision_review_records_the_reason_it_could_not_run(tmp_path: Path):
     assert path == io.stage_dir / stage_transforms.VISION_REVIEW_NAME
     body = path.read_text(encoding="utf-8")
     assert "could not be built" in body
-    assert "by hand before approving" in body
+    assert "by hand before it goes out" in body
     assert str(deck) in body
 
 

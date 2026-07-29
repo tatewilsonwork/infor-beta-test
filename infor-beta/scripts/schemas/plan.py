@@ -97,8 +97,9 @@ class Stage(BaseModel):
         default="informational",
         description=(
             "Checkpoint mode per H2 / A2: `required` halts and awaits explicit approval; "
-            "`informational` surfaces a summary and proceeds; `silent` is reserved for "
-            "autonomous mode later."
+            "`informational` surfaces a summary and proceeds; `silent` suppresses the "
+            "summary. Since v0.5.49 every shipped stage is `informational` — the run is "
+            "autonomous and `required` is unused. A stage failure halts regardless."
         ),
     )
 

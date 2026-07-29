@@ -108,22 +108,23 @@ stages:
         description: Absolute path to the generated earnings update .pptx deck with the cap table inserted.
       - name: vision_review_path
         type: Path
-        description: The vision review the gate points the analyst at — which slides to look at and why, plus every slide's render and each rasterised picture at native resolution. Geometry is already measured and repaired inside the assembler; this is the reading half.
-    # Pre-delivery gate: the assembled deck is built from untrusted external
-    # inputs (filings, EEO snip, web data), so the analyst must approve it
-    # before delivery. `deck` sits alone in its wave ahead of `deckcheck`, so
-    # this gate genuinely holds the falsification pass behind it.
+        description: The written vision review — which slides to look at and why, plus every slide's render and each rasterised picture at native resolution. Geometry is already measured and repaired inside the assembler; this is the reading half.
+    # No analyst gate (v0.5.49). The assembled deck is built from untrusted
+    # external inputs (filings, EEO snip, web data), and everything that checks it
+    # is automated and runs without asking the analyst anything: `deck_repair`
+    # converges the geometry from measured renders inside the assembler,
+    # `vision_review_path` is the reading half written to disk, and `deckcheck`
+    # falsifies the figures downstream. The analyst reads all three after the run.
     #
     # A Phase F in-process transform: the driver assembles the deck itself rather
-    # than dispatching a sub-agent to retype the call. The gate is unaffected —
-    # checkpoints fire at the wave boundary off `outputs.json`, whoever wrote it.
-    checkpoint: required
+    # than dispatching a sub-agent to retype the call.
+    checkpoint: informational
 
   # Falsification pass (Phase G). Reads the rendered slide PNGs, the run's merged
   # provenance record (every stage's `provenance.json` fragment, figure -> filing
   # -> statement -> page) and the attached filings, and attempts to DISPROVE every
   # figure on the deck. Advisory: it surfaces a review at the wave boundary and
-  # never gates — the plan's one `required` approval stays on `deck`.
+  # never gates — and since v0.5.49 no stage in this plan does.
   - id: deckcheck
     skill: deckcheck
     inputs:

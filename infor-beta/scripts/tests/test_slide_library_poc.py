@@ -298,10 +298,10 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
     # audits the figures on the deck `deck` produced.
     assert plan.stages[-1].id == "deckcheck"
     assert plan.stages[-1].inputs["deck_path"] == "$stages.deck.deck_path"
-    # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before delivery.
-    assert deck_stage.checkpoint == "required"
-    assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
+    # No stage gates (v0.5.49): `deck` reports its outputs at the wave boundary and
+    # the run continues to `deckcheck` without an approval pause.
+    assert deck_stage.checkpoint == "informational"
+    assert [s.id for s in plan.stages if s.checkpoint != "informational"] == []
 
 
 def test_pitch_library_poc_plan_stage_order():
@@ -345,10 +345,10 @@ def test_pitch_library_poc_plan_stage_order():
     # financial-charts is editing in place would race it.
     dc_stage = next(s for s in plan.stages if s.id == "deckcheck")
     assert dc_stage.inputs["deck_path"] == "$stages.financial-charts.deck_path"
-    # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before the charts produce the final artefact.
-    assert next(s for s in plan.stages if s.id == "deck").checkpoint == "required"
-    assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
+    # No stage gates (v0.5.49): `deck` no longer holds the charts and `deckcheck`
+    # behind an analyst approval — the run carries on to the final artefact.
+    assert next(s for s in plan.stages if s.id == "deck").checkpoint == "informational"
+    assert [s.id for s in plan.stages if s.checkpoint != "informational"] == []
     deck_stage = next(s for s in plan.stages if s.id == "deck")
     assert deck_stage.inputs["slide_plan_path"] == "$stages.wireframe.slide_plan_path"
     assert deck_stage.inputs["content_bundle_path"] == "$stages.content.content_bundle_path"
