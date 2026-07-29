@@ -90,29 +90,37 @@ def test_financial_charts_depends_on_deck():
     assert "deck" in deps["financial-charts"]
 
 
-def test_required_deck_gate_precedes_every_later_wave():
-    """Both shipped plans mark `deck` as the `required` pre-delivery checkpoint
-    (v0.5.31), and nothing else is a gate. Checkpoints are evaluated at the wave
-    boundary and only stop DOWNSTREAM waves, so the gate is only real if `deck`
-    sits alone in its wave with everything else after it — lock that here so a plan
-    edit can't silently move a later stage alongside (or ahead of) the gate.
+def test_no_shipped_plan_pauses_for_an_analyst_approval():
+    """v0.5.49: the analyst gate is gone from every shipped plan.
 
-    Phase G's `deckcheck` is deliberately in that downstream set and deliberately
-    `informational`: a falsification pass reports on the artefact the analyst has
-    already approved. Making it a second gate would mean halting a run on a claim
-    about the target's financial statements.
+    Until then `deck` carried the plugin's only `required` checkpoint, and this test
+    pinned the schedule that made it real — `deck` alone in its wave, `deckcheck` and
+    the charts held behind it. A2 always described the flip to autonomous as
+    configuration rather than code, and that is what it was: three `checkpoint:`
+    lines. So what is worth pinning now is the *absence*. A run goes from the intake
+    to `deckcheck` without stopping, and a stage that quietly acquired a `required`
+    mode would reinstate the pause the plans deliberately dropped.
+
+    The review the gate used to sit in front of did NOT go with it, and none of it is
+    a checkpoint: `deck_repair`'s converge loop runs inside the assembler, `deck`
+    writes the read-the-slides pass to `vision_review_path`, and `deckcheck`
+    falsifies every figure on the finished artefact. What still halts a run is a
+    stage FAILURE — `complete_wave` reporting `ok=False`, which fires whatever the
+    checkpoint modes say (`test_conductor`'s output-validation tests).
+
+    The ordering this test used to justify by the gate is still asserted, for its
+    own reasons: `test_deckcheck_depends_on_the_final_artefact_stage` and
+    `test_financial_charts_depends_on_deck`.
     """
-    for name in ("pitch.yaml", "earnings-update.yaml"):
+    for name in ("pitch.yaml", "earnings-update.yaml", "overview.yaml"):
         plan = _load_plan(name)
-        checkpoints = {s.id: s.checkpoint for s in plan.stages}
-        assert checkpoints["deck"] == "required", name
-        assert all(m == "informational" for sid, m in checkpoints.items() if sid != "deck"), name
-
-        waves = compute_waves(plan)
-        wave_index = {sid: i for i, wave in enumerate(waves) for sid in wave}
-        assert waves[wave_index["deck"]] == ["deck"], f"{name}: the gate has wave-mates"
-        held = [sid for sid, i in wave_index.items() if i > wave_index["deck"]]
-        assert "deckcheck" in held, f"{name}: the review is not behind the gate"
+        gates = [s.id for s in plan.stages if s.checkpoint == "required"]
+        assert gates == [], f"{name}: {gates} would halt the run for an analyst approval"
+        # `informational` specifically, not merely "not required": a shipped stage
+        # reports its outputs at the wave boundary. `silent` would run the deck past
+        # the analyst without even naming the file.
+        modes = {s.id: s.checkpoint for s in plan.stages}
+        assert all(m == "informational" for m in modes.values()), f"{name}: {modes}"
 
 
 def test_every_stage_scheduled_exactly_once():

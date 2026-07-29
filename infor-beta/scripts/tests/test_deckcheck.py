@@ -230,9 +230,9 @@ def test_audit_needs_no_renderer():
 
 
 def test_a_finding_cannot_claim_to_be_blocking():
-    # `deckcheck` is a review surfaced at a checkpoint. The run's one required gate
-    # is on `deck`, and a falsification pass that could halt a run would have to be
-    # right about a target's financial statements.
+    # `deckcheck` is a review surfaced at a checkpoint, and since v0.5.49 no shipped
+    # stage gates at all — so this would be the only one. A falsification pass that
+    # could halt a run would have to be right about a target's financial statements.
     with pytest.raises(ValueError, match="review surfaced at a checkpoint"):
         CheckFinding(slide=1, figure="Revenue", verdict="contradicted", detail="x",
                      severity="blocking")

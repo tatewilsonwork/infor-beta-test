@@ -116,10 +116,12 @@ def test_phase3_earnings_update_plan_has_decomposed_stage_order():
     assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
     assert captable_stage.inputs["ltm_revenue"] == "$stages.ltm-metrics.ltm_revenue"
     assert captable_stage.inputs["ltm_adj_ebitda"] == "$stages.ltm-metrics.ltm_adj_ebitda"
-    # The deck stage is the pre-delivery gate (v0.5.31): the analyst approves the
-    # assembled deck before workbook aggregation produces the final artefact.
-    assert deck_stage.checkpoint == "required"
-    assert all(s.checkpoint == "informational" for s in plan.stages if s.id != "deck")
+    # No stage gates (v0.5.49) — `deck` carried the plugin's only `required`
+    # checkpoint until then, and the run now goes end to end. The deck's QA did not
+    # go with the gate: the converge loop, `vision_review_path` and `deckcheck` all
+    # still run and none of them asks the analyst anything.
+    assert deck_stage.checkpoint == "informational"
+    assert [s.id for s in plan.stages if s.checkpoint != "informational"] == []
 
 
 def test_overview_stub_plan_is_valid():

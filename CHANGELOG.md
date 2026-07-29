@@ -69,6 +69,43 @@ Dialog questions left, per deliverable: **earnings update 2** (deal-init's Listi
 
 No stage, plan, template or checkpoint mode was touched. Suite: **794 passed, 0 skipped** (783 before).
 
+## [0.5.49] — 2026-07-29
+
+> **Release-numbering note.** Developed in parallel with 0.5.50, which reserved this number (its entry and four of its comments date the status dialogs "through v0.5.49") and merged first. So the three version files never read `0.5.49` — they went 0.5.48 → 0.5.50, and 0.5.50 is the release that carries both changes. The entry is numbered as it was written; it is the one gap in the version-file sequence.
+
+**The analyst gate is gone — a conductor run goes end to end.** Locked decision A2 always described the path from medium-HITL to autonomous as *configuration, not code*, and that is exactly what it cost: three `checkpoint: required` lines became `informational`. `deck` carried the plugin's only gate, in `pitch.yaml`, `earnings-update.yaml` and the `overview.yaml` stub. The analyst now answers the intake — deal facts, attachments, deck spec — and the run then dispatches every wave to the end without stopping to ask for an approval.
+
+### What the gate was protecting, and why it does not need a gate
+
+The gate's stated job was the deck: assembled from untrusted external inputs (filings, exports, web data), so the analyst approved it before delivery. Everything that actually *checks* the deck is automated, and none of it asks a question:
+
+- **`deck_repair`'s converge loop** (Phase B, v0.5.37/39) decides every font size and autofit scale from a **measured** render, one probe slide per candidate size, and raises `DeckNotConvergedError` naming the shape it could not fit. That reaches the analyst as a stage failure, which halts the run harder than a gate would.
+- **The written vision review** (`deck`'s `vision_review_path`, Phase F) is the read-the-slides pass on disk: which slides to look at and why, every slide's render, each rasterised picture at native resolution. It was the gate's own reading material; it is now surfaced by path at the wave boundary and again in the run summary.
+- **`deckcheck`** (Phase G) attempts to disprove every figure on the *finished* artefact against the run's provenance record and the source filings. It is advisory by construction — `CheckFinding` refuses any severity but `advisory` — and could never have gated.
+
+The gate was asking the analyst to approve a mid-run artefact that the later waves had not touched yet: in the pitch plan, a deck with no Financial Summary charts and no falsification pass behind it. Reading all three reviews on a completed deliverable is strictly more information, later, and it does not idle the run to get it.
+
+**Nothing about the QA changed in this release.** No converge-loop code, no `deck_contract`, no `deckcheck`, no vision review — only the prose in each that claimed a gate was downstream of it.
+
+### The mode stays; the usage goes
+
+`Checkpoint`, `WaveOutcome.gate`, `APPROVE_LABEL` / `HALT_LABEL` and `_checkpoint_for`'s `required` branch are untouched. `required` remains the right tool for a stage whose approval is a real-world event — buyer-list approval (D-series) is the archetype, where sending the list *is* the next step — and `test_the_required_gate_halts_the_run_when_the_analyst_rejects` (plus its `gated_run_dir` fixture, which builds its own plan) is now the only exercise of that branch, keeping it honest until such a plan exists.
+
+**A stage failure is not a checkpoint, and is now the only mid-run stop.** `complete_wave` reports `ok=False` off the stage's own `outputs.json` — missing, malformed, carrying an `error` key, or missing a declared output — and `outcome.halt` is True whatever the checkpoint modes say. New test `test_a_stage_failure_halts_the_run_with_no_checkpoint_involved` drives the whole loop with a failing `informational` root and asserts the two held stages never resolve inputs, so the halt path does not quietly depend on the gate that used to live beside it.
+
+### Tests
+
+Every assertion of the old behaviour was rewritten rather than deleted; the suite gains one test and loses none. **784 passed, 0 skipped** measured against 0.5.48 (783 before); **795 passed, 0 skipped** on the tree that merges this with 0.5.50.
+
+- `test_plan_schedule.test_required_deck_gate_precedes_every_later_wave` → **`test_no_shipped_plan_pauses_for_an_analyst_approval`**: no stage of the three shipped plans is `required`, and all are `informational` (not merely non-`required` — `silent` would run the deck past the analyst without naming the file). The wave ordering it used to justify by the gate is still asserted, for its own reasons, by `test_deckcheck_depends_on_the_final_artefact_stage` and `test_financial_charts_depends_on_deck`.
+- `test_plan.py` and `test_slide_library_poc.py` (×2): the shipped-plan wiring tests now pin `deck` = `informational` and an empty non-`informational` set.
+- `test_stage_transforms.test_the_reclassification_left_the_shipped_orderings_intact`: "exactly one gate, and it is `deck`" becomes "no gates". `deck` is still asserted alone in its wave, now for the reason that survives the gate's removal — every other stage either feeds the assembly or consumes the assembled file, and `financial-charts` mutates it in place.
+- Docstrings and comments across `test_conductor.py`, `test_deckcheck.py` and `test_stage_transforms.py` corrected where they explained a property by the gate.
+
+### Documentation
+
+`checkpoint-behaviour.md`'s "Shipped usage" paragraph is now **"Shipped usage: none"** and its "Migration to autonomous" section records the migration as done, naming what still stops a run (a stage failure, and the intake before wave 1). Conductor `SKILL.md` gains an explicit *do not invent an approval pause* rule — a wave boundary is a report, not a question — and its Stop conditions section now leads with the stage-failure halt. `README.md`, `CLAUDE.md` (the A2 line and the checkpoint bullet), `deckcheck`'s SKILL.md and report header, `stage_transforms.py`'s module docstring, and `schemas/plan.py`'s `checkpoint` field description all follow. One user-visible string changed: a vision review that could not be built now says to read the deck "by hand before it goes out" rather than "before approving it".
+
 ## [0.5.47] — 2026-07-28
 
 **Migration Phase F — stage granularity. The migration is complete.** Every plan stage is now classified as a **transform** (deterministic — the conductor calls the function in-process) or **judgment** (research, drafting, argument — a dispatched sub-agent with a real tool allow-list). Four stages move to the first kind, so a pitch run costs **8 sub-agent dispatches instead of 11** and an earnings update **4 instead of 6**.

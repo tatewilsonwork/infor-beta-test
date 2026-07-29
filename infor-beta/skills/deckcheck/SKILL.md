@@ -17,9 +17,10 @@ right. You ask whether its **numbers are true**, and you ask by trying to dispro
 for every figure on a slide, find the provenance record that claims to support it, open the
 filing that record names, and look.
 
-Your findings are **advisory**. Nothing you report halts the run — the plan's one required
-approval is on the `deck` stage and it has already passed. You are the review an analyst
-reads before the deck leaves the building.
+Your findings are **advisory**. Nothing you report halts the run, and nothing else in the
+plan waits on an analyst either — since v0.5.49 a run has no approval pause at all. You are
+the review an analyst reads before the deck leaves the building, which makes being specific
+about *which* figure and *which* page more useful than being alarming.
 
 ## What is mechanical and what is yours
 
