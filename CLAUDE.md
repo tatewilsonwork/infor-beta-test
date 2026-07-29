@@ -181,7 +181,10 @@ from template_layout import (  # the templates' layout map: names, markers, bran
     NAME_FX_RATE, MARKER_CONTACT,  # every infor_ NAME_* and every MARKER_* lives here too
     INFOR_THEME, read_theme,  # the palette a theme-indexed colour resolves against
 )
-from excel_to_powerpoint import find_soffice, insert_excel_into_placeholder
+from excel_to_powerpoint import (
+    find_soffice, insert_excel_into_placeholder,
+    assert_range_pictures_are_distinct,  # no slide ships one range picture twice
+)
 from financial_charts import render_financial_summary_charts_into_deck, render_ltm_revenue_pie_into_deck
 from slide_render import render_deck_to_png
 from deck_contract import verify_deck, vision_pass, write_picture_crops, Finding, SEVERITY_BLOCKING
@@ -213,6 +216,7 @@ Verify before you write: `verify_names` / `verify_workbook_names` / `verify_cap_
 - **LibreOffice is the conservative oracle only for shapes WITHOUT autofit.** For those, "fits in LibreOffice" ⟹ "fits in PowerPoint" (it wraps Palatino one line / ~0.2" taller). For a shape carrying `<a:normAutofit>` it is **optimistic**: it treats any autofit as shrink-to-fit and recomputes its own scale, where PowerPoint applies the stored `fontScale` and nothing more. That is why `deck_contract`'s `rendered-overflow` skips autofit shapes and `masked-overflow` attribution outranks it.
 - **Never estimate a text extent.** `deck_repair` is the only place a font size or autofit scale is decided, and it decides from a measured render — one probe slide per candidate size, the whole ladder rendered in a single pass, the ink read back. Four hand-calibrated heuristics were deleted for this; don't write a fifth.
 - **A renderer must render a private copy.** Both engines hold the caller's file open (LibreOffice drops a `.~lock`), and `zipfile.is_zipfile` swallows the resulting `OSError` into a bogus `PackageNotFoundError`.
+- **A range render's private copy must print ONE sheet, and its PDF must have exactly one page.** Hiding a sheet does not stop LibreOffice exporting it — neither its **print area** nor, when it is the workbook's **active tab**, its whole used range. A deal workbook trips both (it inherits print areas from `captable` and `comps`, and opens on `precedents`), so `pdf[0]` was the cap table for *every* requested range: `excel_to_powerpoint._prepare_print_copy` clears the other print areas and makes the target the active sheet, and the page-count assertion halts rather than rendering whatever page 1 happens to be. Two range pictures that rendered identical bytes are deduped by python-pptx into one shared `r:embed`, which is why `assert_range_pictures_are_distinct` runs in both assemblers' output verification.
 - **Each process gets its own LibreOffice profile** (`-env:UserInstallation`). Concurrent conversions sharing the default profile fail.
 - Palatino on Cowork is **the highest-value open question left**, and it is one command: LibreOffice has no `palatinolinotype` substitution entry, so prod most likely resolves it to URW Palladio L / P052 (metric-compatible) but degrades to Times/DejaVu metrics without `fonts-urw-base35`. It matters because `deck_repair` decides every font size from a measured render, and that calibration was measured against **real Palatino on the Windows dev box** — if prod substitutes different metrics, the oracle is measuring a deck the analyst will not receive. On a Cowork shell: `fc-match "Palatino Linotype"`. `P052`/`URW Palladio L` ⟹ metric-compatible, converge loop sound as calibrated; `DejaVu`/`Liberation`/`Times` ⟹ the loop is calibrated against the wrong metrics and Phase B needs re-validating on prod fonts. A Windows box cannot answer it — it has no fontconfig at all, so there is nothing to run.
 

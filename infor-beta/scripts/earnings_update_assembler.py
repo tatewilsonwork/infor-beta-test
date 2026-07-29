@@ -16,7 +16,10 @@ from pptx.util import Pt
 
 from deal_workbook import TAB_CAPTABLE
 from deck_repair import assert_converged, converge_deck
-from excel_to_powerpoint import insert_excel_into_placeholder
+from excel_to_powerpoint import (
+    assert_range_pictures_are_distinct,
+    insert_excel_into_placeholder,
+)
 from naming import safe_filename
 from pptx_helpers import (
     COLOR_DOWN,
@@ -429,6 +432,10 @@ def _verify_output(
         raise ValueError(
             f"earnings deck must have {len(_KEEP_MARKERS)} slides, got {len(prs.slides)}"
         )
+    # This deck takes one range picture today, so the check cannot bite yet — but
+    # it is the same guard the pitch assembler runs, and a second range paste here
+    # (an LTM tab, say) must not be able to silently duplicate the first.
+    assert_range_pictures_are_distinct(prs)
     overview_text = _slide_text(prs.slides[overview_index])
     summary_text = _slide_text(prs.slides[summary_index])
 

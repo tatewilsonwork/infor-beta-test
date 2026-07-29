@@ -6,6 +6,7 @@ Select-Insiders block and the vestigial-cruft strip that keeps the output
 openable by the render step.
 """
 
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -131,6 +132,136 @@ def test_total_shares_none_leaves_f35_blank(tmp_path: Path):
         total_shares_outstanding=None,
     )
     assert load_workbook(out)["Ownership"]["F35"].value is None
+
+
+# ─── The padding top-12 display (the duplicate-name bug) ─────────────────────
+#
+# `Ownership!F5:F16` is `=LARGE($I$39:$I$65, A<row>)` and `B5:B16` is
+# `=XLOOKUP(F<row>, $I$39:$I$178, $J$39:$J$178)`. The pool is `=H*F` over every
+# data row, and an unfed row computes to 0 rather than being absent — so with
+# fewer than 12 positive balances `LARGE` returns 0 for each surplus rank and
+# `XLOOKUP(0, ...)` matches the first zero-balance holder, printing that one
+# name once per surplus rank. Renderer-free by design: these assert the guard the
+# stage writes, not LibreOffice's arithmetic.
+
+_RANK_ROWS = {"insiders": range(5, 17), "institutions": range(20, 32)}
+_POOL = {"insiders": "$I$39:$I$65", "institutions": "$I$68:$I$185"}
+
+
+def _guard_of(ws, row: int) -> tuple[str, str]:
+    """``(rank ref, pool ref)`` from a guarded share formula, or fail loudly."""
+    formula = ws[f"F{row}"].value
+    match = re.fullmatch(
+        r'=IF\((\S+?)<=COUNTIF\((\S+?),">0"\),LARGE\(\2,\1\),""\)', formula
+    )
+    assert match, (
+        f"F{row} is not a guarded rank formula: {formula!r}. Without the COUNTIF "
+        f"guard a surplus rank resolves to LARGE(...)=0 and repeats the first "
+        f"zero-balance holder."
+    )
+    return match.group(1), match.group(2)
+
+
+@pytest.mark.parametrize("block", ("insiders", "institutions"))
+def test_every_display_rank_is_guarded_by_a_countif_over_its_own_pool(
+    tmp_path: Path, block: str
+):
+    out = _build(tmp_path, [InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 500, "2025-01-01")])
+    ws = load_workbook(out)["Ownership"]
+
+    for row in _RANK_ROWS[block]:
+        rank, pool = _guard_of(ws, row)
+        assert rank == f"A{row}", f"F{row} must rank by its own row's A cell"
+        assert pool == _POOL[block], f"F{row} counts a different pool than it ranks"
+        # The name and the percentage follow the share cell: otherwise B repeats a
+        # name and G divides "" into #VALUE!.
+        for col in ("B", "G"):
+            assert ws[f"{col}{row}"].value.startswith(f'=IF(F{row}="","",'), (
+                f"{col}{row} is not gated on F{row} being blank: "
+                f"{ws[f'{col}{row}'].value!r}"
+            )
+
+
+def test_the_guard_leaves_the_subtotals_summing_the_display_block(tmp_path: Path):
+    """The arithmetic stays in Excel: `SUM` ignores the `""` a guarded rank yields,
+    so the Subtotal needs no rewrite — and must not get one."""
+    ws = load_workbook(
+        _build(tmp_path, [InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 500, "2025-01-01")])
+    )["Ownership"]
+
+    assert ws["F17"].value == "=SUM(F5:F16)"
+    assert ws["F32"].value == "=SUM(F20:F31)"
+    assert ws["F33"].value == "=+F35-F32-F17"
+
+
+def test_fewer_than_twelve_positive_insiders_renders_no_duplicate_name_or_row(
+    tmp_path: Path,
+):
+    """The shipped symptom: "Ayman Antoun (CEO & Director) -- <0.1%" printed twice.
+
+    Three insiders, two of them holding common shares. The pool therefore holds two
+    positive balances, so ranks 3-12 are guarded off and the display can only show
+    the two distinct holders.
+    """
+    insiders = [
+        InsiderHolding("Antoun, Ayman", "Ayman Antoun (CEO & Director)", 150_000, "2025-03-31"),
+        InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 90_000, "2025-04-01"),
+        InsiderHolding("Zero, Zed", "Zed Zero (Director)", 0, "2025-04-02"),
+    ]
+    ws = load_workbook(_build(tmp_path, insiders))["Ownership"]
+
+    # The pool is `=H<row>*F<row>`; H ships as 1 and F holds what the stage wrote,
+    # so counting the positive balances needs no formula evaluation.
+    positive = [
+        row
+        for row in range(39, 66)
+        if isinstance(ws[f"F{row}"].value, (int, float)) and ws[f"F{row}"].value > 0
+    ]
+    assert len(positive) == 2
+
+    rendered, blank = [], []
+    for row in _RANK_ROWS["insiders"]:
+        rank, _ = _guard_of(ws, row)
+        (rendered if ws[rank].value <= len(positive) else blank).append(row)
+
+    assert rendered == [5, 6], "only the ranks with a positive balance may render"
+    assert blank == list(range(7, 17)), "every surplus rank must render as an empty row"
+    # `LARGE` returns the k-th largest, so distinct balances give distinct names —
+    # and the pre-fix formulas would have put rank 3-12's XLOOKUP(0, ...) hit here
+    # ten more times.
+    assert len({ws[f"F{row}"].value for row in rendered}) == len(rendered)
+
+
+def test_a_block_with_no_recognisable_rank_row_halts(tmp_path: Path):
+    """A silent no-op would put the duplicates straight back."""
+    from ownership_workbook import _guard_display_block
+    from template_layout import NAME_OWN_INSIDERS_PICTURE, TemplateLayoutError
+
+    ws = load_workbook(
+        _build(tmp_path, [InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 500, "2025-01-01")])
+    )["Ownership"]
+    for row in _RANK_ROWS["insiders"]:
+        ws[f"F{row}"] = None
+
+    with pytest.raises(TemplateLayoutError, match="no rank row"):
+        _guard_display_block(ws, NAME_OWN_INSIDERS_PICTURE)
+
+
+def test_the_guard_is_idempotent(tmp_path: Path):
+    """The stage may run twice over one deal workbook; the wrap must not nest."""
+    deal = _deal(tmp_path)
+    insiders = [InsiderHolding("Doe, Jane", "Jane Doe (CFO)", 500, "2025-01-01")]
+    for _ in range(2):
+        build_ownership_workbook(
+            deal_workbook=deal, insiders=insiders, total_shares_outstanding=261_000_000
+        )
+    ws = load_workbook(deal)["Ownership"]
+
+    for block in ("insiders", "institutions"):
+        for row in _RANK_ROWS[block]:
+            _guard_of(ws, row)  # still exactly one guard, not a nested pair
+            assert ws[f"B{row}"].value.count("=IF(") == 1
+            assert ws[f"G{row}"].value.count("=IF(") == 1
 
 
 def _cap_table(path: Path, rows: dict[int, float]) -> Path:

@@ -26,9 +26,14 @@ insider-only behaviour).
 The display block ranks the top 12 insiders by common shares via
 ``LARGE``/``XLOOKUP`` over the I (``=H*F``) helper column, so only an insider's
 common-share count drives the slide — options, RSUs, PSUs and DSUs are excluded
-by design (they are not common shares). The template's top-12 display assumes
-at least 12 insiders hold a positive common-share balance; insiders holding 0
-common shares are still written (the analyst can toggle col H to exclude them).
+by design (they are not common shares). Insiders holding 0 common shares are
+still written (the analyst can toggle col H to exclude them).
+
+The template's top-12 display *assumes* at least 12 positive balances, and
+``_guard_display_block`` is what makes a shorter list safe: both display blocks
+get their rank formulas rewritten so a surplus rank renders as an empty row
+instead of repeating the first zero-balance holder. See that function for the
+mechanism and for why the fix is here rather than in the template.
 """
 
 from __future__ import annotations
@@ -59,10 +64,14 @@ from template_layout import (
     NAME_OWN_BBG_HOLDER_BLOCK,
     NAME_OWN_BBG_LINK_BLOCK,
     NAME_OWN_INSIDER_BLOCK,
+    NAME_OWN_INSIDERS_PICTURE,
+    NAME_OWN_INSTITUTIONS_PICTURE,
     NAME_OWN_TOTAL_SHARES,
     OWNERSHIP_BBG_HOLDER_NAMES,
     OWNERSHIP_BBG_LINK_NAMES,
     OWNERSHIP_INSIDER_WRITE_NAMES,
+    OWNERSHIP_INSIDERS_PICTURE_NAMES,
+    OWNERSHIP_INSTITUTIONS_PICTURE_NAMES,
     OWNERSHIP_TEMPLATE,
     TemplateLayoutError,
     defined_name_ref,
@@ -91,6 +100,12 @@ _COL_BASIC = "F"
 _COL_DATE = "G"
 _COL_ADJ_NAME = "J"
 _COL_INCLUDE = "H"
+# The two display blocks reuse B/F/G as name / shares / %. A block's *rank* rows
+# are recognised by their shares cell holding a `LARGE(<pool>, <rank>)` call, so
+# no row span is hardcoded and the header / Subtotal / Other-Shareholders rows
+# inside the same named range are skipped without being enumerated.
+_COL_DISPLAY_PCT = "G"
+_LARGE_CALL_RE = re.compile(r"\bLARGE\(\s*([^,()]+?)\s*,\s*([^,()]+?)\s*\)", re.IGNORECASE)
 
 # ── Bloomberg institutional side ─────────────────────────────────────────────
 # The template's 'Bloomberg Output' tab mirrors the BBG Excel add-in's
@@ -534,6 +549,68 @@ def _write_bloomberg_side(
         ws_own[f"{_COL_INCLUDE}{own_row}"] = 0
 
 
+def _guard_display_block(ws, picture_name: str) -> None:
+    """Make a top-12 display block survive fewer than 12 positive balances.
+
+    A display row is ``F=LARGE(<pool>, <rank>)`` for the share count,
+    ``B=XLOOKUP(F<row>, ...)`` for the holder name and ``G=F<row>/$F$35`` for the
+    percentage. The pool is the ``I`` (``=H*F``) helper column over *every* data
+    row, and an unfed data row computes to **0** rather than being absent — so
+    when the pool holds fewer positive balances than there are ranks, ``LARGE``
+    returns 0 for each surplus rank and ``XLOOKUP(0, ...)`` matches the first
+    zero-balance row. The slide then prints that one holder's name once per
+    surplus rank (the shipped symptom: "Ayman Antoun (CEO & Director) -- <0.1%"
+    twice).
+
+    Each rank is therefore guarded by a ``COUNTIF`` over the same pool it draws
+    from, and the name and percentage follow the share cell: a surplus rank
+    renders as an empty row. The arithmetic stays in Excel, and the block's
+    ``Subtotal`` is untouched — ``SUM`` ignores the ``""`` a guarded rank yields.
+
+    Raises ``TemplateLayoutError`` when the block holds no recognisable rank row,
+    rather than leaving the guard a silent no-op.
+
+    Written from the stage rather than baked into the template on purpose: a
+    template edit forces an `add_template_named_ranges.py` +
+    `build_deal_workbook_template.py` rebuild. Idempotent — a block whose share
+    cells already carry the ``COUNTIF`` guard is left alone, so a re-run of the
+    stage does not wrap twice.
+    """
+    _, first, _, last = range_boundaries(
+        resolve_name_range(ws, picture_name, template=OWNERSHIP_TEMPLATE)
+    )
+    rank_rows = 0
+    for row in range(first, last + 1):
+        basic = ws[f"{_COL_BASIC}{row}"]
+        formula = basic.value
+        if not isinstance(formula, str):
+            continue
+        match = _LARGE_CALL_RE.search(formula)
+        if match is None:
+            continue  # a header, the Subtotal, Other Shareholders — not a rank
+        rank_rows += 1
+        if "COUNTIF(" in formula.upper():
+            continue  # already guarded (the stage ran before on this workbook)
+        pool, rank = match.group(1), match.group(2)
+        basic.value = f'=IF({rank}<=COUNTIF({pool},">0"),LARGE({pool},{rank}),"")'
+        # The name and the percentage read the share cell, so both go blank with
+        # it — otherwise B repeats a name and G divides "" and shows #VALUE!.
+        for col in (_COL_SEDI_NAME, _COL_DISPLAY_PCT):
+            cell = ws[f"{col}{row}"]
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.value = f'=IF({_COL_BASIC}{row}="","",{cell.value[1:]})'
+    if not rank_rows:
+        # A block whose rank formulas stopped looking like `LARGE(<pool>, <rank>)`
+        # would leave this a silent no-op, and the padding duplicates would come
+        # straight back — so halt instead of writing a workbook that looks guarded.
+        raise TemplateLayoutError(
+            f"{OWNERSHIP_TEMPLATE}: found no rank row in the block named "
+            f"{picture_name!r} (rows {first}-{last}). A display row is recognised by "
+            f"its {_COL_BASIC} cell holding a LARGE(<pool>, <rank>) call; if the "
+            f"template's ranking changed shape, update _guard_display_block with it."
+        )
+
+
 def build_ownership_workbook(
     *,
     insiders: "list[InsiderHolding | dict]",
@@ -597,9 +674,16 @@ def _fill_ownership_tab(
     bloomberg_include_overrides: dict[str, int] | None,
 ) -> None:
     """Write the insider block, the % denominator and (optionally) the BBG side."""
-    # Verify the names the writes resolve through — the insider block and the %
-    # denominator — before touching a cell.
-    verify_names(ws, OWNERSHIP_INSIDER_WRITE_NAMES, template=OWNERSHIP_TEMPLATE)
+    # Verify the names the writes resolve through — the insider block, the %
+    # denominator, and the two display blocks whose rank formulas get guarded —
+    # before touching a cell, so a tab that lost one reports every miss at once.
+    verify_names(
+        ws,
+        OWNERSHIP_INSIDER_WRITE_NAMES
+        + OWNERSHIP_INSIDERS_PICTURE_NAMES
+        + OWNERSHIP_INSTITUTIONS_PICTURE_NAMES,
+        template=OWNERSHIP_TEMPLATE,
+    )
 
     insider_rows = _row_span(ws, NAME_OWN_INSIDER_BLOCK)
     if len(insiders) > len(insider_rows):
@@ -647,3 +731,11 @@ def _fill_ownership_tab(
             adjusted_overrides=bloomberg_adjusted_names or {},
             include_overrides=bloomberg_include_overrides or {},
         )
+
+    # Both display blocks, unconditionally: an issuer with fewer than 12
+    # positive-balance insiders is ordinary, and the institutional block pads the
+    # same way (an excluded SEDI duplicate or an unused link row is a 0 in the
+    # pool). Without a Bloomberg export the institutional pool is #N/A rather
+    # than 0, which COUNTIF ignores — so the guard blanks those rows too.
+    for picture_name in (NAME_OWN_INSIDERS_PICTURE, NAME_OWN_INSTITUTIONS_PICTURE):
+        _guard_display_block(ws, picture_name)
