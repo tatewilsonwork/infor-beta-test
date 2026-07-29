@@ -132,18 +132,21 @@ from deal_workbook import (  # the deal's ONE workbook — never write a standal
 from slide_library_registry import load_slide_library_registry
 from naming import safe_filename  # the Python side of sanitize_name.sh; never re-roll a _safe_name
 from codename import resolve, find_existing, disambiguate, codename_from_company
-from intake_spec import (  # the analyst questionnaire, declared once; both renderings generated
-    IntakeSpec, IntakeField, IntakeOption, IntakeDefault, IntakeNote,
-    render_dialogs, render_prompt, render_note, render_defaults_echo,
+from intake_spec import (  # the analyst questionnaire, declared once; every rendering generated
+    IntakeSpec, IntakeField, IntakeOption, IntakeDefault,
+    render_dialogs, render_prompt, render_defaults_echo,
+    render_attachment_request,  # THE attachment message; never hand-write a bullet list
 )
 from deal_init import (
     INIT_INTAKE,
-    render_init_dialogs, render_init_filings_note, render_init_prompt,
+    render_init_dialogs, render_init_prompt,
     load_or_locate_deal, save_deal_context, load_deal_context,
 )
 from deck_spec import (
-    render_deck_spec_dialogs, render_deck_spec_documents_dialogs, render_deck_spec_defaults,
-    render_deck_spec_documents_note, render_deck_spec_prompt, default_presentation_date,
+    render_deck_spec_dialogs, render_deck_spec_defaults, render_deck_spec_prompt,
+    render_run_attachment_request,  # the run's ONE attachment request: deal-init's + the deliverable's
+    PITCH_ATTACHMENT_PLAN_INPUTS, EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS,
+    default_presentation_date,
     prior_year_quarter, metric_count_from_slides, market_entry_targets_from_slides,
 )
 from plan_refs import resolve_refs, validate_plan_references, parse_ref
@@ -240,7 +243,8 @@ Nothing in the plugin or the test suite spawns Office any more. Excel COM surviv
 - **Stage handoff is three argv paths** (`stage_io.stage_io`), never env vars — the `Task` tool cannot set them, and the old `export` block failed *silently* (an unset `DEAL_DIR` writes a client deliverable to whatever cwd the shell had). Two drift locks scan every dispatched skill doc for a reappearing export or `os.environ` handoff.
 - **A stage emits every declared output key**, using `null` rather than omission, so `$stages` resolution reaches a downstream fallback instead of halting the run. That binds a transform's return dict to its plan `outputs:` block — `test_every_transform_emits_every_output_its_plan_declares` checks the pairing.
 - **The `$stages.*` references *are* the dependency DAG** — for a transform exactly as for a sub-agent. There is no `depends_on` field, no hardcoded barrier since Phase D, and "the driver runs it" is not an ordering: `plan_schedule` derives every edge from a real reference, and an in-process stage that stopped declaring its inputs would become "run whenever".
-- **Every analyst-facing question is declared once, in an `IntakeSpec`**, and every rendering — the `AskUserQuestion` dialogs, the attachment checklist, the defaults echo, the text fallback — is *generated* from it (`intake_spec.py`; the specs live in `deal_init.INIT_INTAKE` and `deck_spec.PITCH_INTAKE` / `EARNINGS_UPDATE_INTAKE`). Never hand-write a second rendering of a question, an option label, or a default rule: the locked-questionnaire principle is that every run asks the same thing, and a hand-written text prompt drifted from the dialogs it was supposed to mirror with nothing failing. Tests assert each renderer returns exactly what the generator produces.
+- **Every analyst-facing question is declared once, in an `IntakeSpec`**, and every rendering — the `AskUserQuestion` dialogs, the attachment request, the defaults echo, the text fallback — is *generated* from it (`intake_spec.py`; the specs live in `deal_init.INIT_INTAKE` and `deck_spec.PITCH_INTAKE` / `EARNINGS_UPDATE_INTAKE`). Never hand-write a second rendering of a question, an option label, a default rule, or an attachment bullet: the locked-questionnaire principle is that every run asks the same thing, and a hand-written text prompt drifted from the dialogs it was supposed to mirror with nothing failing. Tests assert each renderer returns exactly what the generator produces.
+- **The analyst is asked NOTHING about attachments.** An `IntakeField` with `target_kind="attachment"` is a *file*, and it is a question in no rendering: it carries no `question`, `options` or `hint`, and the validator rejects one that does. Every document a run needs is one bullet of a single plain-text request (`render_run_attachment_request`), posted **after every question has been answered**, followed by **one** pause for the analyst to drop the files into chat. Through v0.5.49 each attachment was a status dialog asking attached / will-drop-next-message / none — three of them on a pitch run, three pauses, collecting three assertions about files that the deal's `filings/` directory already knew and could contradict. Because the dialog is gone, the bullet's `checklist` line is the only place the consequence of a missing file can live: state it there. Two attachments carry a path into `plan_inputs` (`plan_input`: the pitch CIM → `cim_path`, optional; the EEO snip → `eeo_snip_path`, REQUIRED) — resolved from the saved file, with a missing optional one left out of `plan_inputs` entirely and a missing required one halting the run.
 - **Checkpoints fire at wave boundaries**, so a `required` gate holds the waves *after* its own, not its wave-mates. `deck` is `required` in both shipped plans — and it is the plugin's *only* gate; everything else, `deckcheck` included, is `informational`.
 - **`financial-charts` must never re-assemble the deck.** It runs after the deck is assembled, so re-assembling reverts filled tables to placeholders. It must call `render_financial_summary_charts_into_deck` / `render_ltm_revenue_pie_into_deck` — never hand-roll a chart with matplotlib or any other library — and must chain the pie onto the deck the FS step returned, not the input path. As a transform it has no `Task` tool to dispatch with at all; the rule used to be enforced by omitting `Task` from its allow-list, and is now structural.
 - Plans are validated at load (`validate_plan_references`): a `$stages`/`$plan_inputs` reference to something undeclared is rejected up front, listing every problem at once.
@@ -267,6 +271,7 @@ One line per phase. The narrative is in `CHANGELOG.md`.
 - **Migration Phase D** (v0.5.41) — one workbook, one backend: the aggregator and all COM deleted, net −2,685 lines. 2026-07-28.
 - **Migration Phase E** (v0.5.42) — the conductor as code: SKILL.md 216 → 118 lines, the env-var handoff replaced by argv paths. 2026-07-28.
 - **v0.5.43** — Phase C's sentinel tables deleted (verification is name-based); this brief restructured around standing rules. 2026-07-28.
+- **v0.5.50** — attachments stop being questions: three status dialogs per pitch run replaced by one generated request and one pause; `IntakeNote` and the documents-dialog surface deleted. 2026-07-29.
 
 **Ahead**
 - **Phase 4** — new skills: valuation (football field), company profiles, industry research.

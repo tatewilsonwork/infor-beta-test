@@ -36,15 +36,16 @@ sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scri
 
 from codename import codename_from_company, disambiguate
 from deal_init import (
-    render_init_dialogs, render_init_filings_note, render_init_prompt,
+    render_init_dialogs, render_init_prompt,
     load_or_locate_deal, save_deal_context,
 )
 from deck_spec import (
-    render_deck_spec_dialogs, render_deck_spec_defaults, render_deck_spec_documents_dialogs,
-    render_deck_spec_documents_note, render_deck_spec_prompt,
+    render_deck_spec_dialogs, render_deck_spec_defaults, render_deck_spec_prompt,
+    render_run_attachment_request,          # THE attachment message — one per run
     default_presentation_date, prior_year_quarter,
     metric_count_from_slides, market_entry_targets_from_slides, NO_NOTES_ANALYST_NOTES,
     PITCH_DIALOG_PLAN_INPUTS, EARNINGS_UPDATE_DIALOG_PLAN_INPUTS,
+    PITCH_ATTACHMENT_PLAN_INPUTS, EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS,
 )
 from run_log import make_run_id, create_run_dir, write_plan_snapshot, write_stage_log
 from conductor import (      # the driver — everything mechanical
@@ -53,7 +54,9 @@ from conductor import (      # the driver — everything mechanical
 )
 ```
 
-> **Interactive UI.** Every analyst-facing question — Steps 1, 2, 4 and every `required` checkpoint — goes through **`AskUserQuestion`**, never a numbered text block. The payloads are code-owned (`render_init_dialogs` / `render_deck_spec_dialogs` / `render_deck_spec_documents_dialogs` / `WaveOutcome.gate.question`): render them **verbatim** — do not paraphrase, reorder, re-option, or invent extra questions. Attachments get fixed **status** dialogs (attached / will-drop / none) because file bytes cannot come through a dialog; the file itself arrives via the chat input or an absolute path in Other, with the plain-text notes posted alongside as the checklist detail. Pure free-text facts with nothing to suggest (the subject company name) stay plain chat questions. If `AskUserQuestion` is unavailable, fall back to the locked text prompts (`render_init_prompt()` / `render_deck_spec_prompt(...)` / `Checkpoint.fallback_prompt`) — same items, same order.
+> **Interactive UI.** Every analyst-facing question — Steps 1, 2, 4 and every `required` checkpoint — goes through **`AskUserQuestion`**, never a numbered text block. The payloads are code-owned (`render_init_dialogs` / `render_deck_spec_dialogs` / `WaveOutcome.gate.question`): render them **verbatim** — do not paraphrase, reorder, re-option, or invent extra questions. Pure free-text facts with nothing to suggest (the subject company name) stay plain chat questions. If `AskUserQuestion` is unavailable, fall back to the locked text prompts (`render_init_prompt()` / `render_deck_spec_prompt(...)` / `Checkpoint.fallback_prompt`) — same items, same order.
+>
+> **Ask NOTHING about attachments.** No dialog, no status question, no "is it attached yet?" — not for the filings, not for the SEDI report, not for the CIM or the EEO snip. Questions come first; then you post `render_run_attachment_request(<deliverable>)` **once**, as plain text, and **wait once** for the analyst to drop the files into chat. That single pause replaced three dialogs and three pauses on a pitch run, each of which asked the analyst to assert something `<deal_dir>/filings/` already knew. Never hand-write the list or a bullet of it: it is generated from the same specs the dialogs are, so a document that is asked for is a document whose consequence-if-missing is stated. "None for now" and "Not applicable" have no dialog to live in — the analyst says it in chat, or you proceed after the drop with whatever arrived.
 
 ## Step 1 — Deliverable + codename
 
@@ -61,9 +64,11 @@ Extract the **deliverable type** (`pitch` / `earnings-update` / `overview` / `on
 
 ## Step 2 — Deal-init (once per deal)
 
-`load_or_locate_deal(codename)` → an existing deal means one `AskUserQuestion` ("Continue `<codename>`" / "Different deal"; on the latter, present `disambiguate(...)`'s 1–4 alternatives as another dialog). A fresh deal means `render_init_dialogs(include_deliverable=<True only when Step 1 could not determine it>)` — one call per dialog, verbatim, **dropping any question already answered** (the slash-command deliverable + company; Filings when files are already attached) — plus `render_init_filings_note()` as plain text and, if the company name is not preset, a plain chat question for it. "Public — I'll give the ticker" with no ticker → ask ticker + exchange as a follow-up. Sector "Infer from the web" → research, verify by web search, use the one-liner; no confirmation. Filings "Attached" → save now; "next message" → wait for it; "None for now" → proceed. Then build the `DealContext` and `save_deal_context(ctx)`.
+`load_or_locate_deal(codename)` → an existing deal means one `AskUserQuestion` ("Continue `<codename>`" / "Different deal"; on the latter, present `disambiguate(...)`'s 1–4 alternatives as another dialog). A fresh deal means `render_init_dialogs(include_deliverable=<True only when Step 1 could not determine it>)` — one call per dialog, verbatim, **dropping any question already answered** (the slash-command deliverable + company) — and, if the company name is not preset, a plain chat question for it. "Public — I'll give the ticker" with no ticker → ask ticker + exchange as a follow-up. Sector "Infer from the web" → research, verify by web search, use the one-liner; no confirmation. Then build the `DealContext` and `save_deal_context(ctx)` — which creates the deal directory, so `filings/` exists before anything is dropped.
 
-**Filings handling:** save every attachment under `<deal_dir>/filings/` with a descriptive name, append matching `Filing` entries to `ctx.filings`, and re-save. This applies to deck-spec attachments (SEDI PDF, Bloomberg export, EEO snip, CIM) too.
+**Do not ask about the filings here, and do not post the request yet.** The G7 filings are a REQUIRED bullet of the one attachment request, which goes out at the end of Step 4 — after the deck-spec questions — so the analyst answers every question first and then attaches everything in one go.
+
+**Filings handling** (whenever files arrive, including a pre-attached message): save every attachment under `<deal_dir>/filings/` with a descriptive name, append matching `Filing` entries to `ctx.filings`, and re-save `deal.json`. This applies to the deliverable's documents (SEDI PDF, Bloomberg export, CIM, EEO snip) too — same directory, same `Filing` entries.
 
 ## Step 3 — Plan + run directory
 
@@ -77,15 +82,24 @@ write_plan_snapshot(run_dir, plan_yaml_text)   # frozen snapshot; the driver rea
 
 Tell the analyst the run id and its path. `plan_overview(run_dir)` (Step 5) validates the snapshot in two layers — the pydantic `Plan` shape, then the reference pre-flight `validate_plan_references` — so a typo'd `$stages` / `$plan_inputs` reference is dead at load, not mid-run. Surface any error and stop; never run a partially-valid plan.
 
-## Step 4 — Collect plan inputs (deck-spec dialogs)
+## Step 4 — Questions, then one attachment request, then wait
 
-For `pitch` and `earnings-update`, only the judgement items are asked; everything with a sensible default is defaulted and echoed for override. In order: **compute the defaults** (`client_name` ← the subject company; `presentation_date` ← `default_presentation_date(date.today())`; `reporting_quarter` ← inferred from the latest attached interim filing, whose fiscal labels depend on the company's fiscal calendar, not the calendar date; `comparison_quarter` ← `prior_year_quarter(...)`; `financial_metric_count` + `section_labels` ← left unset so the wireframe defaults apply) → **post `render_deck_spec_defaults(...)`** → **render `render_deck_spec_dialogs(...)`** → **render `render_deck_spec_documents_dialogs(...)`** → **post `render_deck_spec_documents_note(...)`**. Never re-ask a G7 item; if an earlier message already answered a dialog item, drop just that question and note "(from your message: …)".
+Four moves, in this order. Only the judgement items are asked; everything with a sensible default is defaulted and echoed for override.
 
-Map answers with `PITCH_DIALOG_PLAN_INPUTS` / `EARNINGS_UPDATE_DIALOG_PLAN_INPUTS`. Conversions are deterministic, never improvised: **Notes** → `analyst_notes` (wait for pasted notes; "Draft from the attached filings + web" → the literal `NO_NOTES_ANALYST_NOTES`); **Targets** → `market_entry_target_count = market_entry_targets_from_slides(n)`; an override of "2 Financial Summary slides" → `metric_count_from_slides(2)`; **Highlights** → `include_investment_highlights = False` on "Omit" only; **CIM / EEO snip** → the saved path, or unset on "None"; **Valuation / Risk notes** → unset on "None", else the typed text (collect as a follow-up if promised but not supplied).
+1. **Ask the questions.** Render `render_deck_spec_dialogs(<deliverable>)` — one `AskUserQuestion` call per dialog, verbatim. Never re-ask a G7 item; if an earlier message already answered a dialog item, drop just that question and note "(from your message: …)". `earnings-update` returns **no dialogs at all** — both quarters are defaulted and its one document is an attachment — so for that deliverable this step asks nothing and you go straight to 2.
+2. **Post `render_run_attachment_request(<deliverable>)`** — one plain-text message, generated, listing every document the run needs under REQUIRED and OPTIONAL. It merges deal-init's filings with the deliverable's own, so this is the *only* place attachments are raised in the whole run.
+3. **Wait here. Once.** This is the change: there is no longer a pause per document, because there is no longer a dialog per document. Post the request and stop, on one turn, until the analyst's next message. Their reply may carry the files and any promised text (pasted notes, a valuation range) together — take both from it. If they say a document does not exist or to skip it, proceed with what arrived; each bullet already told them what that costs. Save everything per Step 2's filings handling.
+4. **Then compute the defaults and post `render_deck_spec_defaults(...)`.** After the drop, not before: `reporting_quarter` is inferred from the **latest attached interim filing** (fiscal quarter labels depend on the company's fiscal calendar, not the calendar date, so never compute it from today's date), and `comparison_quarter` ← `prior_year_quarter(...)` follows it. `client_name` ← the subject company; `presentation_date` ← `default_presentation_date(date.today())`; `financial_metric_count` + `section_labels` ← left unset so the wireframe defaults apply. If **no interim filing arrived**, the quarter cannot be inferred and it is a required input: ask for it as a plain chat question. Don't guess it.
 
-**Attachment-status answers are not plan inputs** — the consuming stages discover the saved files under `<deal_dir>/filings/`. "Will drop it next message" holds the run until it arrives; "None" proceeds with the placeholder path that stage already documents.
+Map dialog answers with `PITCH_DIALOG_PLAN_INPUTS` / `EARNINGS_UPDATE_DIALOG_PLAN_INPUTS`. Conversions are deterministic, never improvised: **Notes** → `analyst_notes` ("Draft from the attached filings + web" → the literal `NO_NOTES_ANALYST_NOTES`); **Targets** → `market_entry_target_count = market_entry_targets_from_slides(n)`; an override of "2 Financial Summary slides" → `metric_count_from_slides(2)`; **Highlights** → `include_investment_highlights = False` on "Omit" only; **Valuation / Risk notes** → unset on "None", else the typed text.
 
-**Optional inputs the analyst didn't supply stay OUT of the dict — never pre-seed `None`.** The driver computes the optional set from the plan and resolves an unsupplied optional reference to `None` for you; a missing *required* input still halts. For a deliverable with no questionnaire (the renderers raise `ValueError`), prompt from `plan.plan_inputs` directly. Then persist once:
+**Resolve the path-carrying attachments from the files you saved**, through `PITCH_ATTACHMENT_PLAN_INPUTS` / `EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS` (`{plan input: the document's label}`) — you named the files, so you know which is which. Two rules, and they differ:
+- **Optional** (the pitch CIM → `cim_path`): no file, no key. Leave it **out** of the dict.
+- **REQUIRED** (the EEO snip → `eeo_snip_path`): no file, no run. **Halt** before Step 5 and say plainly which document is missing and where it goes — "the Bloomberg EEO snip never arrived; drop it in chat and I'll restart the run", not a reference-resolution error naming `$plan_inputs.eeo_snip_path`. Never substitute a placeholder path, and never let it fall through to the driver.
+
+Every other attachment carries no plan input at all — the consuming stage finds it under `<deal_dir>/filings/` itself, and works from the placeholder its own SKILL.md documents when it is not there.
+
+**Optional inputs the analyst didn't supply stay OUT of the dict — never pre-seed `None`.** The driver computes the optional set from the plan and resolves an unsupplied optional reference to `None` for you; a missing *required* input still halts. For a deliverable with no questionnaire (`render_deck_spec_dialogs` raises `ValueError`), prompt from `plan.plan_inputs` directly — `render_run_attachment_request` does **not** raise there, it returns the filings alone, so the deal still gets its documents. Then persist once:
 
 ```python
 write_plan_inputs(run_dir, plan_inputs)
@@ -111,7 +125,7 @@ A `required` gate is evaluated at the **wave boundary**, so it holds the downstr
 
 ## Stop conditions
 
-Halt — with a clear message, the partial run preserved on disk — when: the deliverable type or codename is missing and the analyst declines to supply it; an existing deal is detected and the analyst declines to continue or rename; the plan fails either validation layer; a reference cannot be resolved; `complete_wave` reports any stage `ok=False`; or a `required` checkpoint is rejected.
+Halt — with a clear message, the partial run preserved on disk — when: the deliverable type or codename is missing and the analyst declines to supply it; an existing deal is detected and the analyst declines to continue or rename; **a REQUIRED attachment carrying a plan input never arrives** (name the document, not the reference); the plan fails either validation layer; a reference cannot be resolved; `complete_wave` reports any stage `ok=False`; or a `required` checkpoint is rejected.
 
 Never silently skip a stage. Never proceed past a missing output. Never overwrite an existing `outputs.json` — a re-run uses a new `run_id`.
 

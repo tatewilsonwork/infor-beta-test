@@ -6,17 +6,20 @@ from pathlib import Path
 import pytest
 import yaml
 
+from deal_init import INIT_INTAKE
 from deck_spec import (
+    EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS,
     EARNINGS_UPDATE_DEFAULT_SUPPLIED_INPUTS,
     EARNINGS_UPDATE_DEFAULT_UNSET_INPUTS,
     EARNINGS_UPDATE_DIALOG_PLAN_INPUTS,
-    EARNINGS_UPDATE_DOCUMENTS_DIALOG_TARGETS,
+    EARNINGS_UPDATE_INTAKE,
     EARNINGS_UPDATE_ITEM_PLAN_INPUTS,
     NO_NOTES_ANALYST_NOTES,
+    PITCH_ATTACHMENT_PLAN_INPUTS,
     PITCH_DEFAULT_SUPPLIED_INPUTS,
     PITCH_DEFAULT_UNSET_INPUTS,
     PITCH_DIALOG_PLAN_INPUTS,
-    PITCH_DOCUMENTS_DIALOG_TARGETS,
+    PITCH_INTAKE,
     PITCH_ITEM_PLAN_INPUTS,
     default_presentation_date,
     market_entry_targets_from_slides,
@@ -24,9 +27,13 @@ from deck_spec import (
     prior_year_quarter,
     render_deck_spec_defaults,
     render_deck_spec_dialogs,
-    render_deck_spec_documents_dialogs,
-    render_deck_spec_documents_note,
     render_deck_spec_prompt,
+    render_run_attachment_request,
+)
+from intake_spec import (
+    ATTACHMENT_OPTIONAL_HEADER,
+    ATTACHMENT_REQUIRED_HEADER,
+    render_attachment_request,
 )
 from schemas import Plan
 
@@ -64,8 +71,21 @@ def test_pitch_dialogs_are_valid_askuserquestion_payloads():
     _assert_askuserquestion_shape(render_deck_spec_dialogs("pitch"))
 
 
-def test_earnings_update_dialogs_are_valid_askuserquestion_payloads():
-    _assert_askuserquestion_shape(render_deck_spec_dialogs("earnings-update"))
+def test_earnings_update_asks_nothing_at_all():
+    """The earnings-update deck spec has no questions left (v0.5.50).
+
+    Both quarters are inferred from the attached interim filing and echoed for
+    override; the EEO snip — its one former question, and a status gate at that
+    — is an attachment. Step 4 for this deliverable is the defaults echo plus the
+    attachment request, and no dialog.
+    """
+    assert render_deck_spec_dialogs("earnings-update") == []
+    assert EARNINGS_UPDATE_DIALOG_PLAN_INPUTS == {}
+    assert EARNINGS_UPDATE_ITEM_PLAN_INPUTS == {}
+    # Its one input still arrives, as an attachment carrying a path.
+    assert EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS == {
+        "eeo_snip_path": "Bloomberg EEO snip"
+    }
 
 
 def test_pitch_dialog_headers_match_plan_input_table():
@@ -74,16 +94,6 @@ def test_pitch_dialog_headers_match_plan_input_table():
     ]
     assert len(headers) == len(set(headers)), "dialog headers must be unique"
     assert set(headers) == set(PITCH_DIALOG_PLAN_INPUTS)
-
-
-def test_earnings_update_dialog_headers_match_plan_input_table():
-    headers = [
-        q["header"]
-        for dialog in render_deck_spec_dialogs("earnings-update")
-        for q in dialog
-    ]
-    assert len(headers) == len(set(headers))
-    assert set(headers) == set(EARNINGS_UPDATE_DIALOG_PLAN_INPUTS)
 
 
 def test_dialogs_render_verbatim_and_immutably():
@@ -103,60 +113,90 @@ def test_unknown_deliverable_raises_everywhere():
     with pytest.raises(ValueError):
         render_deck_spec_prompt("overview")
     with pytest.raises(ValueError):
-        render_deck_spec_documents_note("overview")
-    with pytest.raises(ValueError):
         render_deck_spec_defaults("overview")
-    with pytest.raises(ValueError):
-        render_deck_spec_documents_dialogs("overview")
+    # A typo is still an error, even for the request.
+    with pytest.raises(ValueError, match="unknown deliverable type"):
+        render_run_attachment_request("pitchh")
 
 
 # ---------------------------------------------------------------------------
-# Attachment-status (documents) dialogs
+# The attachment request — one message, two sections, no questions
 # ---------------------------------------------------------------------------
 
 
-def test_pitch_documents_dialogs_are_valid_askuserquestion_payloads():
-    _assert_askuserquestion_shape(render_deck_spec_documents_dialogs("pitch"))
+def test_no_deliverable_asks_a_question_about_an_attachment():
+    """The v0.5.50 change, stated as the invariant it is.
+
+    A pitch run put three `AskUserQuestion` status gates in front of the analyst
+    — SEDI PDF, Bloomberg export, CIM — one dialog at a time, each asking whether
+    a file was attached, would be attached next message, or did not exist. All
+    three are gone; no rendering of either questionnaire asks about a file.
+    """
+    for deliverable, spec in (
+        ("pitch", PITCH_INTAKE),
+        ("earnings-update", EARNINGS_UPDATE_INTAKE),
+    ):
+        attachment_keys = {f.key for f in spec.attachment_fields()}
+        assert attachment_keys, f"{deliverable} declares no attachments"
+        headers = {
+            q["header"] for d in render_deck_spec_dialogs(deliverable) for q in d
+        }
+        assert not headers & attachment_keys
+        prompt = render_deck_spec_prompt(deliverable)
+        for f in spec.attachment_fields():
+            # Listed as a bullet, never as a numbered item with options.
+            assert f"{f.prompt_label} —" in _flat(prompt)
+            assert f not in spec.prompt_fields()
 
 
-def test_pitch_documents_dialog_headers_match_targets_table():
-    headers = [
-        q["header"]
-        for dialog in render_deck_spec_documents_dialogs("pitch")
-        for q in dialog
-    ]
-    assert len(headers) == len(set(headers))
-    assert set(headers) == set(PITCH_DOCUMENTS_DIALOG_TARGETS)
-    # Status gates are NOT plan inputs — headers must not collide with the
-    # spec dialogs' plan-input table.
-    assert not set(headers) & set(PITCH_DIALOG_PLAN_INPUTS)
+def test_pitch_request_lists_the_filings_then_its_own_documents():
+    request = render_run_attachment_request("pitch")
+    assert ATTACHMENT_REQUIRED_HEADER in request
+    assert ATTACHMENT_OPTIONAL_HEADER in request
+    flat = _flat(request)
+    # deal-init's G7 filings are the run's one REQUIRED document for a pitch;
+    # the three deliverable documents are all degrade-gracefully OPTIONAL.
+    assert "Financial statements / filings" in flat
+    required_section, optional_section = flat.split(ATTACHMENT_OPTIONAL_HEADER)
+    assert "Financial statements / filings" in required_section
+    for label in (
+        "CIM / management presentation",
+        'SEDI "Insider Information by Issuer" PDF',
+        "Bloomberg ownership export (.xlsm)",
+    ):
+        assert label in optional_section, f"{label} is not in the OPTIONAL section"
+    # Each bullet carries what the run loses — that warning used to live in a
+    # status dialog's option descriptions, which no longer exist.
+    for consequence in (
+        "insider side stays a placeholder",
+        "institutions side stays a placeholder",
+        "drafts from the filings and public sources",
+    ):
+        assert consequence in flat
 
 
-def test_pitch_documents_questions_offer_the_three_statuses():
-    """Every document question is attached / will-drop / none — a fixed gate."""
-    for dialog in render_deck_spec_documents_dialogs("pitch"):
-        for q in dialog:
-            labels = [opt["label"] for opt in q["options"]]
-            assert labels[0] == "Attached in this chat"
-            assert "next message" in labels[1]
-            assert len(labels) == 3  # last option = not applicable / none
+def test_earnings_update_request_makes_the_eeo_snip_required():
+    request = render_run_attachment_request("earnings-update")
+    flat = _flat(request)
+    required_section = flat.split(ATTACHMENT_OPTIONAL_HEADER)[0]
+    assert "Bloomberg EEO snip" in required_section
+    assert "Financial statements / filings" in required_section
+    # Nothing optional for this deliverable, so no OPTIONAL section at all.
+    assert ATTACHMENT_OPTIONAL_HEADER not in request
+    # The bullet states the halt, since there is no dialog option to state it in.
+    assert "halts here until it arrives" in flat
+    assert "SEDI" not in flat
 
 
-def test_earnings_update_documents_dialogs_empty():
-    # The EEO snip is a plan input (spec dialog) and the G7 filings belong to
-    # deal-init — earnings-update has nothing to ask here.
-    assert render_deck_spec_documents_dialogs("earnings-update") == []
-    assert EARNINGS_UPDATE_DOCUMENTS_DIALOG_TARGETS == {}
-
-
-def test_documents_dialogs_render_verbatim_and_immutably():
-    first = render_deck_spec_documents_dialogs("pitch")
-    first[0][0]["question"] = "mutated"
-    first[0][0]["options"].clear()
-    again = render_deck_spec_documents_dialogs("pitch")
-    assert again == render_deck_spec_documents_dialogs("pitch")
-    assert again[0][0]["question"] != "mutated"
-    assert again[0][0]["options"]
+def test_a_deliverable_without_a_questionnaire_still_gets_the_filings():
+    """The overview stub and one-off-skill have no deck spec — the deal still
+    needs its filings, so the request degrades to deal-init's half."""
+    filings_only = render_attachment_request(INIT_INTAKE)
+    for deliverable in ("overview", "one-off-skill"):
+        assert render_run_attachment_request(deliverable) == filings_only
+    assert render_run_attachment_request() == filings_only
+    assert "Financial statements / filings" in filings_only
+    assert "SEDI" not in filings_only
 
 
 # ---------------------------------------------------------------------------
@@ -164,34 +204,47 @@ def test_documents_dialogs_render_verbatim_and_immutably():
 # ---------------------------------------------------------------------------
 
 
-def test_pitch_asked_and_defaulted_inputs_cover_the_plan():
+def test_pitch_asked_attached_and_defaulted_inputs_cover_the_plan():
     plan = _plan("pitch.yaml")
     names = {spec.name for spec in plan.plan_inputs}
     asked = set(PITCH_DIALOG_PLAN_INPUTS.values())
+    attached = set(PITCH_ATTACHMENT_PLAN_INPUTS)
     supplied = set(PITCH_DEFAULT_SUPPLIED_INPUTS)
     unset = set(PITCH_DEFAULT_UNSET_INPUTS)
-    assert asked | supplied | unset <= names
-    # No input is both asked and defaulted.
-    assert not asked & (supplied | unset)
+    assert asked | attached | supplied | unset <= names
+    # An input arrives exactly one way: asked, attached, or defaulted.
+    assert not asked & (attached | supplied | unset)
+    assert not attached & (supplied | unset)
     assert not supplied & unset
-    # Every REQUIRED plan input is either asked or default-supplied — never
+    # Every REQUIRED plan input is asked, attached, or default-supplied — never
     # left to chance.
     required = {spec.name for spec in plan.plan_inputs if spec.required}
-    assert required <= asked | supplied
+    assert required <= asked | attached | supplied
     # Default-supplied inputs are all required (optional defaults stay unset).
     assert supplied <= required
+    # The pitch CIM is the optional attachment: no file, no key in plan_inputs.
+    assert attached == {"cim_path"}
+    assert not attached & required
 
 
-def test_earnings_update_asked_and_defaulted_inputs_cover_the_plan():
+def test_earnings_update_asked_attached_and_defaulted_inputs_cover_the_plan():
     plan = _plan("earnings-update.yaml")
     names = {spec.name for spec in plan.plan_inputs}
     asked = set(EARNINGS_UPDATE_DIALOG_PLAN_INPUTS.values())
+    attached = set(EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS)
     supplied = set(EARNINGS_UPDATE_DEFAULT_SUPPLIED_INPUTS)
-    assert asked | supplied <= names
-    assert not asked & supplied
+    assert asked | attached | supplied <= names
+    assert not asked & (attached | supplied)
+    assert not attached & supplied
     assert not EARNINGS_UPDATE_DEFAULT_UNSET_INPUTS
     required = {spec.name for spec in plan.plan_inputs if spec.required}
-    assert required <= asked | supplied
+    assert required <= asked | attached | supplied
+    # Nothing is asked, so `attached` is carrying the whole non-defaulted half:
+    # the EEO snip is REQUIRED, which is why a missing file must halt the run
+    # rather than resolve `$plan_inputs.eeo_snip_path` to None.
+    assert not asked
+    assert attached == {"eeo_snip_path"}
+    assert attached <= required
 
 
 # ---------------------------------------------------------------------------
@@ -237,18 +290,20 @@ def test_earnings_update_prompt_covers_every_questionnaire_topic():
         assert token in prompt
     # The EU deck has no slide options — the prompt must say so, not offer any.
     assert "no slide options" in prompt
+    # And it has no questions either, so the prompt says that rather than
+    # instructing the analyst to answer items it does not list.
+    assert "Nothing to answer here." in prompt
+    assert "1. " not in prompt
 
 
 def test_fallback_prompt_numbering_matches_dialog_order():
     """The numbered text items and the dialogs are the same list, same order."""
     labels = {
         "analyst_notes": "Analyst notes",
-        "cim_path": "CIM / management pres.",
         "valuation_range": "Valuation range",
         "risk_notes": "Risk notes",
         "market_entry_target_count": "Acquisition-target slides",
         "include_investment_highlights": "Key Investment Highlights",
-        "eeo_snip_path": "Bloomberg EEO snip",
     }
     for deliverable, table in (
         ("pitch", PITCH_ITEM_PLAN_INPUTS),
@@ -269,13 +324,44 @@ def test_fallback_prompt_numbering_matches_dialog_order():
             assert f"{number}. {labels[name]}" in prompt, (
                 f"{deliverable} prompt item {number} is not {labels[name]!r}"
             )
+    # The CIM and the EEO snip left this numbering when they became attachments;
+    # neither is a numbered item in any prompt any more.
+    assert "cim_path" not in PITCH_ITEM_PLAN_INPUTS.values()
+    assert EARNINGS_UPDATE_ITEM_PLAN_INPUTS == {}
 
 
-def test_prompts_embed_the_documents_note():
-    for deliverable in ("pitch", "earnings-update"):
-        note = render_deck_spec_documents_note(deliverable)
-        assert note in render_deck_spec_prompt(deliverable)
-    assert "SEDI" not in render_deck_spec_documents_note("earnings-update")
+def test_prompts_embed_their_half_of_the_attachment_request():
+    """Same documents, same order, in the fallback as in the live message.
+
+    The live request merges deal-init's filings with the deliverable's; the text
+    fallback is two prompts, each embedding its own spec's half — so between them
+    the analyst sees the same list, generated by the same function.
+    """
+    for deliverable, spec in (
+        ("pitch", PITCH_INTAKE),
+        ("earnings-update", EARNINGS_UPDATE_INTAKE),
+    ):
+        half = render_attachment_request(spec)
+        assert half.rstrip("\n") in render_deck_spec_prompt(deliverable)
+        # Within each section of the merged message, bullets follow spec order:
+        # deal-init's filings, then the deliverable's own documents.
+        flat = _flat(render_run_attachment_request(deliverable))
+        for required in (True, False):
+            expected = [
+                _flat(f.checklist)
+                for f in (
+                    *INIT_INTAKE.attachment_fields(required=required),
+                    *spec.attachment_fields(required=required),
+                )
+            ]
+            assert all(c in flat for c in expected)
+            positions = [flat.index(c) for c in expected]
+            assert positions == sorted(positions), (
+                f"{deliverable}'s "
+                f"{'REQUIRED' if required else 'OPTIONAL'} bullets are out of "
+                f"spec order"
+            )
+    assert "SEDI" not in render_attachment_request(EARNINGS_UPDATE_INTAKE)
 
 
 # ---------------------------------------------------------------------------
