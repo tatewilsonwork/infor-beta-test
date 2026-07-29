@@ -6,6 +6,7 @@ import pytest
 
 from deal_init import (
     DEAL_SUBDIRS,
+    INIT_DEFAULT_FIELDS,
     INIT_DIALOG_FIELDS,
     INIT_INTAKE,
     load_deal_context,
@@ -14,7 +15,11 @@ from deal_init import (
     render_init_prompt,
     save_deal_context,
 )
-from intake_spec import ATTACHMENT_REQUIRED_HEADER, render_attachment_request
+from intake_spec import (
+    ATTACHMENT_REQUIRED_HEADER,
+    DEFAULTS_PROMPT_HEADER,
+    render_attachment_request,
+)
 from schemas import Company, DealContext
 
 
@@ -29,27 +34,34 @@ def _ctx(tmp_root: Path, codename: str = "Project OpenText", **overrides) -> Dea
     return DealContext(**kwargs)
 
 
-def test_render_init_prompt_contains_four_questions():
-    """The init prompt asks exactly four numbered items — verify all present.
+def test_render_init_prompt_contains_three_questions():
+    """The init prompt asks exactly three numbered items — verify all present.
 
-    Five until v0.5.50. The filings item was the fifth, and it was a status
-    question rather than a real one: it asked the analyst to say whether files
-    were attached, which the deal's `filings/` directory already knew. It is now
-    an attachment, so it is a bullet of the request this prompt ends with rather
-    than a numbered item.
+    Five until v0.5.50, four until v0.5.51. The filings item was the fifth, and
+    it was a status question rather than a real one: it asked the analyst to say
+    whether files were attached, which the deal's `filings/` directory already
+    knew. Sector was the fourth, and its dialog already defaulted to "Infer from
+    the web" — so both are now *listed* rather than asked: the filings as a
+    bullet of the request this prompt ends with, the sector as a default in the
+    override list.
     """
     prompt = render_init_prompt()
-    for n in range(1, 5):
+    for n in range(1, 4):
         assert f"{n}." in prompt, f"prompt missing item {n}"
+    assert "4. " not in prompt, "the sector question is not a prompt item"
     assert "5. " not in prompt, "the filings status question is not a prompt item"
     # The locked field names should appear verbatim
     for label in (
         "Deliverable type:",
         "Subject company name:",
         "Public or private?:",
-        "Sector / industry:",
     ):
         assert label in prompt, f"prompt missing label {label!r}"
+    # The sector is still in the prompt — as a default the analyst can override,
+    # under the defaults header rather than as a numbered question.
+    assert DEFAULTS_PROMPT_HEADER in prompt
+    assert "- Sector / industry:" in prompt
+    assert "Sector / industry (one line)?" not in prompt
     # The filings are still asked for, as an attachment the prompt requests.
     assert ATTACHMENT_REQUIRED_HEADER in prompt
     assert "Financial statements / filings" in prompt
@@ -58,6 +70,35 @@ def test_render_init_prompt_contains_four_questions():
     assert "derived automatically" in prompt
     assert "Codename:" not in prompt
     assert "Anything else?:" not in prompt
+
+
+def test_init_sector_is_a_default_not_a_question():
+    """Sector left the dialogs in v0.5.51 — that is what got a run to one call.
+
+    Its dialog defaulted to "Infer from the web — I'll look it up and use it, no
+    confirmation needed", so the question's entire content was an invitation to
+    type the sector instead, which a reply to the defaults echo does. Keeping it
+    would have landed a `/pitch` run at five questions, over the
+    `AskUserQuestion` cap, and back to two dialogs.
+    """
+    for dialogs in (
+        render_init_dialogs(),
+        render_init_dialogs(include_deliverable=True),
+    ):
+        assert "Sector" not in [q["header"] for dialog in dialogs for q in dialog]
+    assert "Sector" not in INIT_DIALOG_FIELDS
+    # It targets the DealContext, not a plan input — so it must never appear in
+    # a plan-input defaults table (see test_intake_spec).
+    (sector,) = INIT_INTAKE.defaults
+    assert sector.target_kind == "deal-context"
+    assert sector.supplied, "the conductor researches the sector and sets it"
+    assert sector.name == "subject_company.sector / subject_company.industry"
+    assert INIT_DEFAULT_FIELDS == {sector.name: sector.rule}
+    assert INIT_INTAKE.default_rules(supplied=True) == {}
+    # Listing cannot absorb the freed slot instead: it is required, and a
+    # required field may declare no default option.
+    listing = next(f for f in INIT_INTAKE.fields if f.key == "Listing")
+    assert listing.required and listing.default_option is None
 
 
 def _assert_askuserquestion_shape(dialogs: list[list[dict]]) -> None:

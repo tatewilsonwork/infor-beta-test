@@ -5,7 +5,9 @@ running a plan is a function with a return value here, not a paragraph of SKILL.
 prose the model may skip on turn 40 of a long run. What is left to the model is
 exactly four things:
 
-1. the intake conversation (deal-init + the locked deck-spec dialogs),
+1. the intake conversation — since v0.5.51 a single `AskUserQuestion` call on a
+   slash-command run (`deck_spec.render_run_dialogs`, deal-init's questions
+   merged with the deliverable's), then one attachment request and one echo,
 2. issuing the `Task` calls :func:`prepare_wave` hands back — for the **judgment**
    stages only, since Phase F the driver runs the deterministic ones itself
    (:func:`run_transforms`; the classification lives in `stage_transforms`),

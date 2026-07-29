@@ -7,9 +7,10 @@ description: >
   <deliverable>", "conductor", "/conductor", "orchestrate", the /pitch and
   /earnings-update commands (which preset the deliverable type + subject company), or
   any request that names a deliverable type rather than a single workflow step. The
-  conductor handles deal-init (one set of G7 dialogs per codename), loads the plan YAML
-  for the deliverable, collects plan-specific inputs via the locked interactive deck-spec
-  dialogs (AskUserQuestion), runs each deterministic stage in-process and dispatches each
+  conductor handles deal-init, collects the whole locked questionnaire — deal-init's
+  questions plus the deliverable's — in ONE interactive AskUserQuestion call per
+  slash-command run, loads the plan YAML
+  for the deliverable, runs each deterministic stage in-process and dispatches each
   judgment stage to its skill via the Agent tool with a file-based input / output handoff,
   and emits a run log under ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
 allowed-tools: [Read, Write, Bash, Glob, Task, AskUserQuestion]
@@ -21,7 +22,7 @@ The conductor is a thin orchestrator: **dumb about banking, smart about orchestr
 
 Since Phase E the mechanics live in `scripts/conductor.py`, not in this file. **Your job is four things** — intake, issuing the `Task` calls the driver hands back, reporting each wave boundary, and the summary. Everything else is a function call with a return value, so it cannot be skipped on turn 40 of a long run.
 
-Since v0.5.49 **no shipped plan asks the analyst to approve anything mid-run.** The intake is the last question; after it, run every wave to the end and report. Nothing to approve does not mean nothing is checked — the geometry converge loop, the written vision review and the `deckcheck` falsification pass all still run, and none of them needs an answer.
+Since v0.5.49 **no shipped plan asks the analyst to approve anything mid-run**, and since v0.5.51 the intake is **one `AskUserQuestion` call** on a slash-command run. So a `/pitch` build is: one dialog, one attachment request, one pause, then every wave to the end and a report. Nothing to approve does not mean nothing is checked — the geometry converge loop, the written vision review and the `deckcheck` falsification pass all still run, and none of them needs an answer.
 
 Since Phase F the second of those got smaller: a stage is either a **transform** (deterministic — the driver calls the function in-process) or **judgment** (research and drafting — a sub-agent with a real allow-list; `deckcheck` included). You dispatch the judgment stages only. `plan_overview(run_dir).narration()` reports the split for the plan in front of you; no number is written down here, because a written-down wave count went stale once already.
 
@@ -38,12 +39,15 @@ sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scri
 
 from codename import codename_from_company, disambiguate
 from deal_init import (
-    render_init_dialogs, render_init_prompt,
+    INIT_DIALOG_FIELDS, INIT_DEFAULT_FIELDS,
+    render_init_dialogs, render_init_prompt,   # deal-init's half alone — generic entry only
     load_or_locate_deal, save_deal_context,
 )
 from deck_spec import (
-    render_deck_spec_dialogs, render_deck_spec_defaults, render_deck_spec_prompt,
+    render_run_dialogs,                     # THE dialog — ONE call per run
     render_run_attachment_request,          # THE attachment message — one per run
+    render_run_defaults,                    # THE defaults echo — one per run
+    render_deck_spec_dialogs, render_deck_spec_prompt,   # the deliverable's half alone
     default_presentation_date, prior_year_quarter,
     metric_count_from_slides, market_entry_targets_from_slides, NO_NOTES_ANALYST_NOTES,
     PITCH_DIALOG_PLAN_INPUTS, EARNINGS_UPDATE_DIALOG_PLAN_INPUTS,
@@ -56,19 +60,31 @@ from conductor import (      # the driver — everything mechanical
 )
 ```
 
-> **Interactive UI.** Every analyst-facing question — Steps 1, 2 and 4, which since v0.5.49 are all of them — goes through **`AskUserQuestion`**, never a numbered text block. The payloads are code-owned (`render_init_dialogs` / `render_deck_spec_dialogs`; and `WaveOutcome.gate.question` if a plan ever carries a `required` checkpoint again): render them **verbatim** — do not paraphrase, reorder, re-option, or invent extra questions. Pure free-text facts with nothing to suggest (the subject company name) stay plain chat questions. If `AskUserQuestion` is unavailable, fall back to the locked text prompts (`render_init_prompt()` / `render_deck_spec_prompt(...)` / `Checkpoint.fallback_prompt`) — same items, same order.
+> **Interactive UI.** Every analyst-facing question goes through **`AskUserQuestion`**, never a numbered text block. The payloads are code-owned (`render_run_dialogs`; and `WaveOutcome.gate.question` if a plan ever carries a `required` checkpoint again): render them **verbatim** — do not paraphrase, reorder, re-option, or invent extra questions. Pure free-text facts with nothing to suggest (the subject company name) stay plain chat questions. If `AskUserQuestion` is unavailable, fall back to the locked text prompts (`render_init_prompt()` **then** `render_deck_spec_prompt(...)` — two prompts, each numbering its own half; plus `Checkpoint.fallback_prompt`) — same items, same order as the one dialog.
 >
-> **Ask NOTHING about attachments.** No dialog, no status question, no "is it attached yet?" — not for the filings, not for the SEDI report, not for the CIM or the EEO snip. Questions come first; then you post `render_run_attachment_request(<deliverable>)` **once**, as plain text, and **wait once** for the analyst to drop the files into chat. That single pause replaced three dialogs and three pauses on a pitch run, each of which asked the analyst to assert something `<deal_dir>/filings/` already knew. Never hand-write the list or a bullet of it: it is generated from the same specs the dialogs are, so a document that is asked for is a document whose consequence-if-missing is stated. "None for now" and "Not applicable" have no dialog to live in — the analyst says it in chat, or you proceed after the drop with whatever arrived.
+> **ONE dialog per run** (v0.5.51). `render_run_dialogs(<deliverable>)` returns a **single** `AskUserQuestion` payload: it merges deal-init's questions with the deliverable's, so `/pitch` asks four (`Listing`, `Notes`, `Targets`, `Highlights`) and `/earnings-update` asks one (`Listing`). Post it once, in Step 2, and never split it — a pitch run walked the analyst through three sequential dialogs through v0.5.50. **The 4-question cap is the tool's own**, so there is no headroom: if you find yourself wanting another question, the answer is a default the analyst overrides by replying, not a second dialog. **Generic entry is the one exception**: with no deliverable named, the `Deliverable` answer is what decides which deck spec exists, so there is nothing to merge — ask `render_init_dialogs(include_deliverable=True)`, then `render_deck_spec_dialogs(<answer>)`. Two calls, expected, not a defect.
+>
+> **Ask NOTHING about attachments.** No dialog, no status question, no "is it attached yet?" — not for the filings, not for the SEDI report, not for the CIM or the EEO snip. The dialog comes first; then you post `render_run_attachment_request(<deliverable>)` **once**, as plain text, and **wait once** for the analyst to drop the files into chat. That single pause replaced three dialogs and three pauses on a pitch run, each of which asked the analyst to assert something `<deal_dir>/filings/` already knew. Never hand-write the list or a bullet of it: it is generated from the same specs the dialogs are, so a document that is asked for is a document whose consequence-if-missing is stated. "None for now" and "Not applicable" have no dialog to live in — the analyst says it in chat, or you proceed after the drop with whatever arrived.
+>
+> **Defaults are echoed, never asked.** `render_run_defaults(...)` is **one** message covering deal-init's defaults and the deliverable's — the researched sector, the client name, the presentation date, the quarters, the valuation range, the risk notes, the slide-mix fallbacks. Post it once (Step 4), never one echo per spec, and never turn a defaulted item back into a question to be safe: the analyst overrides by replying.
 
 ## Step 1 — Deliverable + codename
 
 Extract the **deliverable type** (`pitch` / `earnings-update` / `overview` / `one-off-skill`; ask if ambiguous — `overview` is a stub, say so if selected) and the **codename**. Never ask for the codename: use the analyst's `Project <target>` string if they typed one, else derive it silently with `codename_from_company(<subject company>)` and state it when announcing the deal directory (overridable in chat until the directory is created). `/pitch` and `/earnings-update` pre-answer the deliverable **and** the company — do not re-ask either. A **one-off skill** needs no plan: say so and stop.
 
-## Step 2 — Deal-init (once per deal)
+## Step 2 — Deal-init + the run's one dialog
 
-`load_or_locate_deal(codename)` → an existing deal means one `AskUserQuestion` ("Continue `<codename>`" / "Different deal"; on the latter, present `disambiguate(...)`'s 1–4 alternatives as another dialog). A fresh deal means `render_init_dialogs(include_deliverable=<True only when Step 1 could not determine it>)` — one call per dialog, verbatim, **dropping any question already answered** (the slash-command deliverable + company) — and, if the company name is not preset, a plain chat question for it. "Public — I'll give the ticker" with no ticker → ask ticker + exchange as a follow-up. Sector "Infer from the web" → research, verify by web search, use the one-liner; no confirmation. Then build the `DealContext` and `save_deal_context(ctx)` — which creates the deal directory, so `filings/` exists before anything is dropped.
+`load_or_locate_deal(codename)` → an existing deal means one `AskUserQuestion` ("Continue `<codename>`" / "Different deal"; on the latter, present `disambiguate(...)`'s 1–4 alternatives as another dialog).
 
-**Do not ask about the filings here, and do not post the request yet.** The G7 filings are a REQUIRED bullet of the one attachment request, which goes out at the end of Step 4 — after the deck-spec questions — so the analyst answers every question first and then attaches everything in one go.
+A fresh deal means **`render_run_dialogs(<deliverable>)` — a single `AskUserQuestion` call, verbatim**, carrying deal-init's questions *and* the deliverable's. This is the whole questionnaire: `/pitch` → `[Listing, Notes, Targets, Highlights]`, `/earnings-update` → `[Listing]`. Pass `omit=(...)` to drop any question an earlier message already answered, and note "(from your message: …)" for each one you drop. If the company name is not preset, ask it as a plain chat question — it is free text with nothing to suggest, so it is in no dialog. Then:
+
+- **"Public — I'll give the ticker" with no ticker** → ask ticker + exchange as a follow-up.
+- **The sector is not asked** (v0.5.51). Research it, verify by web search, set `subject_company.sector` / `.industry` from the one-liner, and let the Step 4 echo report it — `INIT_DEFAULT_FIELDS` is the table. No confirmation, and no dialog question: its old question already defaulted to "Infer from the web".
+- Build the `DealContext` and `save_deal_context(ctx)` — which creates the deal directory, so `filings/` exists before anything is dropped. Hold the deck-spec answers; they become `plan_inputs` in Step 4.
+
+**Generic entry only** (Step 1 could not determine the deliverable): there is nothing to merge until `Deliverable` is answered, so ask `render_init_dialogs(include_deliverable=True)` and then `render_deck_spec_dialogs(<answer>)`. Two calls is correct here.
+
+**Do not ask about the filings here, and do not post the request yet.** The G7 filings are a REQUIRED bullet of the one attachment request, which goes out in Step 4 — after every question has been answered — so the analyst answers once and then attaches everything in one go.
 
 **Filings handling** (whenever files arrive, including a pre-attached message): save every attachment under `<deal_dir>/filings/` with a descriptive name, append matching `Filing` entries to `ctx.filings`, and re-save `deal.json`. This applies to the deliverable's documents (SEDI PDF, Bloomberg export, CIM, EEO snip) too — same directory, same `Filing` entries.
 
@@ -84,16 +100,17 @@ write_plan_snapshot(run_dir, plan_yaml_text)   # frozen snapshot; the driver rea
 
 Tell the analyst the run id and its path. `plan_overview(run_dir)` (Step 5) validates the snapshot in two layers — the pydantic `Plan` shape, then the reference pre-flight `validate_plan_references` — so a typo'd `$stages` / `$plan_inputs` reference is dead at load, not mid-run. Surface any error and stop; never run a partially-valid plan.
 
-## Step 4 — Questions, then one attachment request, then wait
+## Step 4 — One attachment request, one wait, one defaults echo
 
-Four moves, in this order. Only the judgement items are asked; everything with a sensible default is defaulted and echoed for override.
+Three moves, in this order. The questions are already answered — they were the single dialog in Step 2 — so nothing here asks anything.
 
-1. **Ask the questions.** Render `render_deck_spec_dialogs(<deliverable>)` — one `AskUserQuestion` call per dialog, verbatim. Never re-ask a G7 item; if an earlier message already answered a dialog item, drop just that question and note "(from your message: …)". `earnings-update` returns **no dialogs at all** — both quarters are defaulted and its one document is an attachment — so for that deliverable this step asks nothing and you go straight to 2.
-2. **Post `render_run_attachment_request(<deliverable>)`** — one plain-text message, generated, listing every document the run needs under REQUIRED and OPTIONAL. It merges deal-init's filings with the deliverable's own, so this is the *only* place attachments are raised in the whole run.
-3. **Wait here. Once.** This is the change: there is no longer a pause per document, because there is no longer a dialog per document. Post the request and stop, on one turn, until the analyst's next message. Their reply may carry the files and any promised text (pasted notes, a valuation range) together — take both from it. If they say a document does not exist or to skip it, proceed with what arrived; each bullet already told them what that costs. Save everything per Step 2's filings handling.
-4. **Then compute the defaults and post `render_deck_spec_defaults(...)`.** After the drop, not before: `reporting_quarter` is inferred from the **latest attached interim filing** (fiscal quarter labels depend on the company's fiscal calendar, not the calendar date, so never compute it from today's date), and `comparison_quarter` ← `prior_year_quarter(...)` follows it. `client_name` ← the subject company; `presentation_date` ← `default_presentation_date(date.today())`; `financial_metric_count` + `section_labels` ← left unset so the wireframe defaults apply. If **no interim filing arrived**, the quarter cannot be inferred and it is a required input: ask for it as a plain chat question. Don't guess it.
+1. **Post `render_run_attachment_request(<deliverable>)`** — one plain-text message, generated, listing every document the run needs under REQUIRED and OPTIONAL. It merges deal-init's filings with the deliverable's own, so this is the *only* place attachments are raised in the whole run.
+2. **Wait here. Once.** There is no pause per document, because there is no dialog per document. Post the request and stop, on one turn, until the analyst's next message. Their reply may carry the files and any promised text (pasted notes, a valuation range, specific risks) together — take all of it from that one message. If they say a document does not exist or to skip it, proceed with what arrived; each bullet already told them what that costs. Save everything per Step 2's filings handling.
+3. **Then compute the defaults and post `render_run_defaults(...)` — once, merged.** After the drop, not before: `reporting_quarter` is inferred from the **latest attached interim filing** (fiscal quarter labels depend on the company's fiscal calendar, not the calendar date, so never compute it from today's date), and `comparison_quarter` ← `prior_year_quarter(...)` follows it. `sector` ← the one-liner you researched in Step 2; `client_name` ← the subject company; `presentation_date` ← `default_presentation_date(date.today())`; `valuation_range`, `risk_notes`, `financial_metric_count` and `section_labels` ← left unset, so the content stage and the wireframe apply their own defaults. One echo covers deal-init's defaults and the deliverable's; never post two. If **no interim filing arrived**, the quarter cannot be inferred and it is a required input: ask for it as a plain chat question. Don't guess it.
 
-Map dialog answers with `PITCH_DIALOG_PLAN_INPUTS` / `EARNINGS_UPDATE_DIALOG_PLAN_INPUTS`. Conversions are deterministic, never improvised: **Notes** → `analyst_notes` ("Draft from the attached filings + web" → the literal `NO_NOTES_ANALYST_NOTES`); **Targets** → `market_entry_target_count = market_entry_targets_from_slides(n)`; an override of "2 Financial Summary slides" → `metric_count_from_slides(2)`; **Highlights** → `include_investment_highlights = False` on "Omit" only; **Valuation / Risk notes** → unset on "None", else the typed text.
+**An override can arrive either side of the echo** — volunteered with the attachment drop, or as a reply to the echo itself — and converts exactly the way a dialog answer would. **Valuation range / Risk notes** → the typed text, else the key stays out of the dict entirely. Take an override from whichever message carried it; do not re-ask for one because the echo had not gone out yet, and do not wait for a reply to the echo (no shipped stage gates).
+
+Map dialog answers with `PITCH_DIALOG_PLAN_INPUTS` / `EARNINGS_UPDATE_DIALOG_PLAN_INPUTS` (and `INIT_DIALOG_FIELDS` for deal-init's). Conversions are deterministic, never improvised: **Notes** → `analyst_notes` ("Draft from the attached filings + web" → the literal `NO_NOTES_ANALYST_NOTES`); **Targets** → `market_entry_target_count = market_entry_targets_from_slides(n)`; an override of "2 Financial Summary slides" → `metric_count_from_slides(2)`; **Highlights** → `include_investment_highlights = False` on "Omit" only.
 
 **Resolve the path-carrying attachments from the files you saved**, through `PITCH_ATTACHMENT_PLAN_INPUTS` / `EARNINGS_UPDATE_ATTACHMENT_PLAN_INPUTS` (`{plan input: the document's label}`) — you named the files, so you know which is which. Two rules, and they differ:
 - **Optional** (the pitch CIM → `cim_path`): no file, no key. Leave it **out** of the dict.
@@ -101,7 +118,7 @@ Map dialog answers with `PITCH_DIALOG_PLAN_INPUTS` / `EARNINGS_UPDATE_DIALOG_PLA
 
 Every other attachment carries no plan input at all — the consuming stage finds it under `<deal_dir>/filings/` itself, and works from the placeholder its own SKILL.md documents when it is not there.
 
-**Optional inputs the analyst didn't supply stay OUT of the dict — never pre-seed `None`.** The driver computes the optional set from the plan and resolves an unsupplied optional reference to `None` for you; a missing *required* input still halts. For a deliverable with no questionnaire (`render_deck_spec_dialogs` raises `ValueError`), prompt from `plan.plan_inputs` directly — `render_run_attachment_request` does **not** raise there, it returns the filings alone, so the deal still gets its documents. Then persist once:
+**Optional inputs the analyst didn't supply stay OUT of the dict — never pre-seed `None`.** The driver computes the optional set from the plan and resolves an unsupplied optional reference to `None` for you; a missing *required* input still halts. For a deliverable with no questionnaire, prompt from `plan.plan_inputs` directly — only `render_deck_spec_dialogs` / `render_deck_spec_prompt` raise there. The three run-level renderers **degrade** instead: `render_run_dialogs` returns deal-init's questions alone, `render_run_attachment_request` the filings alone, `render_run_defaults` the sector alone, so the deal still gets its listing, its documents and its echo. Then persist once:
 
 ```python
 write_plan_inputs(run_dir, plan_inputs)

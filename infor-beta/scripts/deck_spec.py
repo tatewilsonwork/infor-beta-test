@@ -7,19 +7,30 @@ and the single-message text fallback. A changed option label therefore reaches
 every surface, which is what makes the locked-questionnaire principle
 structural rather than conventional.
 
-The conductor collects the deck spec right after deal-init through the
-interactive question UI (the `AskUserQuestion` tool): it renders each dialog in
-:func:`render_deck_spec_dialogs` verbatim — one `AskUserQuestion` call per
-dialog, payload unchanged — so every run of a deliverable asks the analyst the
-same questions with the same options in the same order (mirrors
-`deal_init.render_init_dialogs`, which owns the G7 questions — a deck spec must
-never re-ask those). The UI adds an "Other" free-text box to every question
-automatically, so the analyst can always answer manually.
+**One dialog per slash-command run** (v0.5.51). The conductor asks deal-init's
+questions and the deliverable's in a SINGLE `AskUserQuestion` call, rendered by
+:func:`render_run_dialogs` — which merges `deal_init.INIT_INTAKE` with the
+deliverable's spec exactly as :func:`render_run_attachment_request` merges their
+attachments. A pitch run walked the analyst through **three** sequential dialogs
+through v0.5.50; it is now one, and it only fits because everything with a
+sensible default is defaulted rather than asked (the tool caps a call at four
+questions). :func:`render_deck_spec_dialogs` still renders the deliverable's
+half alone: **generic** conductor entry — no `/pitch`, no `/earnings-update` —
+is inherently two rounds, because the Deliverable answer is what decides which
+deck spec to render, so it asks `deal_init.render_init_dialogs()` first and this
+second. Either way the payloads go out verbatim, so every run of a deliverable
+asks the same questions with the same options in the same order (a deck spec
+must never re-ask a G7 item). The UI adds an "Other" free-text box to every
+question automatically, so the analyst can always answer manually.
 
-Only the judgement items are asked. Everything with a sensible default is
-defaulted instead and echoed once via :func:`render_deck_spec_defaults` so the
-analyst can override by replying:
+Only the judgement items are asked — four of them on a pitch run, one on an
+earnings update. Everything with a sensible default is defaulted instead and
+echoed once via :func:`render_run_defaults` so the analyst can override by
+replying:
 
+  - sector / industry             -> researched on the web and used without
+                                     confirmation (deal-init's default, and the
+                                     `deal-context` one)
   - client name on the cover      -> the subject company name from deal-init
   - presentation date             -> current month + year
                                      (:func:`default_presentation_date`)
@@ -30,8 +41,17 @@ analyst can override by replying:
                                      the calendar date alone)
   - comparison quarter            -> prior-year same quarter
                                      (:func:`prior_year_quarter`)
+  - valuation range               -> none in the executive summary (input left
+                                     unset)
+  - risk notes                    -> risks + mitigants drafted from the filings
+                                     and the analyst notes (input left unset)
   - Financial Summary slides      -> 1 slide / 4 metrics (input left unset)
   - section divider labels        -> wireframe defaults (input left unset)
+
+The valuation range and the risk notes were questions through v0.5.50, and each
+defaulted to "None" — so the whole content of asking was an invitation to type
+something instead, which a reply to the echo does. Demoting them, with
+deal-init's sector, is what got a pitch run from seven questions to four.
 
 Override answers and dialog answers convert deterministically, never
 improvised:
@@ -46,6 +66,9 @@ improvised:
   - analyst notes "Draft from the attached filings + web"
     -> ``analyst_notes = NO_NOTES_ANALYST_NOTES`` (a code-owned literal, so the
     no-notes run is reproducible too)
+  - an override of a defaulted item -> the typed text, or the converted count;
+    an un-overridden ``supplied=False`` default stays OUT of ``plan_inputs``
+    entirely, never pre-seeded as None
 
 **The analyst is asked nothing about attachments** (v0.5.50). Every document
 the run needs — deal-init's G7 filings and the deliverable's own — is one
@@ -82,7 +105,7 @@ import re
 from datetime import date
 from typing import get_args
 
-from deal_init import INIT_INTAKE
+from deal_init import DELIVERABLE_FIELD_KEY, INIT_INTAKE
 from intake_spec import (
     IntakeDefault,
     IntakeField,
@@ -106,6 +129,13 @@ DELIVERABLE_TYPES: tuple[str, ...] = get_args(DeliverableType)
 # questions per dialog, 2–4 options per question, header at most 12
 # characters, multiSelect always False. Each field's `key` is its dialog
 # `header` and doubles as its key in the *_DIALOG_PLAN_INPUTS tables below.
+#
+# That 4-question cap is the whole budget for a slash-command run, because
+# `render_run_dialogs` merges these questions with deal-init's into ONE call.
+# deal-init spends one (the listing), so a deliverable has three. Adding a
+# fourth here does not fail at import — it silently splits the run back into two
+# dialogs, and `test_a_slash_command_run_renders_exactly_one_dialog` is what
+# catches it. Default the item instead.
 #
 # Fields with target_kind="attachment" are files, and are asked about in no
 # rendering: each is one bullet of the attachment request, carrying a
@@ -156,7 +186,6 @@ PITCH_INTAKE = IntakeSpec(
             prompt_label="Analyst notes",
             target="analyst_notes",
             required=True,
-            group="content",
             question=(
                 "Analyst notes — what should drive the executive summary, "
                 "company overview, risks, and takeaways?"
@@ -175,55 +204,15 @@ PITCH_INTAKE = IntakeSpec(
                 ),
             ),
         ),
-        IntakeField(
-            key="Valuation",
-            prompt_label="Valuation range",
-            target="valuation_range",
-            group="content",
-            question="Valuation range language for the executive summary?",
-            options=(
-                IntakeOption(
-                    "None",
-                    "Default — the executive summary carries no valuation range.",
-                    default=True,
-                ),
-                IntakeOption(
-                    "I'll provide it",
-                    "Type the range language in the Other box (or reply right "
-                    "after this dialog).",
-                ),
-            ),
-        ),
-        IntakeField(
-            key="Risk notes",
-            prompt_label="Risk notes",
-            target="risk_notes",
-            group="content",
-            question=(
-                "Any specific risks / mitigants for the Considerations / "
-                "Mitigants slide?"
-            ),
-            options=(
-                IntakeOption(
-                    "None",
-                    "Default — risks and mitigants are drafted from the filings "
-                    "and your notes.",
-                    default=True,
-                ),
-                IntakeOption(
-                    "I'll provide specific risks / mitigants",
-                    "Type them in the Other box (or reply right after this "
-                    "dialog).",
-                ),
-            ),
-        ),
+        # The valuation range and the risk notes were questions here through
+        # v0.5.50; both defaulted to "None", so they are `defaults` now, echoed
+        # for override (see below).
         # -- slide mix ------------------------------------------------------
         IntakeField(
             key="Targets",
             prompt_label="Acquisition-target slides",
             # market_entry_targets_from_slides(answer)
             target="market_entry_target_count",
-            group="slide mix",
             question=(
                 "How many Potential Market Entry Targets slides "
                 "(two targets per slide)?"
@@ -239,7 +228,6 @@ PITCH_INTAKE = IntakeSpec(
             key="Highlights",
             prompt_label="Key Investment Highlights",
             target="include_investment_highlights",  # False only on "Omit"
-            group="slide mix",
             question="Key Investment Highlights slide?",
             options=(
                 IntakeOption(
@@ -262,7 +250,6 @@ PITCH_INTAKE = IntakeSpec(
             target="consumed by the pitch-content, comps and precedents stages",
             target_kind="attachment",
             plan_input="cim_path",
-            group="documents",
             checklist=(
                 "if one exists; it is the richest single source for the company "
                 "overview and for choosing the comps and precedents verticals. "
@@ -275,7 +262,6 @@ PITCH_INTAKE = IntakeSpec(
             prompt_label='SEDI "Insider Information by Issuer" PDF',
             target="consumed by the ownership stage (insider side)",
             target_kind="attachment",
-            group="documents",
             checklist=(
                 "Canadian public targets only. SEDI is bot-walled, so I cannot "
                 "fetch it myself; without it the ownership slide's insider side "
@@ -287,7 +273,6 @@ PITCH_INTAKE = IntakeSpec(
             prompt_label="Bloomberg ownership export (.xlsm)",
             target="consumed by the ownership stage (institutions side)",
             target_kind="attachment",
-            group="documents",
             checklist=(
                 "the institutional holders export. Without it the ownership "
                 "slide's institutions side stays a placeholder."
@@ -311,6 +296,29 @@ PITCH_INTAKE = IntakeSpec(
         ),
         _REPORTING_QUARTER_DEFAULT,
         _COMPARISON_QUARTER_DEFAULT,
+        # Both were dialog questions through v0.5.50, and both defaulted to
+        # "None" — so the question's whole content was "type it instead", which a
+        # reply to this echo does. `supplied=False` leaves the plan input unset,
+        # which is exactly what the "None" option already meant; both are
+        # optional in pitch.yaml.
+        IntakeDefault(
+            name="valuation_range",
+            label="Valuation range",
+            rule=(
+                "none — the executive summary carries no valuation range; reply "
+                "with the range language to add one"
+            ),
+            supplied=False,
+        ),
+        IntakeDefault(
+            name="risk_notes",
+            label="Risk notes",
+            rule=(
+                "risks and mitigants drafted from the filings and your notes; "
+                "reply with specific risks / mitigants to steer them"
+            ),
+            supplied=False,
+        ),
         IntakeDefault(
             name="financial_metric_count",
             label="Financial Summary slides",
@@ -345,7 +353,6 @@ EARNINGS_UPDATE_INTAKE = IntakeSpec(
             target_kind="attachment",
             plan_input="eeo_snip_path",
             required=True,
-            group="documents",
             checklist=(
                 "the broker estimates vs. actuals screenshot (an image file). "
                 "There is no other source for the estimates-vs-actuals slide and "
@@ -423,7 +430,7 @@ NO_NOTES_ANALYST_NOTES = (
 )
 
 # ---------------------------------------------------------------------------
-# Defaulted items (not asked; echoed via render_deck_spec_defaults)
+# Defaulted items (not asked; echoed via render_run_defaults)
 # ---------------------------------------------------------------------------
 
 # Required plan inputs the conductor computes and supplies on every run
@@ -446,8 +453,72 @@ EARNINGS_UPDATE_DEFAULT_UNSET_INPUTS: dict[str, str] = (
 )
 
 
+def _run_specs(deliverable_type: str | None) -> list[IntakeSpec]:
+    """`[deal-init]`, plus the deliverable's spec when it has one.
+
+    The merge behind both run-level renderers. `None`, or a declared deliverable
+    with no questionnaire (the `overview` stub, `one-off-skill`), degrades to
+    deal-init alone rather than raising — a deal still has a listing to ask about
+    and a sector to default when there is no deck spec. A deliverable type that
+    is not a `DeliverableType` at all still raises: that is a typo, not a stub.
+    """
+    specs = [INIT_INTAKE]
+    if deliverable_type is not None:
+        if deliverable_type not in DELIVERABLE_TYPES:
+            raise ValueError(
+                f"unknown deliverable type {deliverable_type!r}; known: "
+                f"{sorted(DELIVERABLE_TYPES)}"
+            )
+        if deliverable_type in _INTAKE_SPECS:
+            specs.append(_INTAKE_SPECS[deliverable_type])
+    return specs
+
+
+def render_run_dialogs(
+    deliverable_type: str | None = None,
+    *,
+    include_deliverable: bool = False,
+    omit: tuple[str, ...] = (),
+) -> list[list[dict]]:
+    """Return THE dialogs for a run: ONE `AskUserQuestion` call.
+
+    Merges `deal_init.INIT_INTAKE`'s questions with the deliverable's, in that
+    order — the same merge :func:`render_run_attachment_request` does for their
+    attachments. A `/pitch` run is `[Listing, Notes, Targets, Highlights]`: four
+    questions, one call, where v0.5.50 asked seven across three. An
+    `/earnings-update` run is `[Listing]` alone, since its deck spec asks
+    nothing.
+
+    The deliverable question is omitted unless `include_deliverable=True`: the
+    slash commands preset it, and a run that has to *ask* it cannot be one call
+    anyway (see below). `omit` drops any further question an earlier message
+    already answered.
+
+    **Generic conductor entry is two rounds, by construction.** With no
+    deliverable named, the Deliverable answer is what decides which deck spec
+    exists, so there is nothing to merge yet: ask
+    `deal_init.render_init_dialogs(include_deliverable=True)`, then
+    :func:`render_deck_spec_dialogs` on the answer. That is expected, not a gap —
+    the target of the one-call design is a **slash-command** run.
+
+    Returns one inner list while the run's question count fits
+    `intake_spec.DIALOG_MAX_QUESTIONS`; a fifth question splits it silently into
+    two, which `test_a_slash_command_run_renders_exactly_one_dialog` exists to
+    catch. Fresh payloads every call.
+    """
+    return render_dialogs(
+        *_run_specs(deliverable_type),
+        omit=(*((DELIVERABLE_FIELD_KEY,) if not include_deliverable else ()), *omit),
+    )
+
+
 def render_deck_spec_dialogs(deliverable_type: str) -> list[list[dict]]:
-    """Return the locked deck-spec dialogs for a deliverable, generated.
+    """Return the deliverable's HALF of the run's dialogs, generated.
+
+    :func:`render_run_dialogs` is the one a slash-command run uses — it merges
+    this half with deal-init's into a single call. This function is the second
+    round of **generic** conductor entry, where the deliverable was not known in
+    time to merge.
 
     Each inner list is one `AskUserQuestion` call's `questions` payload —
     render them in order, unchanged. Fresh payloads every call, so a caller
@@ -462,26 +533,38 @@ def render_deck_spec_dialogs(deliverable_type: str) -> list[list[dict]]:
     return render_dialogs(_spec(deliverable_type), target_kinds=("plan-input",))
 
 
-def render_deck_spec_defaults(
-    deliverable_type: str,
+def render_run_defaults(
+    deliverable_type: str | None = None,
     *,
+    sector: str | None = None,
     client_name: str | None = None,
     presentation_date: str | None = None,
     reporting_quarter: str | None = None,
     comparison_quarter: str | None = None,
 ) -> str:
-    """Render the one-shot defaults echo the conductor posts with the dialogs.
+    """Return THE defaults echo for a run: ONE message, posted once.
 
-    The caller passes the computed default values (pitch: all four; earnings
-    update: the two quarters). The returned text lists every defaulted item
-    with an override invitation — the analyst overrides by replying, not
-    through the dialogs. Which computed values a deliverable needs comes from
-    its spec's echo templates, so an absent one is named rather than rendered
-    as a blank.
+    Merges deal-init's defaults with the deliverable's, in that order — a third
+    renderer sharing the two-function shape of the attachment request and the
+    dialogs. Deal-init has a default to echo for the first time as of v0.5.51
+    (the researched sector), and the run posts one merged list rather than one
+    echo per spec.
+
+    The caller passes the computed values: `sector` on every run, plus the
+    deliverable's own (pitch: all four; earnings update: the two quarters).
+    Which ones a run needs comes from the specs' echo templates, so an absent one
+    is named rather than rendered as a blank. The returned text lists every
+    defaulted item with an override invitation — the analyst overrides by
+    replying, never through a dialog.
+
+    Degrades to deal-init's defaults alone for `None` and for a declared
+    deliverable with no questionnaire, exactly as
+    :func:`render_run_attachment_request` does.
     """
     return render_defaults_echo(
-        _spec(deliverable_type),
-        {
+        *_run_specs(deliverable_type),
+        values={
+            "sector": sector,
             "client_name": client_name,
             "presentation_date": presentation_date,
             "reporting_quarter": reporting_quarter,
@@ -532,16 +615,7 @@ def render_run_attachment_request(deliverable_type: str | None = None) -> str:
     spec to add to them. A deliverable type that is not a `DeliverableType` at
     all still raises — that is a typo, not a stub.
     """
-    specs = [INIT_INTAKE]
-    if deliverable_type is not None:
-        if deliverable_type not in DELIVERABLE_TYPES:
-            raise ValueError(
-                f"unknown deliverable type {deliverable_type!r}; known: "
-                f"{sorted(DELIVERABLE_TYPES)}"
-            )
-        if deliverable_type in _INTAKE_SPECS:
-            specs.append(_INTAKE_SPECS[deliverable_type])
-    return render_attachment_request(*specs)
+    return render_attachment_request(*_run_specs(deliverable_type))
 
 
 # ---------------------------------------------------------------------------
