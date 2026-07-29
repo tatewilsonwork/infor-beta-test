@@ -51,6 +51,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from comment_citations import cite_cell
 from deal_workbook import TAB_FINANCIAL_SUMMARY, TAB_LTM_METRICS, TabSpec, write_tab
+from ltm_metrics import ltm_total_formula
 from provenance import FigureSource, ProvenanceError, ProvenanceLedger
 
 # No template_layout anchors here: this workbook is authored from scratch (no
@@ -196,12 +197,6 @@ def _ref(cell) -> str:
     return f"{TAB_FINANCIAL_SUMMARY}!{cell.coordinate}"
 
 
-def _quote_sheet(name: str) -> str:
-    """Single-quote a sheet name for use in a formula (handles the hyphen in
-    ``ltm-metrics`` and any embedded apostrophe)."""
-    return "'" + name.replace("'", "''") + "'"
-
-
 def _ltm_link(ltm_sheet: str, result_label: str) -> str:
     """A label-keyed lookup of a bridge total on the deal workbook's LTM tab.
 
@@ -209,10 +204,12 @@ def _ltm_link(ltm_sheet: str, result_label: str) -> str:
     resolves as soon as `ltm-metrics` is written (`ltm-metrics` is scheduled
     before `financial-summary`'s consumers). Keyed on the bridge's
     ``(=) <result_label>`` row so it survives the bridge's variable row position.
+
+    The formula itself is built by `ltm_metrics.ltm_total_formula` — the tab that
+    owns those rows owns how they are addressed, and the cap table's LTM
+    valuation cells link through the same builder.
     """
-    sheet = _quote_sheet(ltm_sheet)
-    key = f"(=) {result_label}"
-    return f'=INDEX({sheet}!$B:$B, MATCH("{key}", {sheet}!$A:$A, 0))'
+    return ltm_total_formula(result_label, sheet=ltm_sheet)
 
 
 def build_financial_summary_workbook(

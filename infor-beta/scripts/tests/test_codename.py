@@ -4,7 +4,19 @@ from pathlib import Path
 
 import pytest
 
-from codename import codename_from_company, disambiguate, find_existing, resolve
+from codename import (
+    ORIGIN_DOCUMENTS,
+    ORIGIN_EXPLICIT,
+    ORIGIN_MOUNTED,
+    ORIGIN_NEW,
+    Listing,
+    codename_from_company,
+    disambiguate,
+    find_existing,
+    resolve,
+    resolve_deals_root,
+    split_listing,
+)
 
 
 def test_strip_unsafe_chars():
@@ -119,3 +131,181 @@ def test_disambiguate_returns_at_least_one(tmp_path: Path):
     (tmp_path / "Project OpenText").mkdir()
     suggestions = disambiguate(tmp_path, "Project OpenText")
     assert len(suggestions) >= 1
+
+
+# ─── The listing parenthetical (B14) ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("company", "base", "listing"),
+    [
+        # The documented /pitch invocation.
+        ("Open Text (TSX:OTEX)", "Open Text", Listing("TSX", "OTEX")),
+        ("Example Target Inc. (NYSE:AAAA)", "Example Target Inc.", Listing("NYSE", "AAAA")),
+        # Typed with a space after the colon.
+        ("Open Text (TSX: OTEX)", "Open Text", Listing("TSX", "OTEX")),
+        ("Open Text ( TSX : OTEX )", "Open Text", Listing("TSX", "OTEX")),
+        # Mixed-case exchange codes and dotted / numeric tickers.
+        ("Berkshire (NYSE:BRK.B)", "Berkshire", Listing("NYSE", "BRK.B")),
+        ("Microsoft (NasdaqGS:MSFT)", "Microsoft", Listing("NasdaqGS", "MSFT")),
+        ("Tencent (SEHK:700)", "Tencent", Listing("SEHK", "700")),
+        # No parenthetical at all.
+        ("Open Text Corporation", "Open Text Corporation", None),
+        ("ACME Corp", "ACME Corp", None),
+        # A parenthetical that is NOT a listing — no colon, so it is part of the
+        # name and must survive verbatim.
+        ("Acme (Canada)", "Acme (Canada)", None),
+        ("Acme (Holdings) Ltd", "Acme (Holdings) Ltd", None),
+        # A colon inside, but not `EXCHANGE:TICKER` shape (multi-word tokens).
+        ("Acme (Series A: 2024)", "Acme (Series A: 2024)", None),
+        # Nothing left if the parenthetical is stripped — keep the whole string
+        # and let the caller's own validation complain.
+        ("(TSX:OTEX)", "(TSX:OTEX)", None),
+    ],
+)
+def test_split_listing(company, base, listing):
+    assert split_listing(company) == (base, listing)
+
+
+def test_split_listing_rejects_none():
+    with pytest.raises(ValueError):
+        split_listing(None)  # type: ignore[arg-type]
+
+
+def test_listing_renders_the_capiq_form():
+    assert Listing("TSX", "OTEX").capiq == "TSX:OTEX"
+
+
+@pytest.mark.parametrize(
+    ("company", "expected"),
+    [
+        # The defect: stripping only the path-unsafe colon left
+        # "Project Open Text (TSXOTEX)" as the directory name.
+        ("Open Text (TSX:OTEX)", "Project Open Text"),
+        ("Open Text Corporation (TSX:OTEX)", "Project Open Text"),
+        ("Example Target Inc. (NYSE:AAAA)", "Project Example Target"),
+        ("Open Text (TSX: OTEX)", "Project Open Text"),
+        # Not a listing — the parenthetical is part of the name.
+        ("Acme (Canada)", "Project Acme (Canada)"),
+    ],
+)
+def test_codename_from_company_splits_a_listing_parenthetical(company, expected):
+    assert codename_from_company(company) == expected
+
+
+# ─── Where the deals live (B7) ───────────────────────────────────────────────
+
+
+def _deals_root(parent: Path, *deals: str) -> Path:
+    """An `INFOR Deals` root under `parent`, holding `deals`."""
+    root = parent / "INFOR Deals"
+    root.mkdir(parents=True)
+    for deal in deals:
+        (root / deal).mkdir()
+    return root
+
+
+def test_resolve_deals_root_takes_an_explicit_argument_as_given(tmp_path: Path):
+    named = tmp_path / "somewhere else"
+    root = resolve_deals_root(named, home=tmp_path / "home")
+    assert root.path == named
+    assert root.origin == ORIGIN_EXPLICIT
+    assert not named.exists(), "resolving must create nothing"
+
+
+def test_resolve_deals_root_discovers_the_mounted_workspace_folder(tmp_path: Path):
+    """The production shape: $HOME/mnt/<mounted folder>/INFOR Deals/<codename>."""
+    home = tmp_path / "sessions" / "determined-eager-archimedes"
+    mounted = _deals_root(home / "mnt" / "Claude Access Folder", "Project Open Text", "Project Atlas")
+
+    root = resolve_deals_root(home=home)
+
+    assert root.path == mounted
+    assert root.origin == ORIGIN_MOUNTED
+    assert root.deal_count == 2
+    assert root.alternatives == ()
+
+
+def test_resolve_deals_root_falls_back_to_documents_when_it_exists(tmp_path: Path):
+    documents = _deals_root(tmp_path / "Documents", "Project Atlas")
+    root = resolve_deals_root(home=tmp_path)
+    assert root.path == documents
+    assert root.origin == ORIGIN_DOCUMENTS
+    assert root.deal_count == 1
+
+
+def test_resolve_deals_root_returns_a_fresh_root_without_creating_it(tmp_path: Path):
+    root = resolve_deals_root(home=tmp_path)
+    assert root.path == tmp_path / "Documents" / "INFOR Deals"
+    assert root.origin == ORIGIN_NEW
+    assert root.deal_count == 0
+    assert not root.exists, "the first save_deal_context creates it, not the resolver"
+
+
+def test_resolve_deals_root_never_passes_over_a_root_holding_deals(tmp_path: Path):
+    """The whole defect: a fresh/empty root must not win over ten real deals.
+
+    The mounted shape outranks ~/Documents on precedence alone, but an EMPTY
+    mounted folder beside a populated Documents root would leave `find_existing`
+    blind to every prior deal — so holding deals wins, and the runner-up is
+    reported rather than dropped.
+    """
+    empty_mount = _deals_root(tmp_path / "mnt" / "Claude Access Folder")
+    documents = _deals_root(tmp_path / "Documents", *[f"Project {n}" for n in range(10)])
+
+    root = resolve_deals_root(home=tmp_path)
+
+    assert root.path == documents
+    assert root.origin == ORIGIN_DOCUMENTS
+    assert root.deal_count == 10
+    assert root.alternatives == (empty_mount,)
+
+
+def test_resolve_deals_root_prefers_the_mount_when_both_hold_deals(tmp_path: Path):
+    mounted = _deals_root(tmp_path / "mnt" / "Claude Access Folder", "Project Open Text")
+    documents = _deals_root(tmp_path / "Documents", "Project Atlas")
+
+    root = resolve_deals_root(home=tmp_path)
+
+    assert root.path == mounted, "precedence: the mounted workspace folder first"
+    assert root.alternatives == (documents,)
+
+
+def test_resolve_deals_root_matches_the_mounted_folder_name_case_insensitively(tmp_path: Path):
+    mount = tmp_path / "mnt" / "Claude Access Folder"
+    mount.mkdir(parents=True)
+    (mount / "infor deals").mkdir()
+    (mount / "infor deals" / "Project Atlas").mkdir()
+
+    root = resolve_deals_root(home=tmp_path)
+
+    assert root.path == mount / "infor deals"
+    assert root.origin == ORIGIN_MOUNTED
+
+
+def test_resolve_deals_root_ignores_hidden_entries_and_files(tmp_path: Path):
+    documents = _deals_root(tmp_path / "Documents", "Project Atlas", ".DS_Store_dir")
+    (documents / "notes.txt").write_text("x", encoding="utf-8")
+    assert resolve_deals_root(home=tmp_path).deal_count == 1
+
+
+def test_deals_root_describes_the_decision_it_made(tmp_path: Path):
+    mounted = _deals_root(tmp_path / "mnt" / "Claude Access Folder", "Project Open Text")
+    documents = _deals_root(tmp_path / "Documents", "Project Atlas")
+
+    described = resolve_deals_root(home=tmp_path).describe()
+
+    assert str(mounted) in described
+    assert "1 existing deal" in described
+    assert str(documents) in described, "the runner-up is offered, not hidden"
+
+
+def test_a_resolved_deals_root_is_path_like(tmp_path: Path):
+    """It goes straight into every `deals_root=`-taking helper."""
+    mounted = _deals_root(tmp_path / "mnt" / "Workspace", "Project OpenText")
+    root = resolve_deals_root(home=tmp_path)
+
+    assert Path(root) == mounted
+    assert find_existing(root, "project opentext") == mounted / "Project OpenText"
+    _, deal_dir = resolve("Project Atlas", root)
+    assert deal_dir == mounted / "Project Atlas"

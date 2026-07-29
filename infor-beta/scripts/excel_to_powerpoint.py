@@ -363,7 +363,10 @@ def _libreoffice_range_to_png(workbook: Path, sheet_name: str, source_range: str
 
     CapIQ `_xll.*` cells (forward consensus estimates) are unknown to LibreOffice
     and resolve to `#NAME?`, which the template's IFERROR wrappers degrade to
-    `n/a`; the in-workbook arithmetic and the hardcoded LTM column still compute.
+    `n/a`; the in-workbook arithmetic still computes, and so does the LTM column,
+    whose cells are `=INDEX('ltm-metrics'!…)` links. That is why the non-target
+    sheets are **hidden, not removed**: a cross-tab link needs its sibling tab in
+    the copy, and recalc-on-load resolves it there.
 
     The export must be exactly one page. A second page means another sheet was
     exported too, in which case page 1 is not necessarily the requested range — so

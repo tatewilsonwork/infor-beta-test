@@ -53,6 +53,26 @@ _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 
 _MINUS = "−"  # typographic minus sign used in bridge labels
 
+# ─── The bridge-total row, and how other tabs address it ─────────────────────
+#
+# A bridge's total lives on a row labelled `(=) <result_label>` in column A with
+# the value in column B. That label — not a row number — is the join key every
+# consumer uses, because the bridges' row positions move with the segment count.
+# The two labels below are the ones the two shipped plans produce, and both the
+# `financial-summary` tab and the cap table's LTM valuation cells link off them.
+
+#: Column-A prefix on a bridge's total row. Not a leading "=" — openpyxl would
+#: store the label as a formula and Excel would render it as "=@LTM Revenue".
+RESULT_ROW_PREFIX = "(=) "
+
+#: The revenue bridge's result label — fixed.
+LTM_REVENUE_RESULT_LABEL = "LTM Revenue"
+
+#: The EBITDA bridge's result label, in preference order: Adjusted when the
+#: company discloses it, unadjusted when it does not (`ebitda_label`). A consumer
+#: linking to "the EBITDA total" passes both and takes whichever the tab has.
+LTM_EBITDA_RESULT_LABELS = ("LTM Adj. EBITDA", "LTM EBITDA")
+
 
 @dataclass(frozen=True)
 class RevenueSegment:
@@ -186,6 +206,83 @@ def bridge_total(
     return sum(-c.value if c.subtract else c.value for c in comps)
 
 
+def _quote_sheet(name: str) -> str:
+    """Single-quote a sheet name for a formula (the hyphen in `ltm-metrics`)."""
+    return "'" + name.replace("'", "''") + "'"
+
+
+def result_row_labels(ws: Worksheet) -> list[str]:
+    """Every bridge result label on an `ltm-metrics` tab, top to bottom.
+
+    The `(=) ` prefix is stripped, so a tab carrying a revenue and an Adjusted
+    EBITDA bridge gives `["LTM Revenue", "LTM Adj. EBITDA"]`.
+    """
+    out: list[str] = []
+    for (cell,) in ws.iter_rows(min_col=1, max_col=1):
+        value = cell.value
+        if isinstance(value, str) and value.startswith(RESULT_ROW_PREFIX):
+            label = value[len(RESULT_ROW_PREFIX) :].strip()
+            if label:
+                out.append(label)
+    return out
+
+
+def ltm_total_formula(
+    result_label: str, *, sheet: str = TAB_LTM_METRICS, times: str | None = None
+) -> str:
+    """The label-keyed lookup of one bridge total — the formula, built once.
+
+    ``=INDEX('ltm-metrics'!$B:$B, MATCH("(=) LTM Revenue", 'ltm-metrics'!$A:$A, 0))``.
+    Keyed on the `(=) <result_label>` row rather than an address, because the
+    bridges sit below a segment overview whose height varies.
+
+    Both consumers of an LTM total build their formula here, so the two cannot
+    drift: `financial_summary_workbook` writes it unconditionally (in the pitch
+    plan its stage runs *before* `ltm-metrics`, so there is no tab to check yet),
+    while the cap table goes through `ltm_total_link`, which only links to a
+    bridge that is really there.
+    """
+    quoted = _quote_sheet(sheet)
+    formula = (
+        f"=INDEX({quoted}!$B:$B, "
+        f'MATCH("{RESULT_ROW_PREFIX}{result_label}", {quoted}!$A:$A, 0))'
+    )
+    return f"{formula}*{times}" if times else formula
+
+
+def ltm_total_link(wb, *result_labels: str, times: str | None = None) -> str | None:
+    """A live link to a bridge total on this workbook's `ltm-metrics` tab.
+
+    Returns ``=INDEX('ltm-metrics'!$B:$B, MATCH("(=) <label>", 'ltm-metrics'!$A:$A, 0))``
+    for the first of `result_labels` the tab actually carries — keyed on the label
+    so it survives the bridge's variable row position — or **None** when this
+    workbook has no `ltm-metrics` tab, or has one without any of those bridges.
+    A None is the caller's signal to fall back (the cap table restores its CapIQ
+    formulas); it is never a reason to write the figure as a literal.
+
+    `times` names a cell to multiply the link by, for a consumer whose column is
+    in a different currency — the cap table's `D47`/`D48` pass the FX-rate cell
+    resolved through `NAME_FX_RATE`, giving `=INDEX(…)*F7`.
+
+    `wb` is the open `openpyxl` workbook — inside `deal_workbook.write_tab` that
+    is the `wb` handed to the `write(wb, ws)` callback, so a stage writing one tab
+    can link to a sibling tab without opening the file twice.
+
+    This is the ONE way a figure computed on the `ltm-metrics` tab reaches another
+    tab. Embedding the number instead leaves two copies of it in the deal
+    workbook: correct the bridge and the linked consumer follows while the
+    hardcoded one silently does not, and the deck then ships two different LTM
+    revenues with no error anywhere.
+    """
+    if TAB_LTM_METRICS not in getattr(wb, "sheetnames", ()):
+        return None
+    present = set(result_row_labels(wb[TAB_LTM_METRICS]))
+    label = next((candidate for candidate in result_labels if candidate in present), None)
+    if label is None:
+        return None
+    return ltm_total_formula(label, times=times)
+
+
 def _section(ws: Worksheet, row: int, text: str) -> None:
     for col in (1, 2, 3):
         cell = ws.cell(row=row, column=col)
@@ -253,7 +350,9 @@ def _write_bridge(
     # The label is a plain string. A leading "=" makes openpyxl store the cell
     # as a formula (Excel then renders it as "=@LTM Revenue"), so use the "(=)"
     # bridge glyph, mirroring the "(+)" / "(−)" component rows above.
-    ws.cell(row=result_row, column=1, value=f"(=) {result_label}").font = _TOTAL_FONT
+    ws.cell(
+        row=result_row, column=1, value=f"{RESULT_ROW_PREFIX}{result_label}"
+    ).font = _TOTAL_FONT
     rv = ws.cell(row=result_row, column=2, value=f"={terms}")
     rv.font = _TOTAL_FONT
     rv.number_format = "#,##0.0"
@@ -286,7 +385,7 @@ def build_ltm_metrics_workbook(
     segments: list[RevenueSegment] | list[tuple],
     revenue_bridge: list[BridgeComponent] | list[tuple] | None = None,
     ebitda_bridge: list[BridgeComponent] | list[tuple] | None = None,
-    ebitda_label: str = "LTM Adj. EBITDA",
+    ebitda_label: str = LTM_EBITDA_RESULT_LABELS[0],
     extra_bridges: "list[Bridge] | list[dict] | None" = None,
     deal_workbook: Path | str,
     provenance: ProvenanceLedger | None = None,
@@ -444,7 +543,7 @@ def _fill_ltm_metrics_tab(
             ws,
             start_row=next_row + 1,
             section_title="LTM Revenue Bridge",
-            result_label="LTM Revenue",
+            result_label=LTM_REVENUE_RESULT_LABEL,
             currency=currency,
             components=rev_components,
             ledger=ledger,
