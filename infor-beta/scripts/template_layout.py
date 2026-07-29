@@ -1,4 +1,4 @@
-"""The shipped templates' layout map: defined names and slide markers.
+"""The shipped templates' layout map: defined names, slide markers, brand theme.
 
 Nothing here is addressed blind. Every load-bearing cell in the four workbook
 templates is reachable by a **defined name** the template itself carries, and
@@ -56,6 +56,12 @@ arithmetic, and ``financial_charts``' overview slide. Library markers identify
 a *blank* library slide; the ``MARKER_BUILT_*`` markers identify a slide in an
 *assembled* deck, where the titles have been filled and only the deferred
 placeholders survive.
+
+**Brand theme.** A third thing a template carries that no cell address can
+express: the ``clrScheme`` its theme-indexed colours resolve against.
+``read_theme`` reads it out of any ``.xlsx`` / ``.pptx`` / ``.thmx``, and is what
+lets the build tool refuse to ship a deal-workbook template in Office's palette
+and the suite pin the shipped binaries' palettes with no Excel present.
 """
 
 from __future__ import annotations
@@ -232,6 +238,144 @@ def resolve_workbook_range(
         return defined_name_ref(wb[sheet], name) or fallback
     finally:
         wb.close()
+
+
+# ─── The brand theme (INFORFG.thmx) ──────────────────────────────────────────
+#
+# A theme-indexed colour carries no RGB of its own. ``<color theme="4"/>`` in a
+# cell format, and every ``accent1`` a chart or a conditional format names, is a
+# *slot number* resolved against whichever theme part the workbook happens to
+# carry — so the theme is not decoration, it is the palette every tab renders
+# in. Point the same workbook at a different theme and nothing about the cells
+# changes while the whole thing changes colour.
+#
+# That is a live failure mode for the deal workbook, not a hypothetical: it is
+# assembled by copying sheets into a workbook ``Excel.Workbooks.Add()`` created,
+# which carries Office's default theme, and Excel resolves a copied sheet's
+# slots against the DESTINATION theme. Between v0.5.41 (Phase D deleted the
+# aggregator, which stamped ``INFORFG.thmx``) and v0.5.52 nothing re-applied
+# INFOR's, so the shipped template's accent1 was Office 2024's ``156082`` and
+# every deal workbook rendered in the wrong palette.
+#
+# Hence a reader here rather than in the build tool: the tool stamps the theme
+# and refuses to ship a template without it, and the test suite pins the shipped
+# binaries' palettes with no Excel present. Both need the same answer to "what
+# palette does this file actually carry", and it is one zip entry away in an
+# ``.xlsx``, a ``.pptx`` and a ``.thmx`` alike.
+
+#: The brand theme, shipped alongside the templates it belongs to.
+INFOR_THEME = "INFORFG.thmx"
+
+#: Where the theme part lives in each container. A ``.thmx`` is a package whose
+#: payload sits under ``theme/``; Office documents keep theirs under the
+#: application's own directory.
+WORKBOOK_THEME_PART = "xl/theme/theme1.xml"
+DECK_THEME_PART = "ppt/theme/theme1.xml"
+THMX_THEME_PART = "theme/theme/theme1.xml"
+
+#: A ``clrScheme``'s twelve slots, in the order DrawingML declares them.
+THEME_COLOR_SLOTS = (
+    "dk1",
+    "lt1",
+    "dk2",
+    "lt2",
+    "accent1",
+    "accent2",
+    "accent3",
+    "accent4",
+    "accent5",
+    "accent6",
+    "hlink",
+    "folHlink",
+)
+
+#: The six accents, in order — the slots ``pptx_helpers.INFOR_ACCENTS`` mirrors.
+THEME_ACCENT_SLOTS = tuple(slot for slot in THEME_COLOR_SLOTS if slot.startswith("accent"))
+
+_DRAWINGML = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+
+
+@dataclass(frozen=True)
+class ThemeSummary:
+    """What a file's theme part says, reduced to the parts that are load-bearing.
+
+    ``palette`` maps each of :data:`THEME_COLOR_SLOTS` to an uppercase
+    ``RRGGBB``. ``name`` is deliberately NOT the thing to assert on: all four
+    source templates are named ``Office Theme`` while carrying the INFOR
+    colours, because an analyst built them by applying INFOR's colour scheme to
+    a default-themed workbook. The palette is the fact; the name is a label
+    whichever tool last touched the file happened to leave.
+    """
+
+    name: str
+    color_scheme: str
+    palette: dict[str, str]
+    major_font: str
+    minor_font: str
+
+
+def read_theme_part(path: Path | str) -> bytes:
+    """The raw theme XML inside an ``.xlsx`` / ``.pptx`` / ``.thmx``.
+
+    Returned as bytes so a caller can graft the part verbatim — which is what
+    ``tools/build_deal_workbook_template.py`` does when Excel's ``ApplyTheme``
+    is unavailable to it.
+    """
+    import zipfile
+
+    path = Path(path)
+    with zipfile.ZipFile(path) as zf:
+        names = set(zf.namelist())
+        for candidate in (WORKBOOK_THEME_PART, DECK_THEME_PART, THMX_THEME_PART):
+            if candidate in names:
+                return zf.read(candidate)
+        raise TemplateLayoutError(
+            f"{path.name}: no theme part — looked for "
+            f"{WORKBOOK_THEME_PART}, {DECK_THEME_PART}, {THMX_THEME_PART}. A file "
+            f"with no theme has no palette to resolve its theme-indexed colours "
+            f"against, so it cannot be one of ours."
+        )
+
+
+def read_theme(path: Path | str) -> ThemeSummary:
+    """Summarise the theme a file carries. Raises if it carries none."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(read_theme_part(path))
+    elements = root.find(f"{_DRAWINGML}themeElements")
+    scheme = None if elements is None else elements.find(f"{_DRAWINGML}clrScheme")
+    fonts = None if elements is None else elements.find(f"{_DRAWINGML}fontScheme")
+    if scheme is None or fonts is None:
+        raise TemplateLayoutError(
+            f"{Path(path).name}: theme part has no clrScheme/fontScheme — it is not "
+            f"a theme this repo can read a palette out of."
+        )
+
+    palette: dict[str, str] = {}
+    for slot in THEME_COLOR_SLOTS:
+        node = scheme.find(f"{_DRAWINGML}{slot}")
+        if node is None:
+            continue
+        srgb = node.find(f"{_DRAWINGML}srgbClr")
+        # A system colour (``windowText``/``window``) carries the resolved RGB in
+        # ``lastClr``; dk1/lt1 are usually authored that way.
+        system = node.find(f"{_DRAWINGML}sysClr")
+        if srgb is not None:
+            palette[slot] = (srgb.get("val") or "").upper()
+        elif system is not None:
+            palette[slot] = (system.get("lastClr") or "").upper()
+
+    def latin(group: str) -> str:
+        node = fonts.find(f"{_DRAWINGML}{group}/{_DRAWINGML}latin")
+        return "" if node is None else (node.get("typeface") or "")
+
+    return ThemeSummary(
+        name=root.get("name") or "",
+        color_scheme=scheme.get("name") or "",
+        palette=palette,
+        major_font=latin("majorFont"),
+        minor_font=latin("minorFont"),
+    )
 
 
 # ─── Cap table (INFOR Cap Table Template.xlsx, sheet 'Cap with Links') ───────
