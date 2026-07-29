@@ -47,11 +47,30 @@ which is neither conservative nor cheap. And a LibreOffice round-trip is
 disqualified outright: it is what rewrote parenthesised range unions with `~`
 and made Excel repair-strip 44 formulas on open (v0.5.23).
 
+Why the brand theme has to be stamped
+-------------------------------------
+`Workbooks.Add()` hands back a workbook carrying **Office's default theme**, and
+Excel resolves a copied sheet's theme-indexed colours against the DESTINATION
+theme. The four source templates are full of them, so the assembled workbook
+inherits INFOR's slot *numbers* and Office's slot *colours* — accent1 rendering
+as Office 2024's `156082` instead of INFOR navy `0E213F`, in every tab, with
+nothing in any cell wrong. The aggregator Phase D deleted stamped
+`templates/INFORFG.thmx` on its way out; nothing replaced it, so v0.5.41 through
+v0.5.51 shipped an Office-palette deal workbook and every deal copied it.
+
+So the build applies `INFORFG.thmx` and then reads the saved theme part back to
+confirm it took, falling back to grafting the thmx's theme part into the saved
+zip. The two are equivalent by measurement: applying `INFORFG.thmx` by hand in
+Excel produces an `xl/theme/theme1.xml` byte-identical to the thmx's
+`theme/theme/theme1.xml` (md5 `2eb1697978066f80ed1a4ad3b6c64aec`).
+
 `--verify` is the check that matters, and mirrors `add_template_named_ranges.py`'s
 Excel oracle: every `infor_` name resolves to the same target it did in its
 source template, every `_xll.` CapIQ formula's text is unchanged, the global
-CapIQ names survive, there are no external-workbook references back to the
-sources, and Excel opens the result with no repair record.
+CapIQ names survive, the palette is INFOR's, there are no external-workbook
+references back to the sources, and Excel opens the result with no repair record.
+The palette check runs under plain `--check` too, with no Excel anywhere, so a
+future re-run cannot quietly ship an Office-themed template again.
 
 Deliberately preserved
 ----------------------
@@ -91,11 +110,16 @@ from template_layout import (  # noqa: E402
     CAP_TABLE_TEMPLATE,
     COMPS_SOURCE_SHEET,
     COMPS_TEMPLATE,
+    INFOR_THEME,
     OWNERSHIP_BBG_SOURCE_SHEET,
     OWNERSHIP_SOURCE_SHEET,
     OWNERSHIP_TEMPLATE,
     PRECEDENTS_SOURCE_SHEET,
     PRECEDENTS_TEMPLATE,
+    THEME_COLOR_SLOTS,
+    WORKBOOK_THEME_PART,
+    read_theme,
+    read_theme_part,
 )
 
 # (source template, source sheets to copy together, destination tab names).
@@ -217,6 +241,10 @@ def build(output: Path) -> None:
     if stripped:
         print(f"  stripped {stripped} vestigial external-link part(s)")
     _restamp_global_capiq_names(output)
+    # Last, so nothing downstream can drop the theme part again: openpyxl carries
+    # a loaded theme through a save, but "carries it through" is a property of
+    # openpyxl, not something this tool should depend on for the palette.
+    _ensure_infor_theme(output)
 
 
 def _build_from(staged: dict[str, Path], output: Path) -> None:
@@ -262,12 +290,67 @@ def _build_from(staged: dict[str, Path], output: Path) -> None:
                     sheet.Visible = -1  # a very-hidden sheet cannot be deleted
                     sheet.Delete()
 
+            # INFOR's theme, over the Office default `Workbooks.Add()` gave us.
+            # Deliberately AFTER the copies rather than before: the copy's
+            # theme-colour behaviour is measured as it stands (the slot numbers
+            # come across and resolve against the destination), and re-themeing
+            # the destination mid-copy would put an unmeasured variable inside
+            # the one operation this tool exists to get right. A raise here is
+            # not fatal — `_ensure_infor_theme` grafts the part into the saved
+            # zip instead — so a headless ApplyTheme failure costs a warning.
+            try:
+                dest.ApplyTheme(str(TEMPLATES / INFOR_THEME))
+                print(f"  applied {INFOR_THEME}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  ApplyTheme({INFOR_THEME}) raised: {exc} — will graft the part")
+
             output.parent.mkdir(parents=True, exist_ok=True)
             if output.exists():
                 output.unlink()
             dest.SaveAs(str(output), FileFormat=51)  # xlOpenXMLWorkbook
         finally:
             dest.Close(SaveChanges=False)
+
+
+def _ensure_infor_theme(output: Path) -> None:
+    """Confirm the saved workbook carries INFOR's palette; graft it if not.
+
+    `Workbook.ApplyTheme` is the native path and the one that also updates the
+    Normal style's font, so it is tried first (in `_build_from`). This is the
+    check that it took, plus the fallback for a headless Excel where it did not:
+    replace `xl/theme/theme1.xml` with the thmx's theme part, which is the same
+    bytes Excel writes when the theme is applied by hand
+    (md5 `2eb1697978066f80ed1a4ad3b6c64aec`).
+
+    Zip surgery in `add_template_named_ranges.py`'s idiom — the theme part is
+    rewritten and every other entry's payload copied through byte-for-byte. The
+    part name does not change, so `[Content_Types].xml` and the workbook rels
+    already describe it correctly and are left alone.
+    """
+    import zipfile
+
+    theme = TEMPLATES / INFOR_THEME
+    wanted = read_theme(theme)
+    if read_theme(output).palette == wanted.palette:
+        print(f"  theme palette is {wanted.color_scheme!r} (accent1 {wanted.palette['accent1']})")
+        return
+
+    payload = read_theme_part(theme)
+    with zipfile.ZipFile(output) as zf:
+        entries = [(item, zf.read(item.filename)) for item in zf.infolist()]
+    if not any(item.filename == WORKBOOK_THEME_PART for item, _ in entries):
+        raise SystemExit(
+            f"{output.name} has no {WORKBOOK_THEME_PART} to replace — Excel writes "
+            f"one into every workbook, so this file is not what this tool built."
+        )
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as out:
+        for item, entry in entries:
+            out.writestr(item, payload if item.filename == WORKBOOK_THEME_PART else entry)
+
+    got = read_theme(output)
+    if got.palette != wanted.palette:  # pragma: no cover - the graft is a copy
+        raise SystemExit(f"grafting {INFOR_THEME}'s theme part did not take: {got.palette}")
+    print(f"  grafted {INFOR_THEME}'s theme part ({len(payload):,} bytes)")
 
 
 def _strip_orphan_external_links(output: Path) -> int:
@@ -439,8 +522,55 @@ def verify(output: Path, *, with_excel: bool) -> list[str]:
     if external:
         problems.append(f"external-workbook references present: {external[:5]}")
 
+    # 6. The palette every theme-indexed colour resolves against is INFOR's.
+    problems.extend(_theme_problems(output))
+
     if with_excel:
         problems.extend(_verify_with_excel(output))
+    return problems
+
+
+def _theme_problems(output: Path) -> list[str]:
+    """Fail the build unless the assembled workbook carries INFOR's theme.
+
+    The palette, not the theme's name: all four source templates are named
+    "Office Theme" while carrying the INFOR colour scheme, so a name assertion
+    would be both wrong and easy to satisfy. `INFORFG.thmx` is the expectation
+    rather than a constant copied out of it — there is then no second place for
+    the brand palette to be declared, and no way for this check to disagree with
+    what the build stamps. The fonts come with it: an Office-themed workbook
+    renders the source templates' scheme-linked fonts as Aptos Narrow.
+    """
+    problems: list[str] = []
+    theme = TEMPLATES / INFOR_THEME
+    if not theme.is_file():
+        return [f"{INFOR_THEME} is missing from templates/ — nothing to verify the palette against"]
+
+    wanted = read_theme(theme)
+    got = read_theme(output)
+    drift = [
+        f"{slot} {got.palette.get(slot, '(absent)')} != {wanted.palette[slot]}"
+        for slot in THEME_COLOR_SLOTS
+        if got.palette.get(slot) != wanted.palette.get(slot)
+    ]
+    if drift:
+        problems.append(
+            f"theme palette is not INFOR's — {got.name!r} / {got.color_scheme!r} "
+            f"({', '.join(drift)}). Every theme-indexed colour in every tab resolves "
+            f"against this, so the workbook renders in the wrong palette with nothing "
+            f"in any cell wrong. Re-run this tool (it applies {INFOR_THEME})."
+        )
+    for label, mine, theirs in (
+        ("major", got.major_font, wanted.major_font),
+        ("minor", got.minor_font, wanted.minor_font),
+    ):
+        if mine != theirs:
+            problems.append(f"theme {label} font is {mine!r}, expected {theirs!r} (from {INFOR_THEME})")
+    if not problems:
+        print(
+            f"  theme palette is {got.color_scheme!r} from {INFOR_THEME} "
+            f"(accent1 {got.palette['accent1']}, minor font {got.minor_font})"
+        )
     return problems
 
 
