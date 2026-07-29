@@ -22,6 +22,8 @@ from pptx.util import Inches
 
 from deckcheck import (
     EXPECTED_ERROR_CONTEXTS,
+    MATCH_IDENTITY,
+    MATCH_VALUE,
     SEVERITY_ADVISORY,
     VERDICTS,
     CheckFinding,
@@ -32,7 +34,7 @@ from deckcheck import (
     render_report,
     write_report,
 )
-from provenance import FigureSource, ProvenanceLedger
+from provenance import DeckPlacement, FigureRef, FigureSource, ProvenanceLedger
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _PITCH = _FIXTURES / "pitch-deck.pptx"
@@ -159,36 +161,77 @@ def test_a_figures_context_is_a_window_not_the_whole_shape(tmp_path: Path):
 
 
 # ─── The ledger join ─────────────────────────────────────────────────────────
+#
+# Two tiers, and the distinction is the point. A record that says WHERE it lands
+# (a `DeckPlacement`) and whose value agrees is `traced`. A record that only shares
+# the number is a `value_matched` lead — reported as one, never as provenance. The
+# arithmetic below (tolerance, scale, percent storage) decides whether the values
+# agree at all, so it is asserted on the value tier; `_placed` adds the placement
+# that promotes an agreement to a trace.
 
 
 def _ledger(*figures) -> ProvenanceLedger:
+    """Records with no placement — they can only ever be value-matched."""
     ledger = ProvenanceLedger(stage="financial-summary")
     for name, value, units in figures:
         ledger.record(name, sources=_SRC, value=value, units=units, location="financial-summary!B6")
     return ledger
 
 
-def test_a_figure_matching_a_record_is_traced(tmp_path: Path):
+def _placed(*figures, slide: int = 1, shape: str | None = None) -> ProvenanceLedger:
+    """The same records, each claiming a slide (1-based) — the identity join."""
+    ledger = ProvenanceLedger(stage="content")
+    for name, value, units in figures:
+        ledger.record(
+            name,
+            sources=_SRC,
+            value=value,
+            units=units,
+            placement=DeckPlacement(slide=slide, field="executive_summary_bullets[0]", shape=shape),
+        )
+    return ledger
+
+
+def test_a_record_that_claims_the_figure_is_traced(tmp_path: Path):
     deck = _deck_with(tmp_path, "Revenue of US$589.8MM")
-    audit = audit_deck(deck, _ledger(("Revenue FY2025", 589.8, "US$MM")), library=None)
+    audit = audit_deck(deck, _placed(("Revenue FY2025", 589.8, "US$MM")), library=None)
     assert len(audit.traced) == 1
     assert audit.traced[0].record.figure == "Revenue FY2025"
-    assert audit.untraced == []
+    assert audit.traced[0].kind == MATCH_IDENTITY
+    assert audit.untraced == [] and audit.value_matched == []
 
 
-def test_a_rounded_rendering_still_matches_its_record(tmp_path: Path):
+def test_a_placement_on_another_slide_is_only_a_value_match(tmp_path: Path):
+    # The record says it lands on slide 8; this figure is on slide 1. Same number,
+    # different figure — which is exactly the collision the old join printed as
+    # traced.
+    deck = _deck_with(tmp_path, "Revenue of US$589.8MM")
+    audit = audit_deck(deck, _placed(("Revenue FY2025", 589.8, "US$MM"), slide=8), library=None)
+    assert audit.traced == []
+    assert len(audit.value_matched) == 1
+
+
+def test_a_shape_name_identifies_a_figure_too(tmp_path: Path):
+    deck = _deck_with(tmp_path, "Revenue of US$589.8MM")
+    ledger = ProvenanceLedger(stage="deck")
+    ledger.record("Revenue FY2025", sources=_SRC, value=589.8, units="US$MM",
+                  placement=DeckPlacement(shape="Figures"))
+    assert audit_deck(deck, ledger, library=None).traced
+
+
+def test_a_rounded_rendering_still_agrees_with_its_record(tmp_path: Path):
     # The deck rounds; the workbook does not. Tolerance is half the last decimal
     # place the deck actually shows.
     deck = _deck_with(tmp_path, "Revenue of US$589.8MM")
-    assert audit_deck(deck, _ledger(("Revenue", 589.83, "US$MM")), library=None).traced
-    assert not audit_deck(deck, _ledger(("Revenue", 591.2, "US$MM")), library=None).traced
+    assert audit_deck(deck, _placed(("Revenue", 589.83, "US$MM")), library=None).traced
+    assert not audit_deck(deck, _placed(("Revenue", 591.2, "US$MM")), library=None).matches[0].matched
 
 
-def test_a_scale_change_between_workbook_and_deck_still_matches(tmp_path: Path):
+def test_a_scale_change_between_workbook_and_deck_still_agrees(tmp_path: Path):
     # The workbook is locked to millions; a deck may render the same figure in
     # billions.
     deck = _deck_with(tmp_path, "Revenue of $1.2B")
-    assert audit_deck(deck, _ledger(("Revenue", 1200.0, "US$MM")), library=None).traced
+    assert audit_deck(deck, _placed(("Revenue", 1200.0, "US$MM")), library=None).traced
 
 
 def test_a_figure_with_no_record_is_untraced(tmp_path: Path):
@@ -196,18 +239,20 @@ def test_a_figure_with_no_record_is_untraced(tmp_path: Path):
     audit = audit_deck(deck, _ledger(("Revenue FY2025", 589.8, "US$MM")), library=None)
     assert len(audit.untraced) == 1
     assert audit.untraced[0].record is None
+    assert audit.untraced[0].kind is None
 
 
-def test_a_percent_only_matches_a_percent_record(tmp_path: Path):
+def test_a_percent_only_agrees_with_a_percent_record(tmp_path: Path):
     deck = _deck_with(tmp_path, "Margin of 28.2%")
-    assert audit_deck(deck, _ledger(("EBITDA margin", 28.2, "%")), library=None).traced
-    # Same number, but the record is a dollar figure — not the same claim.
-    assert not audit_deck(deck, _ledger(("Revenue", 28.2, "US$MM")), library=None).traced
+    assert audit_deck(deck, _placed(("EBITDA margin", 28.2, "%")), library=None).traced
+    # Same number, but the record is a dollar figure — not the same claim, and the
+    # placement does not rescue it.
+    assert not audit_deck(deck, _placed(("Revenue", 28.2, "US$MM")), library=None).traced
 
 
-def test_a_percent_record_stored_as_a_fraction_still_matches(tmp_path: Path):
+def test_a_percent_record_stored_as_a_fraction_still_agrees(tmp_path: Path):
     deck = _deck_with(tmp_path, "Margin of 28.2%")
-    assert audit_deck(deck, _ledger(("EBITDA margin", 0.282, "%")), library=None).traced
+    assert audit_deck(deck, _placed(("EBITDA margin", 0.282, "%")), library=None).traced
 
 
 def test_a_record_holding_an_excel_formula_cannot_be_auto_matched(tmp_path: Path):
@@ -215,7 +260,7 @@ def test_a_record_holding_an_excel_formula_cannot_be_auto_matched(tmp_path: Path
     # cell; openpyxl never evaluates it, so there is no number to compare. The
     # figure lands in the untraced list for a reviewer, not silently in traced.
     deck = _deck_with(tmp_path, "Combined balances of US$9,800.0MM")
-    audit = audit_deck(deck, _ledger(("Combined balances", "=9000+800", "US$MM")), library=None)
+    audit = audit_deck(deck, _placed(("Combined balances", "=9000+800", "US$MM")), library=None)
     assert audit.untraced and not audit.traced
 
 
@@ -224,6 +269,74 @@ def test_audit_needs_no_renderer():
     # LibreOffice, so a missing renderer degrades the evidence, not the audit.
     audit = audit_deck(_PITCH, ProvenanceLedger())
     assert audit.matches and audit.untraced == audit.matches
+
+
+# ─── A value match is never reported as traced ───────────────────────────────
+#
+# The observed case, kept as the fixture: on a real pitch run the executive
+# summary's ARR of US$4,190.5MM matched the `financial-summary` record for FY2024
+# gross profit, 4,191.0 — 0.5 apart, inside the tolerance a derived figure's own
+# rounding needs (0.1% of 4,190.5 is 4.19). Four of that run's twelve "traced"
+# joins were coincidences like it, and the report printed them as provenance.
+
+_ARR_ON_THE_SLIDE = "ARR of US$4,190.5MM, 81% of revenue"
+_GROSS_PROFIT_RECORD = ("Gross Profit FY2024", 4191.0, "US$MM")
+
+
+def test_the_arr_gross_profit_collision_is_a_value_match_not_a_trace(tmp_path: Path):
+    deck = _deck_with(tmp_path, _ARR_ON_THE_SLIDE)
+    audit = audit_deck(deck, _ledger(_GROSS_PROFIT_RECORD), library=None)
+
+    arr = next(m for m in audit.matches if "4,190.5" in m.figure.raw)
+    assert arr.matched, "the values do agree — that is what makes the coincidence possible"
+    assert arr.kind == MATCH_VALUE
+    assert not arr.traced
+    assert audit.traced == [], "nothing on this deck is traced"
+    assert audit.value_matched == [arr]
+
+
+def test_the_agenda_labels_a_value_match_and_keeps_it_out_of_traced(tmp_path: Path):
+    deck = _deck_with(tmp_path, _ARR_ON_THE_SLIDE)
+    agenda = render_agenda(audit_deck(deck, _ledger(_GROSS_PROFIT_RECORD), library=None))
+
+    assert "### Value matches — 1 (NOT traced)" in agenda
+    assert "### Traced figures — 0" in agenda
+    # The row itself has to say so: a reader skimming rows never reaches the
+    # heading's caveat.
+    row = next(line for line in agenda.splitlines() if "`US$4,190.5MM`" in line)
+    assert "**value match only**" in row
+    assert "no placement recorded" in row
+
+
+def test_a_value_match_reports_how_many_records_share_the_number(tmp_path: Path):
+    # Two records with the same value make the value join arbitrary; printing the
+    # first one silently is how a coincidence becomes a citation.
+    deck = _deck_with(tmp_path, _ARR_ON_THE_SLIDE)
+    ledger = _ledger(_GROSS_PROFIT_RECORD, ("Deferred revenue FY2024", 4190.7, "US$MM"))
+    agenda = render_agenda(audit_deck(deck, ledger, library=None))
+    assert "2 records share this value" in agenda
+
+
+def test_the_same_figure_traces_once_the_content_stage_names_where_it_lands(tmp_path: Path):
+    # The fix on the recording side: pitch-content names the slide and the typed
+    # PitchDeckContent field, and the ARR figure joins by identity — while the
+    # gross-profit record in the same ledger stays a value match candidate.
+    deck = _deck_with(tmp_path, _ARR_ON_THE_SLIDE)
+    ledger = _ledger(_GROSS_PROFIT_RECORD)
+    ledger.record(
+        "ARR",
+        sources=FigureSource(filing="Q1 2026 10-Q", statement="MD&A — key metrics", page=7),
+        value=4190.5,
+        units="US$MM",
+        location=None,
+        placement=DeckPlacement(slide=1, field="executive_summary_bullets[0]"),
+    )
+    audit = audit_deck(deck, ledger, library=None)
+
+    arr = next(m for m in audit.matches if "4,190.5" in m.figure.raw)
+    assert arr.kind == MATCH_IDENTITY
+    assert arr.record.figure == "ARR"
+    assert "Q1 2026 10-Q" in render_agenda(audit)
 
 
 # ─── Findings are advisory, by construction ──────────────────────────────────
@@ -275,10 +388,74 @@ def test_the_agenda_names_untraced_figures_and_their_slides(tmp_path: Path):
 
 def test_the_agenda_shows_a_traced_figure_with_its_citation(tmp_path: Path):
     deck = _deck_with(tmp_path, "Revenue of US$589.8MM")
-    agenda = render_agenda(audit_deck(deck, _ledger(("Revenue FY2025", 589.8, "US$MM")),
-                                     library=None))
+    ledger = ProvenanceLedger(stage="financial-summary")
+    ledger.record("Revenue FY2025", sources=_SRC, value=589.8, units="US$MM",
+                  location="financial-summary!B6", placement=DeckPlacement(slide=1))
+    agenda = render_agenda(audit_deck(deck, ledger, library=None))
+    assert "### Traced figures — 1" in agenda
     assert "FY2025 10-K, Consolidated Statements of Operations" in agenda
     assert "financial-summary!B6" in agenda
+
+
+def test_the_agenda_follows_a_derived_figure_to_the_filings_underneath(tmp_path: Path):
+    # The LTM tile on a deck is a bridge total: its own record has no source, and
+    # before the refs existed the agenda printed the derivation sentence, which a
+    # reviewer could not tell apart from "unsourced".
+    deck = _deck_with(tmp_path, "LTM Adj. EBITDA of US$1,840.4MM")
+    ledger = ProvenanceLedger(stage="ltm-metrics")
+    ledger.record("LTM Adj. EBITDA — FY2025 Adj. EBITDA", sources=_SRC, value=1700.0,
+                  units="US$MM", location="ltm-metrics!B30")
+    ledger.record(
+        "LTM Adj. EBITDA",
+        value=1840.4,
+        units="US$MM",
+        location="ltm-metrics!B33",
+        derivation="FY2025 + Q1 2026 YTD − Q1 2025 YTD",
+        derived_from=[FigureRef(location="ltm-metrics!B30")],
+        placement=DeckPlacement(slide=1),
+    )
+    agenda = render_agenda(audit_deck(deck, ledger, library=None))
+
+    assert "LTM Adj. EBITDA — FY2025 Adj. EBITDA" in agenda, "the component is named"
+    assert "FY2025 10-K, Consolidated Statements of Operations" in agenda, "and its filing"
+
+
+def test_the_agenda_flags_a_derivation_whose_component_has_no_record(tmp_path: Path):
+    deck = _deck_with(tmp_path, "LTM Adj. EBITDA of US$1,840.4MM")
+    ledger = ProvenanceLedger(stage="ltm-metrics")
+    ledger.record(
+        "LTM Adj. EBITDA",
+        value=1840.4,
+        units="US$MM",
+        derivation="FY2025 + Q1 2026 YTD − Q1 2025 YTD",
+        derived_from=[FigureRef(location="ltm-metrics!B30", figure="FY2025 Adj. EBITDA")],
+        placement=DeckPlacement(slide=1),
+    )
+    agenda = render_agenda(audit_deck(deck, ledger, library=None))
+    assert "UNRESOLVABLE: ltm-metrics!B30" in agenda
+
+
+def test_the_agenda_lists_records_no_text_figure_reached(tmp_path: Path):
+    # The cap table is a rasterised picture, so Enterprise Value can only reach a
+    # reviewer through this list — it is the whole path from the biggest number on
+    # the overview slide to a filing page.
+    deck = _deck_with(tmp_path, "Revenue of US$589.8MM")
+    ledger = ProvenanceLedger(stage="captable")
+    ledger.record("Total Debt", sources=_SRC, value=4200.0, units="C$MM",
+                  location="captable!F122")
+    ledger.record(
+        "Enterprise Value",
+        value="=F22+F28+F29+F30",
+        location="captable!F31",
+        derivation="cap-table formula =F22+F28+F29+F30",
+        derived_from=[FigureRef(location="captable!F122", figure="Total Debt")],
+    )
+    agenda = render_agenda(audit_deck(deck, ledger, library=None))
+
+    assert "#### Records no text figure joined to — 2" in agenda
+    row = next(line for line in agenda.splitlines() if line.startswith("| Enterprise Value "))
+    assert "captable!F31" in row
+    assert "Total Debt" in row and "FY2025 10-K" in row
 
 
 def test_the_report_leads_with_the_verdicts_then_the_agenda(tmp_path: Path):

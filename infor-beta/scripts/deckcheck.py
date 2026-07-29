@@ -10,9 +10,16 @@ The split of labour is the same one Phase B settled on, for the same reason.
 
 **Mechanical, here.** Pull every figure out of the deck's text shapes and table
 cells, normalise it, and join it to the run's provenance ledger
-(`provenance.read_run_provenance`). That produces an *agenda*: figures that trace
-to a record (verify the record), figures that trace to nothing (find a source or
+(`provenance.read_run_provenance`). That produces an *agenda*: figures a record
+**claims** (verify the record), figures that merely share a number with one
+(confirm or reject the lead), figures that trace to nothing (find a source or
 report there isn't one), and rasterised pictures no string scan can read at all.
+
+The join is on **identity**, not on value. A record carries a
+`provenance.DeckPlacement` naming the slide and the typed content field it was
+written to; a figure is `traced` when such a record locates it *and* the value
+agrees. A value agreement with no placement behind it is reported as a value match
+and never as traced — see :data:`MATCH_VALUE` for the run that made this necessary.
 
 **Judgement, in the SKILL.md.** Whether the cited page actually says 4,520.3,
 whether the period label matches the statement it came from, whether a bridge's
@@ -383,16 +390,73 @@ def _agrees(figure: DeckFigure, record: FigureProvenance) -> bool:
     return any(abs(target - candidate) <= tolerance for candidate in _candidate_values(figure, record))
 
 
+#: How a deck figure was joined to a record. The distinction is the whole point:
+#:
+#: - ``identity`` — a record whose :class:`provenance.DeckPlacement` says it lands
+#:   *here* (this slide, or this shape), and whose value agrees. This is provenance.
+#: - ``value`` — a record whose value agrees and which claims no such placement.
+#:   This is a **lead**. A ledger joined on value alone is a coincidence generator:
+#:   on a real run the executive summary's ARR of 4,190.5 matched the FY2024 gross
+#:   profit record of 4,191.0 (0.01% apart, inside the tolerance a derived figure
+#:   needs) and the report printed it as traced. Four of twelve "traced" joins were
+#:   that. A gap reported as a gap costs a reviewer one lookup; a coincidence
+#:   reported as provenance costs them the finding.
+MATCH_IDENTITY = "identity"
+MATCH_VALUE = "value"
+
+
+def _shape_key(name: str | None) -> str:
+    return " ".join(str(name or "").split()).casefold()
+
+
+def _identifies(figure: DeckFigure, record: FigureProvenance) -> bool:
+    """Whether a record's placement says it lands where this figure is.
+
+    A placement must locate the figure to count: it names the slide (1-based, as
+    PowerPoint does) or the shape, and every field it *does* name must agree. A
+    field-only placement — a typed content field with no slide resolved from the
+    slide plan — cannot locate anything on its own, so it does not identify;
+    resolve the slide from the plan and it does.
+    """
+    placement = record.placement
+    if placement is None:
+        return False
+    slide_hit = placement.slide is not None and placement.slide == figure.slide + 1
+    shape_hit = bool(placement.shape) and _shape_key(placement.shape) == _shape_key(figure.shape)
+    if placement.slide is not None and not slide_hit:
+        return False
+    if placement.shape and not shape_hit:
+        return False
+    return slide_hit or shape_hit
+
+
 @dataclass(frozen=True)
 class FigureMatch:
-    """One deck figure and the provenance record that supports it, if any."""
+    """One deck figure, the record that supports it, and **how** they were joined.
+
+    ``kind`` is :data:`MATCH_IDENTITY`, :data:`MATCH_VALUE` or None. ``candidates``
+    are every record whose value agrees — more than one means the value alone
+    cannot pick a record, which a report must say rather than showing the first.
+    """
 
     figure: DeckFigure
     record: FigureProvenance | None = None
+    kind: str | None = None
+    candidates: tuple[FigureProvenance, ...] = ()
+
+    @property
+    def matched(self) -> bool:
+        """Whether any record was found, by identity or by value."""
+        return self.record is not None
 
     @property
     def traced(self) -> bool:
-        return self.record is not None
+        """Whether a record CLAIMS this figure — placement, not a numeric agreement."""
+        return self.kind == MATCH_IDENTITY
+
+    @property
+    def value_matched(self) -> bool:
+        return self.kind == MATCH_VALUE
 
 
 @dataclass
@@ -406,15 +470,34 @@ class DeckAudit:
 
     @property
     def traced(self) -> list[FigureMatch]:
+        """Figures a record claims by placement — the only ones "traced" means."""
         return [m for m in self.matches if m.traced]
 
     @property
+    def value_matched(self) -> list[FigureMatch]:
+        """Figures whose value agrees with a record that does not claim them."""
+        return [m for m in self.matches if m.value_matched]
+
+    @property
     def untraced(self) -> list[FigureMatch]:
-        return [m for m in self.matches if not m.traced]
+        """Figures no record supports at all."""
+        return [m for m in self.matches if not m.matched]
 
     @property
     def slides(self) -> tuple[int, ...]:
         return tuple(sorted({m.figure.slide for m in self.matches}))
+
+    def unjoined_records(self) -> list[FigureProvenance]:
+        """Records this run holds that no deck *text* figure joined to.
+
+        Not a defect list: most of them are the rasterised pictures' figures — the
+        cap-table range on the overview slide is a picture, so the biggest number
+        on that slide (Enterprise Value) can only ever reach a reviewer this way.
+        They are printed beside the picture list so the reviewer reading a crop has
+        the run's records for it instead of a blank page.
+        """
+        joined = {id(m.record) for m in self.matches if m.record is not None}
+        return [entry for entry in self.ledger.figures if id(entry) not in joined]
 
 
 def audit_deck(
@@ -425,17 +508,28 @@ def audit_deck(
 ) -> DeckAudit:
     """Join every figure on the deck to the run's provenance ledger.
 
-    Purely deterministic and rendering-free — no LibreOffice, no model. A figure
-    is `traced` when some record's value agrees with it within the tolerance its
-    own rendering implies; the reviewer still has to read the record's filing,
-    because agreeing with a record only means the deck copied the workbook
-    faithfully, not that the workbook is right.
+    Purely deterministic and rendering-free — no LibreOffice, no model. A figure is
+    joined **by identity** when a record's placement says it lands there and its
+    value agrees; failing that, by **value** alone, which is reported as a value
+    match and never as traced. The reviewer still has to read the record's filing
+    either way, because agreeing with a record only means the deck copied the
+    workbook faithfully, not that the workbook is right.
     """
     figures = extract_deck_figures(deck, library=library)
-    matches = [
-        FigureMatch(figure, next((r for r in ledger.figures if _agrees(figure, r)), None))
-        for figure in figures
-    ]
+    matches: list[FigureMatch] = []
+    for figure in figures:
+        candidates = tuple(r for r in ledger.figures if _agrees(figure, r))
+        placed = next((r for r in candidates if _identifies(figure, r)), None)
+        if placed is not None:
+            matches.append(
+                FigureMatch(figure, placed, kind=MATCH_IDENTITY, candidates=candidates)
+            )
+        elif candidates:
+            matches.append(
+                FigureMatch(figure, candidates[0], kind=MATCH_VALUE, candidates=candidates)
+            )
+        else:
+            matches.append(FigureMatch(figure))
     return DeckAudit(
         deck=Path(deck),
         matches=matches,
@@ -506,33 +600,70 @@ class CheckFinding:
         return self.slide + 1
 
 
-def _figure_row(match: FigureMatch) -> str:
+def _source_cell(record: FigureProvenance, ledger: ProvenanceLedger) -> str:
+    """What supports one record: its own citations, else its derivation, followed.
+
+    A derived record's citations are its components' — so the chain is walked
+    (`ProvenanceLedger.trace`) rather than printed as the sentence it used to be.
+    A ref that resolves to nothing says so: eleven of a real run's seventy records
+    were derivation-only, and "derived from an upstream record" and "unsourced"
+    printed identically, which is the reading this column now refuses to give.
+    """
+    citations = "; ".join(record.citation_lines)
+    if not record.derived:
+        return citations or "—"
+    trace = ledger.trace(record)
+    followed = trace.render()
+    return f"{citations} — {followed}" if citations else followed
+
+
+def _figure_row(match: FigureMatch, ledger: ProvenanceLedger) -> str:
     figure = match.figure
     record = match.record
     where = f"{figure.slide + 1}"
     if record is None:
         return f"| {where} | `{figure.raw}` | {figure.shape} | — | {figure.context} |"
-    citation = "; ".join(record.citation_lines) or (record.derivation or "—")
-    return (
-        f"| {where} | `{figure.raw}` | {figure.shape} | {record.figure}"
-        f"{f' ({record.location})' if record.location else ''} | {citation} |"
-    )
+    named = record.figure + (f" ({record.location})" if record.location else "")
+    if match.value_matched:
+        # Say what the record claims instead, and how many records share the value:
+        # both are why this is a lead rather than provenance.
+        claim = (
+            f"placed at {record.placement.render()}"
+            if record.placement is not None
+            else "no placement recorded"
+        )
+        rival = f"; {len(match.candidates)} records share this value" if len(match.candidates) > 1 else ""
+        return (
+            f"| {where} | `{figure.raw}` | {figure.shape} | {named} | "
+            f"**value match only** — {claim}{rival}. {_source_cell(record, ledger)} |"
+        )
+    return f"| {where} | `{figure.raw}` | {figure.shape} | {named} | {_source_cell(record, ledger)} |"
+
+
+#: Records printed under the pictures section before the list is cut short. A
+#: reviewer reads a page of candidates, not a ledger dump — and the cut is stated
+#: rather than silent, because a truncated list that looks complete is how a
+#: review concludes a figure has no record when it has one.
+_UNJOINED_RECORD_LIMIT = 40
 
 
 def render_agenda(audit: DeckAudit) -> str:
     """The machine half of the report: what to check, and what not to report.
 
     Written for a reader (the checkpoint agent, or the analyst) rather than for a
-    parser. The untraced figures come first because they are where the work is.
+    parser. The untraced figures come first because they are where the work is, and
+    the value-only matches come second because they *look* like work already done.
     """
+    ledger = audit.ledger
     lines = [
         "## Agenda",
         "",
         f"- Deck: `{audit.deck}`",
         f"- Figures found: {len(audit.matches)} across {len(audit.slides)} slide(s)",
-        f"- Provenance records: {len(audit.ledger)}"
-        + (f" from stage(s) {', '.join(audit.ledger.stages)}" if audit.ledger.stages else ""),
-        f"- Traced to a record: {len(audit.traced)}; untraced: {len(audit.untraced)}",
+        f"- Provenance records: {len(ledger)}"
+        + (f" from stage(s) {', '.join(ledger.stages)}" if ledger.stages else ""),
+        f"- Traced by identity: {len(audit.traced)}; value match only: "
+        f"{len(audit.value_matched)}; untraced: {len(audit.untraced)}",
         f"- Rasterised pictures (no string scan reaches these): {len(audit.pictures)}",
         "",
     ]
@@ -548,7 +679,25 @@ def render_agenda(audit: DeckAudit) -> str:
     ]
     if audit.untraced:
         lines += ["| Slide | Figure | Shape | Record | Source |", "|---|---|---|---|---|"]
-        lines += [_figure_row(m) for m in audit.untraced]
+        lines += [_figure_row(m, ledger) for m in audit.untraced]
+    else:
+        lines.append("(none)")
+    lines.append("")
+
+    lines += [
+        f"### Value matches — {len(audit.value_matched)} (NOT traced)",
+        "",
+        "A record holds the same number, but nothing says that record is *this* figure:",
+        "it records no placement, or records one somewhere else. Treat each as a lead to",
+        "confirm or reject, never as provenance — two unrelated figures agreeing to four",
+        "significant figures is common on one deck (ARR 4,190.5 against FY2024 gross",
+        "profit 4,191.0, on a real run). If the record IS the figure, the recording stage",
+        "should be naming where it lands.",
+        "",
+    ]
+    if audit.value_matched:
+        lines += ["| Slide | Figure | Shape | Record | Why this is a lead |", "|---|---|---|---|---|"]
+        lines += [_figure_row(m, ledger) for m in audit.value_matched]
     else:
         lines.append("(none)")
     lines.append("")
@@ -556,14 +705,16 @@ def render_agenda(audit: DeckAudit) -> str:
     lines += [
         f"### Traced figures — {len(audit.traced)}",
         "",
-        "A record's value agrees with what the slide shows. That proves the deck copied",
-        "the workbook faithfully — NOT that the workbook is right. Open each record's",
-        "filing at the statement and page it names, and try to disprove the figure.",
+        "A record claims this figure — it names the slide (and, where known, the shape)",
+        "it was written to — and its value agrees. That proves the deck carries what the",
+        "run recorded; it does NOT prove the record is right. Open each record's filing at",
+        "the statement and page it names, and try to disprove the figure. For a derived",
+        "figure, the chain is followed for you: check the components, not just the total.",
         "",
     ]
     if audit.traced:
         lines += ["| Slide | Figure | Shape | Record | Source |", "|---|---|---|---|---|"]
-        lines += [_figure_row(m) for m in audit.traced]
+        lines += [_figure_row(m, ledger) for m in audit.traced]
     else:
         lines.append("(none)")
     lines.append("")
@@ -580,7 +731,34 @@ def render_agenda(audit: DeckAudit) -> str:
         if audit.pictures
         else ["(none)"]
     )
-    lines += ["", expected_error_note(), ""]
+    lines.append("")
+
+    unjoined = audit.unjoined_records()
+    if unjoined:
+        shown = unjoined[:_UNJOINED_RECORD_LIMIT]
+        lines += [
+            f"#### Records no text figure joined to — {len(unjoined)}",
+            "",
+            "Mostly the pictures' figures: a pasted range is rasterised, so its numbers —",
+            "the cap table's Enterprise Value among them — reach a reviewer only here.",
+            "Match them against the crops above.",
+            "",
+            "| Record | Location | Source |",
+            "|---|---|---|",
+        ]
+        lines += [
+            f"| {entry.figure} | {entry.location or '—'} | {_source_cell(entry, ledger)} |"
+            for entry in shown
+        ]
+        if len(unjoined) > len(shown):
+            lines += [
+                "",
+                f"({len(unjoined) - len(shown)} further records not shown — the full set is "
+                f"the run's `provenance.json`.)",
+            ]
+        lines.append("")
+
+    lines += [expected_error_note(), ""]
     return "\n".join(lines)
 
 
@@ -603,8 +781,8 @@ def render_report(
         "",
         f"- Deck: `{audit.deck}`",
         f"- Provenance record: `{provenance_path}`" if provenance_path else "- Provenance record: (not written)",
-        f"- Figures checked: {len(audit.matches)} ({len(audit.traced)} traced, "
-        f"{len(audit.untraced)} untraced)",
+        f"- Figures checked: {len(audit.matches)} ({len(audit.traced)} traced by identity, "
+        f"{len(audit.value_matched)} value match only, {len(audit.untraced)} untraced)",
         "- Verdicts: "
         + ", ".join(f"{len(by_verdict[v])} {v}" for v in VERDICTS),
         "",

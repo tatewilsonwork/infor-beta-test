@@ -130,6 +130,93 @@ def test_contributor_brief_stage_lists_match_the_repo():
     )
 
 
+# ─── The provenance obligation ───────────────────────────────────────────────
+#
+# Asserted across the stage list rather than file by file, because the failure it
+# is here to stop is a stage being ADDED without one. A run's provenance.json held
+# 70 records from three stages — `captable`, `financial-summary`, `ltm-metrics` —
+# and zero from `content`, `comps`, `precedents` and `ownership`, which is exactly
+# the set whose SKILL.md never mentioned provenance. The obligation existed only
+# where it was written down, so the writing-down is what gets checked.
+
+#: What declaring the obligation means, concretely. Each token is load-bearing:
+#: the heading (so a reader finds it), the record type (a citation string is not a
+#: source), the ledger (the stage's own), and the write target (`io.stage_dir` — a
+#: shared file would be a read-modify-write race between concurrent wave-mates).
+_PROVENANCE_TOKENS = (
+    "Provenance — REQUIRED",
+    "provenance.FigureSource",
+    "ProvenanceLedger",
+    "ledger.write(io.stage_dir)",
+)
+
+#: The two `skills/` directories that record no figures, each for a stated reason.
+#: Anything else — including a stage added tomorrow — is in by default.
+_NOT_RECORDING_STAGES = {
+    "conductor": "the meta-skill that dispatches stages; it is not a stage",
+    "deckcheck": "consumes the merged ledger and writes the run record; records no figures",
+}
+
+
+def _skill_docs() -> dict[str, str]:
+    return {
+        path.parent.name: path.read_text(encoding="utf-8")
+        for path in (PLUGIN_ROOT / "skills").glob("*/SKILL.md")
+    }
+
+
+def test_every_data_producing_stage_declares_the_provenance_obligation():
+    docs = _skill_docs()
+    unknown = set(_NOT_RECORDING_STAGES) - set(docs)
+    assert not unknown, f"the exemption list names skills that do not exist: {sorted(unknown)}"
+
+    missing = {
+        name: [token for token in _PROVENANCE_TOKENS if token not in text]
+        for name, text in sorted(docs.items())
+        if name not in _NOT_RECORDING_STAGES
+    }
+    missing = {name: tokens for name, tokens in missing.items() if tokens}
+    assert not missing, (
+        f"stage(s) whose SKILL.md does not declare the provenance obligation: {missing}. "
+        f"Every figure a stage writes carries a FigureSource recorded in the stage's own "
+        f"ProvenanceLedger and written to io.stage_dir. Mirror the wording in "
+        f"financial-summary / ltm-metrics rather than inventing a second dialect — or, if "
+        f"the stage genuinely records nothing, add it to _NOT_RECORDING_STAGES with the "
+        f"reason."
+    )
+    assert len(missing) == 0 and len(docs) - len(_NOT_RECORDING_STAGES) >= 8, (
+        "the obligation is asserted over fewer stages than the repo has — check the glob"
+    )
+
+
+def test_the_stage_that_consumes_the_ledger_declares_the_merge_instead():
+    # `deckcheck` is exempt from recording, not from provenance: it is the stage that
+    # merges every fragment into <run_dir>/provenance.json, and an exemption with
+    # nothing behind it would quietly let that obligation go too.
+    doc = _skill_docs()["deckcheck"]
+    for token in ("write_run_provenance(io.run_dir)", "read_run_provenance(io.run_dir)"):
+        assert token in doc, f"deckcheck's SKILL.md no longer declares {token}"
+
+
+def test_no_stage_doc_writes_provenance_to_a_shared_file():
+    # The race the fragments exist to prevent. A doc that told a sub-agent to write
+    # the run-level record would be telling two concurrent wave-mates to overwrite
+    # each other, and the loser's figures would simply be absent.
+    offenders = {
+        name: [
+            line.strip()
+            for line in text.splitlines()
+            if ".write(io.run_dir" in line or "write_run_provenance" in line
+        ]
+        for name, text in _skill_docs().items()
+        if name != "deckcheck"  # the one stage whose job IS the merge
+    }
+    offenders = {name: lines for name, lines in offenders.items() if lines}
+    assert not offenders, (
+        f"stage doc(s) writing provenance outside their own stage directory: {offenders}"
+    )
+
+
 # ─── The COM boundary ────────────────────────────────────────────────────────
 
 _COM_TOKENS = ("win32com", "pythoncom", "DispatchEx", "EnsureDispatch")

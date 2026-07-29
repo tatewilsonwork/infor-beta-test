@@ -75,6 +75,71 @@ uses `\1`, not `$1`) and verify the `$` survived.
 
 Use the company filings, MD&A / press release, earnings call transcript if provided, and the Bloomberg EEO snip path supplied in stage inputs. If a required data point is not recoverable from the provided sources, ask the analyst rather than inventing it.
 
+## Provenance — REQUIRED, and structured
+
+**Every figure you write into the bundle carries a record**, on the same contract as
+`financial-summary` and `ltm-metrics`. This deck is almost entirely figures you drafted — the four
+KPI tiles, the five broker rows, the performance summary, every dollar figure in the overview and
+business-update bullets — so a bundle with no records leaves the whole deck untraceable no matter
+how well the workbook stages did their half.
+
+Build a `provenance.FigureSource` per figure (the **filing**, the **statement/section**, the
+**page**; or the Bloomberg EEO snip as the filing for a broker estimate), record it in this stage's
+`ProvenanceLedger`, and write the fragment with `ledger.write(io.stage_dir)` — never a shared file,
+because wave-mates run concurrently and a shared ledger is a read-modify-write race. A **citation
+string is rejected**: it produces a record with the whole sentence in `filing` and no statement or
+page, which reads like provenance and cannot be followed. The `sources` list on
+`EarningsUpdateContent` is the *analyst-facing* note on the slide and is not a substitute — it is
+prose, and nothing can join it to a figure.
+
+**Name where the figure lands.** `deckcheck` joins by identity, not by value, so each record carries
+a `placement` naming the slide (1-based) and the bundle field. Resolve the slide from the
+`slide_plan_path` you were handed via `wireframe_common.slide_placement` rather than writing a number
+down. A **variance** row is derived, not read: give it a `derivation` **and** `derived_from` refs to
+the reported and estimate records it is the difference of, so the chain can be followed rather than
+re-read.
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
+
+from stage_io import stage_io
+from provenance import FigureRef, FigureSource, ProvenanceLedger
+from wireframe_common import load_slide_plan, slide_placement
+
+io = stage_io()
+plan = load_slide_plan(io.inputs["slide_plan_path"])
+ledger = ProvenanceLedger(stage=io.stage_id)   # this stage runs as the plan's `content` stage
+
+# FORMAT ILLUSTRATION ONLY — obviously-synthetic placeholders; never reuse as data.
+reported = ledger.record(
+    "Total revenue — reported",
+    sources=FigureSource(filing="Q1 2026 press release", statement="Consolidated results", page=9),
+    value=999.9, units="US$MM",
+    placement=slide_placement(plan, "earnings-update-earnings-summary", "broker_rows[0].reported"),
+)
+estimate = ledger.record(
+    "Total revenue — Bloomberg estimate",
+    sources=FigureSource(filing="Bloomberg EEO snip", statement="consensus, revenue"),
+    value=999.9, units="US$MM",
+    placement=slide_placement(plan, "earnings-update-earnings-summary", "broker_rows[0].estimate"),
+)
+ledger.record(
+    "Total revenue — variance",
+    value=0.0, units="US$MM",
+    derivation="reported − Bloomberg estimate",
+    derived_from=[FigureRef(figure=reported.figure), FigureRef(figure=estimate.figure)],
+    placement=slide_placement(plan, "earnings-update-earnings-summary", "broker_rows[0].variance"),
+)
+
+ledger.write(io.stage_dir)   # this stage's fragment; `deckcheck` merges every stage's
+```
+
+Use the `library_entry_id` values from the slide plan you were given — `slide_placement` raises
+naming the ids it does hold if you guess one the plan does not carry.
+
 ## Boundary
 
 Do not assemble the deck, do not open PowerPoint, and do not produce the companion cap table. Those are separate conductor stages — and the deck stage is not a skill you could call in any case: the conductor assembles it in-process.

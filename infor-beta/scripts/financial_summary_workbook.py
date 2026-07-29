@@ -51,7 +51,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from comment_citations import cite_cell
 from deal_workbook import TAB_FINANCIAL_SUMMARY, TAB_LTM_METRICS, TabSpec, write_tab
-from provenance import FigureSource, ProvenanceError, ProvenanceLedger
+from provenance import FigureRef, FigureSource, ProvenanceError, ProvenanceLedger
 
 # No template_layout anchors here: this workbook is authored from scratch (no
 # shipped template to shift), and the chart step re-derives its geometry by
@@ -392,6 +392,9 @@ def _fill_financial_summary_tab(
                 # A flow metric's LTM cell is a link: its provenance is the
                 # `ltm-metrics` bridge it points at, whose components carry the
                 # filing records. Record the chain, not a source it does not have.
+                # The ref is by figure NAME and carries no stage: the bridge total
+                # lives in another stage's fragment, so it resolves in the run
+                # merge `deckcheck` reads — which is the whole point of the merge.
                 ledger.record(
                     f"{m.label} LTM",
                     value=cell.value,
@@ -401,6 +404,7 @@ def _fill_financial_summary_tab(
                         f"link to the {ltm_sheet_name} tab's "
                         f"'(=) {m.result_label}' bridge total"
                     ),
+                    derived_from=[FigureRef(figure=m.result_label)],
                 )
             elif m.ltm_source is not None:
                 cite_cell(
@@ -432,6 +436,7 @@ def _fill_financial_summary_tab(
                     f"total; the LTM column is suppressed because LTM equals the latest "
                     f"fiscal year"
                 ),
+                derived_from=[FigureRef(figure=m.result_label)],
             )
 
         units_cell = ws.cell(row=r, column=units_col, value=m.units)

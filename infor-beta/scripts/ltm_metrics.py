@@ -32,7 +32,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from comment_citations import cite_cell
 from deal_workbook import TAB_LTM_METRICS, TabSpec, write_tab
-from provenance import FigureSource, ProvenanceError, ProvenanceLedger
+from provenance import FigureRef, FigureSource, ProvenanceError, ProvenanceLedger
 
 # No template_layout anchors here: this tab is authored from scratch (no shipped
 # template to shift), and every downstream reader locates its blocks by label,
@@ -263,7 +263,10 @@ def _write_bridge(
     # The bridge total is DERIVED: its provenance is the components above, each of
     # which carries its own filing record. This is the row the deck's LTM tile and
     # the financial-summary tab's LTM link both read, so it is the join point
-    # `deckcheck` walks from a figure on a slide back to a filing page.
+    # `deckcheck` walks from a figure on a slide back to a filing page — which is
+    # why the components are named as REFS as well as in the prose. A component
+    # that skipped its source has no record, so its ref resolves to nothing and the
+    # gap is reported; the prose still names it either way.
     ledger.record(
         result_label,
         value=bridge_total(components),
@@ -272,6 +275,10 @@ def _write_bridge(
         derivation=" ".join(
             f"{'−' if comp.subtract else '+'} {comp.name}" for comp in components
         ).lstrip("+ "),
+        derived_from=[
+            FigureRef(figure=f"{result_label} — {comp.name}", location=_ref(ws.cell(row=r, column=2)))
+            for r, comp in zip(range(first_data, last_data + 1), components)
+        ],
     )
 
     return result_row + 1
@@ -428,13 +435,21 @@ def _fill_ltm_metrics_tab(
         ws.cell(row=total_row, column=col).border = _BORDER
 
     # Derived: the overview total is the sum of the segments above, each of which
-    # carries its own filing record.
+    # carries its own filing record — named as refs so the sum can be walked, not
+    # just read.
     ledger.record(
         "LTM Revenue by segment — Total",
         value=sum(seg.ltm_revenue for seg in rows),
         units=currency,
         location=_ref(tv),
         derivation=f"sum of the {len(rows)} segment rows above ({segmentation_basis})",
+        derived_from=[
+            FigureRef(
+                figure=f"LTM Revenue — {seg.name}",
+                location=_ref(ws.cell(row=first_data + i, column=2)),
+            )
+            for i, seg in enumerate(rows)
+        ],
     )
 
     # --- Bridges, each preceded by a blank spacer row ---

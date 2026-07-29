@@ -30,14 +30,30 @@ provenance ledger. It needs no renderer and makes no judgement.
 
 What it cannot do is read a filing. That is the whole job:
 
-- A **traced** figure agrees with a provenance record. That proves the deck copied the
-  workbook faithfully — **not** that the workbook is right. Open the record's filing at
-  the statement and page it names and check the number, the period, and the units.
+- A **traced** figure is one a record *claims*: the record names the slide (and, where the
+  recorder knew it, the shape) it was written to, and its value agrees. That proves the deck
+  carries what the run recorded — **not** that the record is right. Open its filing at the
+  statement and page it names and check the number, the period, and the units.
+- A **value match** is a figure whose number agrees with a record that does **not** say it
+  lands there. It is a **lead, not provenance**, and you must report it as one. Two
+  unrelated figures agreeing to four significant figures happens on every deck: ARR of
+  4,190.5MM on the executive summary matched a FY2024 gross-profit record of 4,191.0MM on a
+  real run, and the report printed it as traced. Confirm the lead against the source or
+  reject it — and if the record really is that figure, say in your summary that the
+  recording stage should be naming where it lands.
 - An **untraced** figure has no record at all. Find its source or report that there is
   none. Analyst-supplied figures (a valuation range, a market size from the CIM)
   legitimately land here — say where they came from rather than calling them unsupported.
 - A **rasterised picture** (the cap-table paste, a rendered chart) is invisible to any
-  string scan. Read the native-resolution crop, not the slide render.
+  string scan. Read the native-resolution crop, not the slide render. The agenda lists the
+  run's records that no text figure joined to underneath the picture list — that is where
+  the cap table's Enterprise Value and its whole derivation chain are, so join those by
+  hand against the crop.
+- A **derived** figure's chain is followed for you. The agenda prints what each derivation
+  resolved to and flags any component ref that resolves to nothing as `UNRESOLVABLE` — a
+  stage claiming a figure was built from something that has no record. Check the components,
+  not just the total, and report an unresolvable chain as `unsupported` rather than assuming
+  the total is fine.
 
 ## Not defects — do not report these
 
@@ -161,7 +177,10 @@ except RuntimeError as exc:
     print(f"NO RENDER — say the visual half could not run: {exc}")
 
 print(f"provenance: {provenance_path}\nagenda: {agenda}")
-print(f"figures: {len(audit.matches)} ({len(audit.traced)} traced, {len(audit.untraced)} untraced)")
+print(
+    f"figures: {len(audit.matches)} ({len(audit.traced)} traced by identity, "
+    f"{len(audit.value_matched)} value match only, {len(audit.untraced)} untraced)"
+)
 for index, png in sorted(renders.items()):
     print(f"slide {index + 1}: {png}")
 for index, name, crop in crops:

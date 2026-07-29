@@ -112,6 +112,34 @@ reputable primary sources (deal PR, filings, major financial news) — see the r
 list in the reference. The HQ country of the target goes in **column AI as a 3-letter code**
 (`USA`, `CAN`, `GBR`). Column H is left empty.
 
+### Step 3b — Provenance — REQUIRED, and structured
+
+**Set `retrieved` on every transaction.** The AB–AG hyperlinks you just wrote are the sources, and
+they were only ever an in-artefact hyperlink — nothing outside Excel could follow one, which is why
+a run's provenance ledger held 70 records with `precedents` contributing zero and every multiple on
+the precedents slide untraceable. Pass the stage's `ProvenanceLedger` to the builder and it records
+one figure per value written — the TEV, each $ metric input, each disclosed multiple — building a
+`provenance.FigureSource` from the link column that figure's concept maps to plus the row's
+`retrieved` date:
+
+| Figure | Source link |
+|---|---|
+| `tev` | `tev_link` |
+| `revenue_ltm` / `revenue_ntm`, `ev_revenue_ltm` / `ev_revenue_ntm` | `revenue_link` |
+| `ebitda_ltm` / `ebitda_ntm`, `ev_ebitda_ltm` / `ev_ebitda_ntm` | `ebitda_link` |
+| `net_income_ltm` / `net_income_ntm`, `pe_ltm` / `pe_ntm` | `net_income_link` |
+| `book_value`, `pb` | `book_value_link` |
+| `tangible_book_value`, `ptbv` | `tangible_book_value_link` |
+
+A disclosed multiple whose own metric has no link falls back to `tev_link` — the multiple is quoted
+in the same announcement as the TEV. **A row with no `retrieved` records nothing**: a URL without a
+retrieval date is not a citation (`FigureSource` refuses one), so those figures land in `deckcheck`'s
+untraced list. Use the date you actually read the release, not the announce date.
+
+Write the fragment with `ledger.write(io.stage_dir)` — your **own** stage directory, never a shared
+file, because wave-mates run concurrently and a shared ledger would be a read-modify-write race
+between sub-agents. `deckcheck` merges every stage's fragment into the run's record.
+
 ### Step 4 — Build the workbook
 
 Resolve the template at `<plugin_root>/templates/INFOR Precedents Template.xlsx` **in
@@ -145,9 +173,11 @@ sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
 
 from stage_io import stage_io
 from precedents_workbook import build_precedents_workbook, PrecedentGroup, PrecedentTransaction
+from provenance import ProvenanceLedger
 
 io = stage_io()
 deal_workbook = io.inputs["deal_workbook"]   # the deal's ONE workbook; the `precedents` tab is in it
+ledger = ProvenanceLedger(stage=io.stage_id)   # one record per figure; written at the end
 
 # Operating-family example (Revenue + EBITDA). Pick ONE family for the whole table.
 # FORMAT ILLUSTRATION ONLY — the deals/figures below are obviously-synthetic
@@ -163,6 +193,7 @@ groups = [
             tev_link="https://example.com/press-release",
             ebitda_link="https://example.com/press-release",
             revenue_link="https://example.com/press-release",
+            retrieved="<YYYY-MM-DD>",                         # the date you read those links
         ),
         # Row sourced from disclosed $ figures -> ratio formulas compute on refresh.
         PrecedentTransaction(
@@ -172,6 +203,7 @@ groups = [
             tev_link="https://example.com/press-release",
             revenue_link="https://example.com/filing",
             ebitda_link="https://example.com/filing",
+            retrieved="<YYYY-MM-DD>",
         ),
         # ... up to six per group ...
     ]),
@@ -183,7 +215,12 @@ workbook_path = build_precedents_workbook(
     groups=groups,
     output_currency="USD",                                   # -> C2 (the FX formula keys off it)
     deal_workbook=deal_workbook,
+    provenance=ledger,          # filled in place: one record per figure written
 )
+
+# The stage's provenance fragment, beside its inputs/outputs. `deckcheck` merges
+# every stage's fragment into the run's <run_dir>/provenance.json.
+ledger.write(io.stage_dir)
 
 io.write({"workbook_path": str(workbook_path)})
 ```

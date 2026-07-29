@@ -65,4 +65,81 @@ Optional sources:
 - S&P Capital IQ snippets
 - analyst risk notes
 
+## Provenance — REQUIRED, and structured
+
+**Every figure you write into the bundle carries a record.** You draft the deck's *prose*, and
+the prose is full of numbers: the executive summary's ARR and revenue growth, the overview
+bullets' headcount and market position, every one of the 24 cells in the market-entry targets'
+metric rows. Those were the deck's least traceable figures precisely because this stage recorded
+nothing — a run's ledger held 70 records and not one of them came from here, so `deckcheck` could
+adjudicate 43% of what was on the slides and the executive summary's ARR "traced" to an unrelated
+gross-profit figure that happened to be 0.01% away.
+
+Build a `provenance.FigureSource` for each figure — the **filing**, the **statement/section** and
+the **page** you read it on, or the **url** plus the **date** you read it for a web source — record
+it in this stage's `ProvenanceLedger`, and write the fragment with `ledger.write(io.stage_dir)`
+(never a shared file: wave-mates run concurrently, so a shared ledger is a read-modify-write race).
+A **citation string is rejected**: it builds a record with the whole sentence in `filing` and no
+statement or page, which reads like provenance and cannot be followed.
+
+**Name where the figure lands, or it cannot be traced.** `deckcheck` joins a number on a slide to a
+record by **identity**, not by value — a value agreement alone is reported as a coincidence, which
+is what it usually is. So every record carries a `placement`: the slide (1-based) and the typed
+`PitchDeckContent` field the figure sits in. Resolve the slide **from the slide plan you were
+handed** (`slide_plan_path`) with `wireframe_common.slide_placement` — never write a slide number
+down, because the deck's slide mix is a deck-spec option (one Financial Summary slide or two, one
+market-entry slide or four, Key Investment Highlights present or not).
+
+The field is the bundle path, exactly as it reads in the JSON:
+
+| Figure on the deck | `library_entry_id` | `field` |
+|---|---|---|
+| an executive-summary bullet's figure | `executive-summary` | `executive_summary_bullets[1]` |
+| an overview bullet's figure | `public-company-overview` | `company_overview_bullets[0]` |
+| a highlight quadrant's figure | `key-investment-highlights` | `investment_highlights[2].bullets[0]` |
+| a market-entry cell | `market-entry-targets` | `market_entry_targets[3].cells[10]` |
+
+Market-entry targets are laid out **two per slide**, so a target's `occurrence` is
+`index // 2` — `slide_placement(plan, "market-entry-targets", field, occurrence=i // 2)`.
+
+**A figure you cannot source does not go on the deck.** Analyst-supplied figures (a valuation range,
+a market size the analyst dictated) are legitimate — record them with the analyst notes as the
+filing (`FigureSource(filing="Analyst notes (deal intake)")`) so the review can say where they came
+from instead of calling them unsupported. If a number is recoverable from no source at all, leave it
+out and say so in `manual_steps`.
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
+
+from stage_io import stage_io
+from provenance import FigureSource, ProvenanceLedger
+from wireframe_common import load_slide_plan, slide_placement
+
+io = stage_io()
+plan = load_slide_plan(io.inputs["slide_plan_path"])
+ledger = ProvenanceLedger(stage=io.stage_id)   # the plan's stage id — this stage runs as `content`
+
+# FORMAT ILLUSTRATION ONLY — obviously-synthetic placeholders showing the call
+# shape; NEVER reuse them as data. Every real figure comes from a real source.
+ledger.record(
+    "ARR",
+    sources=FigureSource(filing="Q1 2026 10-Q", statement="MD&A — key metrics", page=99),
+    value=999.9, units="US$MM",
+    placement=slide_placement(plan, "executive-summary", "executive_summary_bullets[0]"),
+)
+ledger.record(
+    "Example Target Inc. — annual originations",
+    sources=FigureSource(url="https://example.com/about", retrieved="<YYYY-MM-DD>"),
+    value=99.9, units="US$MM",
+    # target index 3 -> the second market-entry slide (two targets per slide)
+    placement=slide_placement(plan, "market-entry-targets",
+                              "market_entry_targets[3].cells[10]", occurrence=1),
+)
+
+ledger.write(io.stage_dir)   # this stage's fragment; `deckcheck` merges every stage's
+```
+
 Do not write PowerPoint. Write the bundle to the stage directory and hand back `content_bundle_path` in `outputs.json` — `io.write({"content_bundle_path": ...})`, with the three handoff paths taken from your dispatch envelope as command-line arguments (never environment variables).

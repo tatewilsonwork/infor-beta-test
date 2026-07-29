@@ -153,7 +153,7 @@ from provenance import FigureSource, ProvenanceLedger
 
 from template_layout import NAME_FX_RATE, NAME_SHARE_PRICE, resolve_name_cell
 
-ledger = ProvenanceLedger(stage="captable")
+ledger = ProvenanceLedger(stage=io.stage_id)   # the plan's stage id, from the stage directory
 fx = ws[resolve_name_cell(ws, NAME_FX_RATE)]           # 'F7' as shipped
 price = ws[resolve_name_cell(ws, NAME_SHARE_PRICE)]    # 'F16' as shipped
 
@@ -163,11 +163,12 @@ cite_cell(fx, ledger.record(
 cite_cell(price, ledger.record(
     "Share price", value=price.value, units="<F5 currency>", location="captable!F16",
     sources=FigureSource(url="https://<quote-source-page>", retrieved="<YYYY-MM-DD>")))
-
-# The stage's provenance fragment, beside its inputs/outputs. `deckcheck` merges
-# every stage's fragment into the run's <run_dir>/provenance.json.
-ledger.write(io.stage_dir)
 ```
+
+Keep the **one** ledger for the whole stage and write it **once**, at the end of Step 7 — Steps 6
+and 6b add to it, and a fragment written here would miss them. The write is
+`ledger.write(io.stage_dir)`: your **own** stage directory, never a shared file, because wave-mates
+run concurrently and a shared ledger would be a read-modify-write race between sub-agents.
 
 Throughout this skill, a cell named in the tables below is the address the
 **shipped** template uses. Where a defined name exists for it
@@ -251,11 +252,30 @@ BLUE = Font(name="Palatino Linotype", size=9, color="0000FF")  # hardcoded-input
 ```
 Do NOT recolor formula cells.
 
-**Cell comments:** Attach a single openpyxl `Comment` to the **first cell in each row** (col B). One comment per row only:
+**Cell comments — one per row, on col B, RENDERED FROM A RECORD.** Every hardcoded figure you write
+carries a `provenance.FigureSource` naming the **document**, the **statement/note** and the **page**
+you read it on; record it in the Step 3b ledger and let `cite_cell` write the comment from it. The
+record's `location` is the **amount** cell (what the figure is), while the comment goes on the row's
+col-B label cell (where the template keeps it) — pass one and name the other:
+
 ```python
-from openpyxl.comments import Comment
-ws["B108"].comment = Comment("Rogers 2024 Annual Report - Page 87, Note 12: Long-Term Debt", "INFOR")
+from comment_citations import cite_cell
+from provenance import FigureSource
+
+# FORMAT ILLUSTRATION ONLY — obviously-synthetic placeholders. `ledger` is the one
+# from Step 3b; `ws` is the captable tab inside your `fill(wb, ws)` callback.
+cite_cell(ws["B108"], ledger.record(
+    "Senior Notes due 2034",                       # the row's col-B label
+    sources=FigureSource(filing="Example Target Inc. 2024 Annual Report",
+                         statement="Note 12: Long-Term Debt", page=99),
+    value=999.9, units="<F5 currency>MM", location="captable!F108"))
 ```
+
+Do **not** hand-write a `Comment("<doc> - Page <n>, <section>")` string. A citation string is not a
+record: it puts the whole sentence in one field, so nothing outside the workbook can tell which
+document, statement or page it names — and a figure with no record cannot be traced from the deck,
+which is the entire job of the provenance ledger. Include the subsequent-event note (Step 5) in the
+same record's source, or add a second `FigureSource` for the press release.
 
 **Never write to formula total cells** E82, F82, F84, F85, F86, F104, F122, F143, F164, F186.
 
@@ -296,6 +316,35 @@ Write the file.
 
 ---
 
+### Step 6c — Record the derived totals (the EV bridge)
+
+Everything the deck actually shows from this tab is **computed**: the pasted picture range
+(`infor_cap_picture_range`) is the capitalization summary, and its rows are template formulas —
+`Basic Market Cap = F16*F17`, `Add: Debt = F122*F7`, `Net Debt = F24+F25+F26+F27`,
+`Enterprise Value = F22+F28+F29+F30`. Enterprise Value is the **largest number on the overview
+slide** and it had no record at all, so a reviewer reading the rasterised range could not get from it
+to a filing page.
+
+One call records the lot, after every hand-typed row is written:
+
+```python
+from captable_provenance import record_cap_table_derived_figures
+
+record_cap_table_derived_figures(ws, ledger)   # inside the same fill(wb, ws) callback
+```
+
+It walks the formula graph outward from the pasted range: one derived record per formula cell, each
+naming — as machine-followable `derived_from` refs, not prose — the cells its formula reads, down to
+the hand-typed leaves whose records you wrote in Steps 3b and 6. So `deckcheck` walks Enterprise
+Value → Net Debt → Add: Debt → Total Debt → the debt tranche → the long-term debt note on the page
+you cited. Nothing here evaluates arithmetic (Excel does the math): a derived record carries the
+formula as its value.
+
+You pass no cell addresses and no list of totals — the graph is whatever the template's formulas
+say, so a re-saved template needs no change here. A ref that resolves to nothing is **reported as
+unresolvable** by `deckcheck`, which is how a row you wrote without a source becomes visible instead
+of vanishing: if the report flags one, the fix is the missing Step 6 record, not this call.
+
 ### Step 7 — Recalculate and Verify
 
 Run the recalc script if available:
@@ -304,6 +353,15 @@ python "[xlsx_skill_scripts_path]/recalc.py" "./[SANITIZED_TICKER] - Capitalizat
 ```
 
 If unavailable, skip this step. Then check for `#REF!`, `#DIV/0!`, `#VALUE!`, or `#NAME?` errors in cells you wrote and fix any found.
+
+**Write the provenance fragment now** — one file, once, after every record from Steps 3b, 6 and 6c
+is in the ledger:
+
+```python
+# The stage's provenance fragment, beside its inputs/outputs. `deckcheck` merges
+# every stage's fragment into the run's <run_dir>/provenance.json.
+ledger.write(io.stage_dir)
+```
 
 Perform the cross-checks listed in the Domain Reference below before delivering.
 
@@ -454,6 +512,6 @@ Apply the following event types when found in the filing's sub-events note or in
 8. Section VII col E dates reflect capital stock note subsequent-event date
 9. Every row populated in Section III has a matching `=IF(E[row]<F$16,0,C[row])` row in Section IV, with F$7 applied to the strike or share price whenever filing currency ≠ Output currency (F5)
 10. Section II option/warrant strikes in col D are stated in the Output currency (F5) — if filing currency ≠ F5, each strike has been converted by multiplying by F7 (Output per Input) so the template's ITM comparison against F$16 works correctly
-11. F7 (FX Rate) and F16 (Share Price) carry web-sourced numeric values in blue font; each cell's comment still holds the CapIQ formula for the analyst to refresh AND ends with the appended `Source: <url> — retrieved <YYYY-MM-DD>` citation line, rendered from the `FigureSource` recorded for that figure (Step 3b), and this stage wrote its `provenance.json` fragment to `io.stage_dir`
+11. F7 (FX Rate) and F16 (Share Price) carry web-sourced numeric values in blue font; each cell's comment still holds the CapIQ formula for the analyst to refresh AND ends with the appended `Source: <url> — retrieved <YYYY-MM-DD>` citation line, rendered from the `FigureSource` recorded for that figure (Step 3b), and this stage wrote its `provenance.json` fragment to `io.stage_dir` — once, at the end of Step 7, holding Step 3b's web values, Step 6's extracted rows (each a record whose comment was rendered from it) and Step 6c's derived totals
 12. D47/D48 (LTM Revenue / Adj. EBITDA) are populated — either `=<value>*F7` in blue from the `ltm-metrics` handoff (millions, FX-converted to F5 currency), or the CapIQ `IQ_REV`/`SP_EBITDA` fallback when no LTM values were supplied — so D34/D35 and the EV multiples (D39/D40) resolve to numbers, not `n/a`
 13. Subsequent-events scan completed: both the filing's sub-events note (ASC 855 / IAS 10) and a company-source-only newsroom screen (IR page and company press releases — no third-party news wires or analyst coverage) have been reviewed. Every applied adjustment is deduplicated against the filing's disclosures and documented in the relevant row's cell comment

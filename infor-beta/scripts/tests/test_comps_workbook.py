@@ -135,3 +135,74 @@ def test_accepts_plain_dicts(tmp_path: Path):
     assert ws["D9"].value == "Dict Vertical"
     assert ws["B10"].value == "NYSE:ZZZ"
     assert ws["AA10"].value == "From a dict"
+
+
+# ─── Provenance: what this tab asserts is the peer SET ───────────────────────
+#
+# The metric columns are CapIQ's own array formulas, so the claim this tab makes
+# is which companies are comparable and what they do. A run's ledger held 70
+# records and `comps` contributed zero, which is why the comps slide's figures
+# were unauditable — the obligation existed only where a SKILL.md wrote it down.
+
+
+def test_each_peer_is_recorded_with_the_source_for_its_inclusion(tmp_path: Path):
+    from provenance import FigureSource, ProvenanceLedger
+
+    ledger = ProvenanceLedger(stage="comps")
+    build_comps_workbook(
+        deal_workbook=_deal(tmp_path),
+        verticals=[
+            Vertical("Cloud ERP", [
+                CompCompany("NYSE:AAAA", "Cloud ERP for mid-market",
+                            source=FigureSource(url="https://example.com/aaaa",
+                                                retrieved="2026-07-29")),
+                CompCompany("NasdaqGS:BBBB", "Vertical SaaS",
+                            source=FigureSource(filing="FY2025 10-K",
+                                                statement="Item 1: Business", page=7)),
+            ]),
+        ],
+        provenance=ledger,
+    )
+
+    assert [f.figure for f in ledger.figures] == [
+        "Comps peer — NYSE:AAAA (Cloud ERP)",
+        "Comps peer — NasdaqGS:BBBB (Cloud ERP)",
+    ]
+    assert [f.location for f in ledger.figures] == [f"{TAB_COMPS}!AA10", f"{TAB_COMPS}!AA11"]
+    assert ledger.figures[0].citation_lines == (
+        "https://example.com/aaaa — retrieved 2026-07-29",
+    )
+    assert ledger.figures[1].citation_lines == ("FY2025 10-K, Item 1: Business, p. 7",)
+
+
+def test_a_peers_description_cell_comment_is_rendered_from_its_record(tmp_path: Path):
+    from provenance import FigureSource, ProvenanceLedger
+
+    out = build_comps_workbook(
+        deal_workbook=_deal(tmp_path),
+        verticals=[Vertical("Cloud ERP", [
+            CompCompany("NYSE:AAAA", "Cloud ERP for mid-market",
+                        source=FigureSource(url="https://example.com/aaaa", retrieved="2026-07-29")),
+        ])],
+        provenance=ProvenanceLedger(stage="comps"),
+    )
+    comment = load_workbook(out)[TAB_COMPS]["AA10"].comment
+    assert comment is not None
+    assert comment.text.endswith("Source: https://example.com/aaaa — retrieved 2026-07-29")
+
+
+def test_a_citation_string_instead_of_a_source_record_raises(tmp_path: Path):
+    from provenance import ProvenanceError
+
+    with pytest.raises(ProvenanceError, match="no longer a source record"):
+        build_comps_workbook(
+            deal_workbook=_deal(tmp_path),
+            verticals=[Vertical("X", [CompCompany("NYSE:A", "d", source="their website, 2026")])],
+        )
+
+
+def test_the_builder_still_works_with_no_ledger(tmp_path: Path):
+    # Direct invocation, and every existing caller: provenance is opt-in at the
+    # call site, required by the stage's SKILL.md.
+    ws = load_workbook(_build(tmp_path))[TAB_COMPS]
+    assert ws["B10"].value == "NYSE:T0"

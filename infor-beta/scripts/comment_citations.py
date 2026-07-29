@@ -97,12 +97,14 @@ def cite_cell(
     The record-level entry point: pass the `FigureProvenance` a builder just
     recorded and the cell it wrote, and the comment becomes that record's view.
     A derived figure with no direct sources (an LTM bridge total, whose provenance
-    is its components' records) gets its derivation noted instead. Returns the
-    comment now attached to the cell, or None when there was nothing to say.
+    is its components' records) gets its derivation noted instead — from
+    `FigureProvenance.derivation_line`, so a record carrying only structured
+    component refs still says what it was built from. Returns the comment now
+    attached to the cell, or None when there was nothing to say.
     """
     comment = None
     for source in figure.sources:
         comment = append_source_to_comment(cell, source, author=author)
-    if comment is None and figure.derivation:
-        comment = _append_comment_line(cell, f"Derived: {figure.derivation}", author)
+    if comment is None and figure.derivation_line:
+        comment = _append_comment_line(cell, f"Derived: {figure.derivation_line}", author)
     return comment

@@ -49,6 +49,7 @@ from openpyxl.styles import Font
 from openpyxl.utils import range_boundaries
 
 from deal_workbook import TAB_PRECEDENTS, TabSpec, write_tab
+from provenance import FigureSource, ProvenanceLedger
 from template_layout import (
     NAME_PREC_GROUP_BLOCKS,
     NAME_PREC_GROUP_LABELS,
@@ -137,6 +138,37 @@ _MULTIPLE_ATTRS = tuple(a for a, _ in _MULTIPLE_FIELDS)
 _LINK_ATTRS = tuple(a for a, _ in _LINK_FIELDS)
 _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
+# Which link is the source for which figure. The AB–AG link columns already carry
+# the URL each figure was read from — they were an in-artefact hyperlink and
+# nothing more, so nothing outside Excel could follow one. This is the same
+# mapping, made available to the provenance record: one concept per link column,
+# its $ input(s) and the disclosed multiple(s) computed off it. `tev_link` is the
+# fallback for a multiple whose own metric was not linked, because a disclosed
+# multiple is quoted in the same deal announcement as the TEV.
+_SOURCE_FOR = {
+    "tev": "tev_link",
+    "revenue_ltm": "revenue_link",
+    "revenue_ntm": "revenue_link",
+    "net_income_ltm": "net_income_link",
+    "net_income_ntm": "net_income_link",
+    "ebitda_ltm": "ebitda_link",
+    "ebitda_ntm": "ebitda_link",
+    "book_value": "book_value_link",
+    "tangible_book_value": "tangible_book_value_link",
+    "ev_revenue_ltm": "revenue_link",
+    "ev_revenue_ntm": "revenue_link",
+    "ev_ebitda_ltm": "ebitda_link",
+    "ev_ebitda_ntm": "ebitda_link",
+    "pe_ltm": "net_income_link",
+    "pe_ntm": "net_income_link",
+    "pb": "book_value_link",
+    "ptbv": "tangible_book_value_link",
+}
+
+#: Units per figure, for the record. A $ input is millions of the deal's own input
+#: currency (column C converts); a disclosed multiple is dimensionless.
+_MULTIPLE_UNITS = "x"
+
 
 @dataclass
 class PrecedentTransaction:
@@ -190,6 +222,12 @@ class PrecedentTransaction:
     net_income_link: str | None = None
     book_value_link: str | None = None
     tangible_book_value_link: str | None = None
+
+    #: The date you read those links (``"2026-07-29"`` or a ``date``). A URL
+    #: without a retrieval date is not a citation — `FigureSource` refuses one —
+    #: so a row with links and no ``retrieved`` records no provenance, and the
+    #: figures land in `deckcheck`'s untraced list.
+    retrieved: date | str | None = None
 
 
 @dataclass
@@ -269,11 +307,32 @@ def _validate_transaction(tx: PrecedentTransaction, where: str) -> None:
             raise ValueError(f"{attr} must be an http(s) URL, got {url!r} ({where})")
 
 
+def _figure_sources(tx: PrecedentTransaction, attr: str) -> "list[FigureSource]":
+    """The source record(s) behind one figure on one transaction row.
+
+    The link column the figure's concept maps to (falling back to the TEV link for
+    a disclosed multiple), plus the row's retrieval date. Empty when the row
+    carries no usable link — which leaves the figure unsourced rather than
+    inventing a citation for it.
+    """
+    if tx.retrieved is None:
+        return []
+    candidates = [_SOURCE_FOR.get(attr)]
+    if attr in _MULTIPLE_ATTRS:
+        candidates.append("tev_link")
+    for link_attr in candidates:
+        url = getattr(tx, link_attr, None) if link_attr else None
+        if url:
+            return [FigureSource(url=str(url).strip(), retrieved=tx.retrieved)]
+    return []
+
+
 def build_precedents_workbook(
     *,
     groups: "list[PrecedentGroup | dict]",
     deal_workbook: Path | str,
     output_currency: str = "USD",
+    provenance: ProvenanceLedger | None = None,
 ) -> Path:
     """Fill the deal workbook's `precedents` tab; return the workbook path.
 
@@ -294,6 +353,13 @@ def build_precedents_workbook(
     template's ``[Group #N]`` placeholder. Raises ValueError on too many groups
     / transactions, a missing or malformed required field, a non-numeric metric,
     or a non-http(s) link.
+
+    ``provenance`` is filled **in place** with one record per figure written — the
+    TEV, each $ metric input and each disclosed multiple — sourced from the link
+    column its concept maps to plus the row's ``retrieved`` date. The links were
+    already in the artefact as hyperlinks; the record is what makes them followable
+    from outside Excel. Pass the stage's ledger and write it afterwards
+    (`ledger.write(io.stage_dir)`).
     """
     groups = [_normalize_group(g) for g in groups]
     if not groups:
@@ -306,7 +372,7 @@ def build_precedents_workbook(
             _validate_transaction(tx, f"group {group.name!r} row {i + 1}")
 
     def _write(_wb, ws) -> None:
-        _fill_precedents_tab(ws, groups, output_currency)
+        _fill_precedents_tab(ws, groups, output_currency, ledger=provenance)
 
     write_tab(
         deal_workbook,
@@ -316,7 +382,13 @@ def build_precedents_workbook(
     return Path(deal_workbook)
 
 
-def _fill_precedents_tab(ws, groups: "list[PrecedentGroup]", output_currency: str) -> None:
+def _fill_precedents_tab(
+    ws,
+    groups: "list[PrecedentGroup]",
+    output_currency: str,
+    *,
+    ledger: "ProvenanceLedger | None" = None,
+) -> None:
     """Write the validated groups into the tab. Layout unchanged."""
     # Verify the output-currency cell and every group's label + block name
     # resolves before writing anything.
@@ -343,10 +415,36 @@ def _fill_precedents_tab(ws, groups: "list[PrecedentGroup]", output_currency: st
             ws[f"{_COL_TEV}{row}"] = tx.tev
             ws[f"{_COL_HQ}{row}"] = _check_code(tx.hq_country, "hq_country", "")
 
+            deal = f"{str(tx.target).strip()} / {str(tx.acquiror).strip()}"
+
+            def _record(attr: str, col: str, value, units: str) -> None:
+                """One figure's record, from the link its concept maps to."""
+                if ledger is None:
+                    return
+                sources = _figure_sources(tx, attr)
+                if not sources:
+                    return
+                ledger.record(
+                    f"{deal} — {attr}",
+                    sources=sources,
+                    value=value,
+                    units=units,
+                    location=f"{TAB_PRECEDENTS}!{col}{row}",
+                )
+
+            _record("tev", _COL_TEV, tx.tev, f"{tx.input_currency}MM")
+
             for attr, col in _VALUE_FIELDS + _MULTIPLE_FIELDS:
                 value = getattr(tx, attr)
-                if value is not None:
-                    ws[f"{col}{row}"] = value
+                if value is None:
+                    continue
+                ws[f"{col}{row}"] = value
+                _record(
+                    attr,
+                    col,
+                    value,
+                    _MULTIPLE_UNITS if attr in _MULTIPLE_ATTRS else f"{tx.input_currency}MM",
+                )
 
             for attr, col in _LINK_FIELDS:
                 cell = ws[f"{col}{row}"]

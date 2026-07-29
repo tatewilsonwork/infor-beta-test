@@ -226,7 +226,7 @@ from provenance import FigureSource, ProvenanceLedger
 io = stage_io()
 company_name = io.inputs["company"]["legal_name"]
 deal_workbook = io.inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `financial-summary` tab
-ledger = ProvenanceLedger(stage="financial-summary")   # every figure's record; written at the end
+ledger = ProvenanceLedger(stage=io.stage_id)   # every figure's record; written at the end
 
 # FORMAT ILLUSTRATION ONLY — the labels/values below are obviously-synthetic
 # placeholders showing the call shape; NEVER reuse them as data. Every real

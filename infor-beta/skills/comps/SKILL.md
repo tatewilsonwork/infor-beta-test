@@ -100,6 +100,30 @@ its CapIQ array formulas and `infor_comps_*` defined names. Pass the workbook pa
 stages in the same wave cannot clobber one another. If the tab is missing or has lost its
 defined names, the helper raises `TemplateLayoutError` — stop and report it verbatim.
 
+### Step 5b — Provenance — REQUIRED, and structured
+
+**Every peer carries a record of why it is in the set.** This tab writes no market data — the
+metric columns are Capital IQ's own array formulas, and their provenance is CapIQ — so what it
+*asserts* is the **peer set** and each peer's one-line description. That is a claim about the
+target's comparables, it is the claim the comps slide rests on, and until now nothing recorded it:
+a run's provenance ledger held 70 records and `comps` contributed zero.
+
+Give each `CompCompany` a `source`: a `provenance.FigureSource` naming where you read that the
+company does what your description says — its own filing
+(`FigureSource(filing="FY2025 10-K", statement="Item 1: Business", page=99)`) or its
+investor-relations / products page with the date you read it
+(`FigureSource(url="https://…", retrieved="<YYYY-MM-DD>")`). A URL with no `retrieved` raises,
+because a URL without a retrieval date is not a citation. A **citation string is rejected**: it
+would build a record with the whole sentence in `filing` and no statement or page, which reads like
+provenance and cannot be followed.
+
+Pass the stage's `ProvenanceLedger` to the builder, which records one entry per peer and renders
+each description cell's `Source: …` comment **from** that record — so the artefact and the
+machine-readable record cannot disagree. Then write the fragment with `ledger.write(io.stage_dir)`:
+your **own** stage directory, never a shared file, because wave-mates run concurrently and a shared
+ledger would be a read-modify-write race between sub-agents. `deckcheck` merges every stage's
+fragment into the run's record.
+
 ### Step 6 — Summary
 
 Report: the deal workbook path and the tab written; the three verticals, each with its six companies (ticker — description);
@@ -122,25 +146,36 @@ sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))   # plugin root — arg 1
 
 from stage_io import stage_io
 from comps_workbook import build_comps_workbook, Vertical, CompCompany
+from provenance import FigureSource, ProvenanceLedger
 
 io = stage_io()
 deal_workbook = io.inputs["deal_workbook"]   # the deal's ONE workbook; the `comps` tab is in it
+ledger = ProvenanceLedger(stage=io.stage_id)   # one record per peer; written at the end
 
 # FORMAT ILLUSTRATION ONLY — the tickers/labels below are obviously-synthetic
 # placeholders showing the call shape; NEVER reuse them as data. Every real
-# ticker comes from your Step 1-2 peer research, listing-verified.
+# ticker comes from your Step 1-2 peer research, listing-verified, and every
+# `source` is the page you actually read the company's business off.
+def src(url: str) -> FigureSource:
+    return FigureSource(url=url, retrieved="<YYYY-MM-DD>")   # the date you read it
+
 verticals = [
     Vertical("[Vertical #1 label]", [
-        CompCompany("NYSE:AAAA", "Placeholder peer description (<=50 chars)"),
-        CompCompany("NasdaqGS:BBBB", "Placeholder peer description (<=50 chars)"),
-        # ... six per vertical ...
+        CompCompany("NYSE:AAAA", "Placeholder peer description (<=50 chars)",
+                    source=src("https://example.com/aaaa/investors")),
+        CompCompany("NasdaqGS:BBBB", "Placeholder peer description (<=50 chars)",
+                    source=FigureSource(filing="FY2025 10-K", statement="Item 1: Business",
+                                        page=99)),
+        # ... six per vertical, each with its own source ...
     ]),
     Vertical("[Vertical #2 label]", [
-        CompCompany("TSX:CCCC", "Placeholder peer description (<=50 chars)"),
+        CompCompany("TSX:CCCC", "Placeholder peer description (<=50 chars)",
+                    source=src("https://example.com/cccc/about")),
         # ... six per vertical ...
     ]),
     Vertical("[Vertical #3 label]", [
-        CompCompany("NYSE:DDDD", "Placeholder peer description (<=50 chars)"),
+        CompCompany("NYSE:DDDD", "Placeholder peer description (<=50 chars)",
+                    source=src("https://example.com/dddd/about")),
         # ... six per vertical ...
     ]),
 ]
@@ -148,7 +183,12 @@ verticals = [
 workbook_path = build_comps_workbook(
     verticals=verticals,
     deal_workbook=deal_workbook,
+    provenance=ledger,           # filled in place, one record per peer
 )
+
+# The stage's provenance fragment, beside its inputs/outputs. `deckcheck` merges
+# every stage's fragment into the run's <run_dir>/provenance.json.
+ledger.write(io.stage_dir)
 
 io.write({"workbook_path": str(workbook_path)})
 ```

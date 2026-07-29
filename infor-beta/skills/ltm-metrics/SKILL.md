@@ -106,7 +106,7 @@ from provenance import FigureSource, ProvenanceLedger
 
 io = stage_io()
 deal_workbook = io.inputs["deal_workbook"]   # the deal's ONE workbook; this writes its `ltm-metrics` tab
-ledger = ProvenanceLedger(stage="ltm-metrics")   # every figure's record; written at the end
+ledger = ProvenanceLedger(stage=io.stage_id)   # every figure's record; written at the end
 
 # FORMAT ILLUSTRATION ONLY — the segment names / values below are obviously-
 # synthetic placeholders showing the call shape; NEVER reuse them as data.

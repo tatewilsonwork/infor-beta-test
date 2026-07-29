@@ -275,3 +275,86 @@ def test_unknown_dict_field_raises(tmp_path: Path):
                 "ev_revenue": 3.0,  # not a real field (should be ev_revenue_ltm/ntm)
             }]}],
             )
+
+
+# ─── Provenance: the AB–AG links, made followable ────────────────────────────
+#
+# The source links were already in the artefact as hyperlinks and nothing more, so
+# nothing outside Excel could follow one — a run's ledger held 70 records with
+# `precedents` contributing zero, and every multiple on the precedents slide was
+# untraceable. The record is built from the link the figure's concept maps to plus
+# the row's retrieval date.
+
+
+def test_every_written_figure_is_recorded_against_its_own_source_link(tmp_path: Path):
+    from provenance import ProvenanceLedger
+
+    ledger = ProvenanceLedger(stage="precedents")
+    build_precedents_workbook(
+        deal_workbook=_deal(tmp_path),
+        groups=[PrecedentGroup("Group #1", [
+            _operating_tx(ev_ebitda_ltm=6.4, retrieved="2026-07-29"),
+        ])],
+        provenance=ledger,
+    )
+
+    by_figure = {f.figure.rsplit("— ", 1)[-1]: f for f in ledger.figures}
+    assert set(by_figure) == {"tev", "revenue_ltm", "ebitda_ltm", "ev_ebitda_ltm"}
+
+    assert by_figure["tev"].citation_lines == (
+        "https://www.sec.gov/deal.htm — retrieved 2026-07-29",
+    )
+    # The revenue figure cites the revenue link, not the TEV's.
+    assert by_figure["revenue_ltm"].citation_lines == (
+        "https://investors.example.com/pr — retrieved 2026-07-29",
+    )
+    # A disclosed multiple cites its own metric's link.
+    assert by_figure["ev_ebitda_ltm"].citation_lines == (
+        "https://investors.example.com/pr — retrieved 2026-07-29",
+    )
+    assert by_figure["ev_ebitda_ltm"].units == "x"
+    assert by_figure["tev"].units == "USDMM"
+    assert by_figure["tev"].location == f"{TAB_PRECEDENTS}!I8"
+
+
+def test_a_multiple_with_no_metric_link_falls_back_to_the_deal_announcement(tmp_path: Path):
+    from provenance import ProvenanceLedger
+
+    ledger = ProvenanceLedger(stage="precedents")
+    build_precedents_workbook(
+        deal_workbook=_deal(tmp_path),
+        groups=[PrecedentGroup("Group #1", [
+            PrecedentTransaction(
+                input_currency="USD", announce_date=date(2025, 5, 6),
+                target="Target Operating Co", acquiror="Acquiror LP", tev=1250.0,
+                hq_country="USA", ev_revenue_ltm=1.4,
+                tev_link="https://www.sec.gov/deal.htm", retrieved="2026-07-29",
+            ),
+        ])],
+        provenance=ledger,
+    )
+    multiple = next(f for f in ledger.figures if f.figure.endswith("ev_revenue_ltm"))
+    assert multiple.citation_lines == ("https://www.sec.gov/deal.htm — retrieved 2026-07-29",)
+
+
+def test_a_row_with_no_retrieval_date_records_nothing(tmp_path: Path):
+    # A URL without a retrieval date is not a citation, so the figures stay
+    # unsourced and land in deckcheck's untraced list — the honest outcome, rather
+    # than a record whose date is invented.
+    from provenance import ProvenanceLedger
+
+    ledger = ProvenanceLedger(stage="precedents")
+    build_precedents_workbook(
+        deal_workbook=_deal(tmp_path),
+        groups=[PrecedentGroup("Group #1", [_operating_tx()])],
+        provenance=ledger,
+    )
+    assert len(ledger) == 0
+
+
+def test_the_builder_still_works_with_no_ledger(tmp_path: Path):
+    out = build_precedents_workbook(
+        deal_workbook=_deal(tmp_path),
+        groups=[PrecedentGroup("Group #1", [_operating_tx()])],
+    )
+    assert load_workbook(out)[TAB_PRECEDENTS]["I8"].value == 1250.0

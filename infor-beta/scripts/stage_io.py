@@ -82,6 +82,19 @@ class StageIO:
         return self.inputs_path.parent
 
     @property
+    def stage_id(self) -> str:
+        """The plan's id for this stage — the stage directory's own name.
+
+        What a `ProvenanceLedger` labels itself with. Derived rather than typed
+        into each SKILL.md because a plan's stage id is not always its skill name
+        (`pitch-content` runs as the pitch plan's `content` stage), and a ledger
+        labelled with the wrong one is a mislabelling nothing would catch: the
+        merge stamps the *directory* name only on a fragment that carries none, so
+        a confidently-wrong label survives it.
+        """
+        return self.stage_dir.name
+
+    @property
     def run_dir(self) -> Path:
         """`<run_dir>` — this run's directory, two levels up from the stage dir.
 

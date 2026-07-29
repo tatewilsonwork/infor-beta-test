@@ -35,7 +35,9 @@ from pathlib import Path
 
 from openpyxl.utils import range_boundaries
 
+from comment_citations import cite_cell
 from deal_workbook import TAB_COMPS, TabSpec, write_tab
+from provenance import FigureSource, ProvenanceError, ProvenanceLedger
 from template_layout import (
     COMPS_TEMPLATE,
     COMPS_WRITE_NAMES,
@@ -79,10 +81,16 @@ class CompCompany:
       array formula keys off this, so the exchange prefix is required.
     - ``description``: a <=50-char note on what the company does / sells ->
       column AA. No geography (the exchange prefix already signals it).
+    - ``source``: the :class:`provenance.FigureSource` for **this peer's inclusion**
+      — the page that says the company does what the description claims (its own
+      filing, or its investor-relations / products page with the date you read it).
+      The metric columns are CapIQ array formulas whose provenance is CapIQ itself,
+      so what this tab asserts is the peer *set*, and that is what carries a record.
     """
 
     ticker: str
     description: str = ""
+    source: FigureSource | None = None
 
 
 @dataclass
@@ -97,10 +105,34 @@ class Vertical:
     companies: list[CompCompany] = field(default_factory=list)
 
 
+def _coerce_source(owner: str, source) -> FigureSource | None:
+    """Validate one peer's source record — a citation string is not one.
+
+    Same rule and same reason as `ltm_metrics._coerce_source`: a string would build
+    a record with the whole sentence in ``filing`` and no statement or page, which
+    reads like provenance and cannot be followed.
+    """
+    if source is None or isinstance(source, FigureSource):
+        return source
+    raise ProvenanceError(
+        f"{owner!r} has a source of type {type(source).__name__} ({source!r}); pass "
+        f"FigureSource(url=…, retrieved=…) — or FigureSource(filing=…, statement=…, "
+        f"page=…) — a citation string is no longer a source record."
+    )
+
+
 def _normalize_company(company: "CompCompany | dict") -> CompCompany:
     if isinstance(company, CompCompany):
-        return company
-    return CompCompany(ticker=company["ticker"], description=company.get("description", ""))
+        return CompCompany(
+            ticker=company.ticker,
+            description=company.description,
+            source=_coerce_source(company.ticker, company.source),
+        )
+    return CompCompany(
+        ticker=company["ticker"],
+        description=company.get("description", ""),
+        source=_coerce_source(company["ticker"], company.get("source")),
+    )
 
 
 def _normalize_vertical(vertical: "Vertical | dict") -> Vertical:
@@ -117,6 +149,7 @@ def build_comps_workbook(
     *,
     verticals: "list[Vertical | dict]",
     deal_workbook: Path | str,
+    provenance: ProvenanceLedger | None = None,
 ) -> Path:
     """Fill the deal workbook's `comps` tab vertical blocks; return the workbook path.
 
@@ -132,6 +165,12 @@ def build_comps_workbook(
     IQ. Unfilled verticals keep the template's ``[Group #N]`` placeholder. Raises
     ValueError on too many verticals / companies, an empty ticker, or an
     over-length description.
+
+    ``provenance`` is filled **in place**, one record per peer: what this tab
+    asserts is the peer *set* (the metric columns are CapIQ's own array formulas),
+    so each peer's ``source`` — the page saying it does what the description claims
+    — is the record. Pass the stage's ledger and write it afterwards
+    (`ledger.write(io.stage_dir)`); pass nothing and the peers write as before.
     """
     verticals = [_normalize_vertical(v) for v in verticals]
     if not verticals:
@@ -163,10 +202,23 @@ def build_comps_workbook(
                 )
             ws[label_cell] = vertical.name
             for row, company in zip(rows, vertical.companies):
-                ws[f"{_COL_TICKER}{row}"] = str(company.ticker).strip()
+                ticker = str(company.ticker).strip()
+                ws[f"{_COL_TICKER}{row}"] = ticker
                 description = company.description.strip()
                 if description:
                     ws[f"{_COL_DESCRIPTION}{row}"] = description
+                if company.source is None or provenance is None:
+                    continue
+                # The record first, the comment rendered from it — never the reverse.
+                cite_cell(
+                    ws[f"{_COL_DESCRIPTION}{row}"],
+                    provenance.record(
+                        f"Comps peer — {ticker} ({vertical.name})",
+                        sources=company.source,
+                        value=description or None,
+                        location=f"{TAB_COMPS}!{_COL_DESCRIPTION}{row}",
+                    ),
+                )
 
     write_tab(
         deal_workbook,
