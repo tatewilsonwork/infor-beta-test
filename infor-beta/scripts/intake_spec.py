@@ -11,6 +11,22 @@ generated from it:
     request (:func:`render_attachment_request`) and the defaults echo
     (:func:`render_defaults_echo`).
 
+**Three renderers merge; one does not.** A run's questionnaire is two specs —
+deal-init's plus the deliverable's — and the analyst should meet each *live*
+surface once, so :func:`render_dialogs`, :func:`render_attachment_request` and
+:func:`render_defaults_echo` all take ``*specs`` and merge in spec order, each
+raising on a repeated declaration. :func:`render_prompt` takes one spec: the
+text fallback is the two prompts in sequence, each numbering and listing its own
+half, because a merged prompt would have to renumber items the
+``*_ITEM_PLAN_INPUTS`` tables key off. Between them the fallback asks the same
+items in the same order as the one merged dialog.
+
+A dialog holds at most :data:`DIALOG_MAX_QUESTIONS` questions, so merging is
+only a single call while the run's whole question count fits — which is the
+point of defaulting everything that has a sensible default rather than asking
+it. `test_a_slash_command_run_renders_exactly_one_dialog` is what fails when a
+new question pushes a run back to two.
+
 Why this module exists. The locked-questionnaire principle — *every run asks
 the same questions, in the same order, with the same options* — used to be
 half structural and half conventional. The item -> plan-input **mapping** was
@@ -187,7 +203,6 @@ class IntakeField:
     target: str
     target_kind: TargetKind = "plan-input"
     required: bool = False
-    group: str = "main"
     question: str = ""
     options: tuple[IntakeOption, ...] = ()
     hint: str = ""
@@ -316,13 +331,28 @@ class IntakeField:
 class IntakeDefault:
     """A value the conductor supplies or leaves unset instead of asking for it.
 
+    `name` **is the target** — the same string the equivalent question would
+    have carried in its `target`, which is what lets
+    :meth:`IntakeSpec.__post_init__` reject a spec that both asks for and
+    defaults one thing by plain equality. For a `plan-input` default that is a
+    `plan_inputs` name (`client_name`); for a `deal-context` default it is a
+    `DealContext` field path (`subject_company.sector / …`).
+
+    `target_kind` mirrors :class:`IntakeField`'s and splits the
+    `*_DEFAULT_*_INPUTS` tables the same way `targets()` splits the answer
+    tables — a **deal-context default must never reach a plan-input table**, or
+    the conductor would try to set a plan input named after a DealContext path.
+    `"attachment"` is rejected: a file has no default value, and a missing
+    OPTIONAL one is an absent path, not a defaulted one.
+
     `rule` is the one human-readable statement of the default — it is what the
     text prompt lists and what the `*_DEFAULT_*_INPUTS` tables carry, so the
     two cannot disagree.
 
-    `supplied=True` means the conductor computes the value and puts it in
-    `plan_inputs`; `supplied=False` means the input is left OUT and the
-    consuming skill applies its own default.
+    `supplied=True` means the conductor computes the value and writes it to that
+    target (into `plan_inputs`, or onto the `DealContext`); `supplied=False`
+    means the target is left unset and whatever consumes it applies its own
+    default.
 
     The defaults echo (:func:`render_defaults_echo`) posts one line per
     `echoed` default: `echo` is a `str.format` template over the computed
@@ -335,17 +365,29 @@ class IntakeDefault:
     label: str
     rule: str
     supplied: bool
+    target_kind: TargetKind = "plan-input"
     echoed: bool = True
     echo: str | None = None
     echo_label: str | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
-            raise ValueError("an intake default needs a plan_inputs name")
+            raise ValueError("an intake default needs a target name")
         if not self.label.strip():
             raise ValueError(f"default {self.name!r} needs a label")
         if not self.rule.strip():
             raise ValueError(f"default {self.name!r} needs a rule")
+        if self.target_kind == "attachment":
+            raise ValueError(
+                f"default {self.name!r} targets an attachment — a file has no "
+                f"default value; an OPTIONAL document that never arrives is an "
+                f"absent path, and its `checklist` line says what that costs"
+            )
+        if self.target_kind not in TARGET_KINDS:
+            raise ValueError(
+                f"default {self.name!r} has target_kind {self.target_kind!r}; "
+                f"known: {list(TARGET_KINDS)}"
+            )
         if not self.echoed and (self.echo or self.echo_label):
             raise ValueError(
                 f"default {self.name!r} is not echoed on its own line, so it cannot "
@@ -393,15 +435,6 @@ class IntakeSpec:
             raise ValueError(
                 f"intake spec {self.name!r} reuses dialog header(s) {dupes}"
             )
-        seen_groups: list[str] = []
-        for f in self.fields:
-            if f.group not in seen_groups:
-                seen_groups.append(f.group)
-            elif seen_groups[-1] != f.group:
-                raise ValueError(
-                    f"intake spec {self.name!r} splits group {f.group!r} — a group's "
-                    f"fields must be contiguous so dialog batching is deterministic"
-                )
         names = [d.name for d in self.defaults]
         if len(names) != len(set(names)):
             raise ValueError(f"intake spec {self.name!r} declares a default twice")
@@ -415,12 +448,21 @@ class IntakeSpec:
             raise ValueError(
                 f"intake spec {self.name!r} collects plan input(s) {dupes} twice"
             )
-        clash = set(supplied) & set(names)
-        if clash:
-            raise ValueError(
-                f"intake spec {self.name!r} both asks for and defaults "
-                f"{sorted(clash)}"
-            )
+        # Asked or defaulted, never both — checked per kind, because a default's
+        # `name` IS its target and only the same-kind targets are the same
+        # namespace.
+        for kind, collected in (
+            ("plan-input", supplied),
+            ("deal-context", list(self.targets("deal-context").values())),
+        ):
+            clash = set(collected) & {
+                d.name for d in self.defaults if d.target_kind == kind
+            }
+            if clash:
+                raise ValueError(
+                    f"intake spec {self.name!r} both asks for and defaults "
+                    f"{sorted(clash)}"
+                )
 
     # -- field views ------------------------------------------------------
 
@@ -520,9 +562,29 @@ class IntakeSpec:
             if f.target_kind == target_kind
         }
 
-    def default_rules(self, *, supplied: bool) -> dict[str, str]:
-        """`{plan_inputs name: rule}` for the supplied or the unset defaults."""
-        return {d.name: d.rule for d in self.defaults if d.supplied is supplied}
+    def default_rules(
+        self, *, supplied: bool, target_kind: TargetKind = "plan-input"
+    ) -> dict[str, str]:
+        """`{target: rule}` for the supplied or unset defaults of one kind.
+
+        Split by kind for the same reason :meth:`targets` is: the conductor
+        turns the `plan-input` tables into `plan_inputs` entries, so a
+        `deal-context` default leaking into one would have it set a plan input
+        named `subject_company.sector / …`. `"attachment"` is rejected — an
+        attachment has no default.
+        """
+        if target_kind == "attachment":
+            raise ValueError(
+                "attachments have no defaults — an OPTIONAL document that never "
+                "arrives is an absent path; use attachment_fields()"
+            )
+        if target_kind not in TARGET_KINDS:
+            raise ValueError(f"unknown target kind {target_kind!r}")
+        return {
+            d.name: d.rule
+            for d in self.defaults
+            if d.supplied is supplied and d.target_kind == target_kind
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -531,30 +593,51 @@ class IntakeSpec:
 
 
 def render_dialogs(
-    spec: IntakeSpec,
-    *,
+    *specs: IntakeSpec,
     target_kinds: Sequence[TargetKind] | None = None,
     omit: Iterable[str] = (),
 ) -> list[list[dict]]:
-    """Generate the `AskUserQuestion` payloads for `spec`.
+    """Generate the `AskUserQuestion` payloads for `specs`, merged.
 
-    Each inner list is one call's `questions` payload: fields are batched by
-    declared `group`, then chunked at :data:`DIALOG_MAX_QUESTIONS`. Fresh
-    dicts every call, so a caller mutating the result cannot affect the next
-    render. Returns `[]` when the filter selects nothing (the earnings-update
-    deck spec has no questions left at all — every input is defaulted or
-    attached).
+    Every dialog question across `specs`, in spec order then field order,
+    chunked into calls of at most :data:`DIALOG_MAX_QUESTIONS` — the tool's own
+    limit. **Spec order alone decides which questions share a call**: there is
+    no per-section batching, because grouping by declared section is exactly
+    what forced a pitch run's five deck-spec questions into two dialogs and the
+    run into three.
+
+    Called with **one** spec by `deal_init.render_init_dialogs` /
+    `deck_spec.render_deck_spec_dialogs` — the two rounds generic conductor
+    entry needs, since the Deliverable answer decides which deck spec exists —
+    and with **deal-init plus the deliverable's spec** by
+    `deck_spec.render_run_dialogs`, which is the single call a slash-command run
+    makes.
+
+    Fresh dicts every call, so a caller mutating the result cannot affect the
+    next render. Returns `[]` when the filter selects nothing (the
+    earnings-update deck spec has no questions left at all — every input is
+    defaulted or attached).
+
+    Raises ValueError if two specs declare the same field `key`: the key is the
+    dialog `header` the conductor maps the answer through, so a collision inside
+    one merged call would route one question's answer to another's target.
     """
-    fields = spec.dialog_fields(target_kinds=target_kinds, omit=omit)
-    batches: list[list[IntakeField]] = []
-    for f in fields:
-        if batches and batches[-1][0].group == f.group and len(
-            batches[-1]
-        ) < DIALOG_MAX_QUESTIONS:
-            batches[-1].append(f)
-        else:
-            batches.append([f])
-    return [[f.as_dialog_question() for f in batch] for batch in batches]
+    fields = [
+        f
+        for spec in specs
+        for f in spec.dialog_fields(target_kinds=target_kinds, omit=omit)
+    ]
+    keys = [f.key for f in fields]
+    if len(keys) != len(set(keys)):
+        dupes = sorted({k for k in keys if keys.count(k) > 1})
+        raise ValueError(
+            f"merged dialogs repeat header(s) {dupes} — one question, one "
+            f"declaration"
+        )
+    return [
+        [f.as_dialog_question() for f in fields[i : i + DIALOG_MAX_QUESTIONS]]
+        for i in range(0, len(fields), DIALOG_MAX_QUESTIONS)
+    ]
 
 
 def render_attachment_request(*specs: IntakeSpec) -> str:
@@ -692,14 +775,33 @@ def render_prompt(spec: IntakeSpec) -> str:
     return "\n\n".join(sections) + "\n"
 
 
-def render_defaults_echo(spec: IntakeSpec, values: Mapping[str, str | None]) -> str:
-    """Generate the one-shot defaults echo, filling in the computed values.
+def render_defaults_echo(
+    *specs: IntakeSpec, values: Mapping[str, str | None]
+) -> str:
+    """Generate THE defaults echo for a run: one message, posted once.
 
-    Raises ValueError naming every computed value the spec's echo templates
-    need and `values` did not supply — a half-filled echo would tell the
-    analyst a default is in effect without saying what it is.
+    Every echoed default across `specs`, in spec order, with the computed values
+    filled in. Merged for the same reason the attachment request is: a run is
+    deal-init's spec plus the deliverable's, and the analyst reads one list of
+    what is in effect rather than one per spec. Returns `""` when nothing is
+    echoed.
+
+    Raises ValueError naming every computed value the echo templates need and
+    `values` did not supply — a half-filled echo would tell the analyst a
+    default is in effect without saying what it is — and ValueError on a
+    repeated default `name`, since a default's name is its target and two
+    entries writing one target cannot both be in effect.
     """
-    echoed = [d for d in spec.defaults if d.echoed]
+    defaults = [d for spec in specs for d in spec.defaults]
+    names = [d.name for d in defaults]
+    if len(names) != len(set(names)):
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        raise ValueError(
+            f"merged defaults echo repeats {dupes} — one target, one default"
+        )
+    echoed = [d for d in defaults if d.echoed]
+    if not echoed:
+        return ""
     needed: list[str] = []
     for d in echoed:
         for name in d.echo_values:
@@ -707,7 +809,8 @@ def render_defaults_echo(spec: IntakeSpec, values: Mapping[str, str | None]) -> 
                 needed.append(name)
     missing = [name for name in needed if values.get(name) is None]
     if missing:
-        raise ValueError(f"{spec.name} defaults echo needs {', '.join(missing)}")
+        label = " + ".join(spec.name for spec in specs)
+        raise ValueError(f"{label} defaults echo needs {', '.join(missing)}")
     lines = [DEFAULTS_ECHO_HEADER]
     for d in echoed:
         text = d.rule if d.echo is None else d.echo.format(**dict(values))

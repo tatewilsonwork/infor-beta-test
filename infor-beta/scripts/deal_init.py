@@ -10,6 +10,11 @@ Owns the conductor's deal-init flow (Obsidian note 12, G7 + H5):
     is not asked: it is auto-derived via `codename.codename_from_company`
     ("Project <company>" with corporate suffixes stripped), overridable by the
     analyst in chat.
+  - Only ONE G7 item is still a dialog question — the public/private listing.
+    A slash-command run merges it with the deliverable's questions into a
+    single `AskUserQuestion` call (`deck_spec.render_run_dialogs`);
+    `render_init_dialogs` renders deal-init's half alone, which is what generic
+    conductor entry asks in its first of two rounds.
   - The G7 filings are an **attachment**, not a question (v0.5.50). They are
     one bullet of the run's single attachment request, which
     `deck_spec.render_run_attachment_request` renders from this spec plus the
@@ -33,6 +38,7 @@ from typing import Any
 
 from codename import DEFAULT_DEALS_ROOT, find_existing, resolve
 from intake_spec import (
+    IntakeDefault,
     IntakeField,
     IntakeOption,
     IntakeSpec,
@@ -61,7 +67,7 @@ DEAL_JSON_NAME = "deal.json"
 # characters, multiSelect always False. Each question's `header` doubles as
 # its key in INIT_DIALOG_FIELDS.
 #
-# Not every G7 item is a dialog question:
+# Not every G7 item is a dialog question — by v0.5.51 only ONE is:
 #   - the codename is never asked — it is derived silently via
 #     `codename.codename_from_company` ("Project <company>" with corporate
 #     suffixes stripped); the analyst can still override it in chat, which is
@@ -69,6 +75,13 @@ DEAL_JSON_NAME = "deal.json"
 #   - the subject company name is pure free text with nothing to suggest, so
 #     it is declared with a `hint` and no options — a numbered item in the
 #     text prompt, a plain chat question in the interactive flow;
+#   - the sector / industry is a DEFAULT (v0.5.51), not a question. Its dialog
+#     already defaulted to "Infer from the web — I'll look it up and use it, no
+#     confirmation needed", so the question's whole content was an invitation to
+#     type instead, which a reply does. It is now `deal-context`-targeted
+#     `defaults`, echoed once with the inferred one-liner for override, and
+#     dropping it is what got a slash-command run's question count to four —
+#     one dialog;
 #   - the filings item is an ATTACHMENT ("Filings" below), so it is asked about
 #     in no rendering at all. It was a status question through v0.5.49
 #     (attached / will drop next message / none), which asked the analyst to
@@ -77,6 +90,9 @@ DEAL_JSON_NAME = "deal.json"
 #     request, and the analyst answers by dropping the files into chat;
 #   - free-form analyst notes are no longer asked — DealContext.notes stays
 #     settable when the analyst volunteers notes in chat.
+#
+# Which leaves the listing question, and it cannot be defaulted away too: it is
+# required=True, and a required field may declare no default option.
 # ---------------------------------------------------------------------------
 
 # The deliverable question, kept separable: the slash-command entry points
@@ -97,7 +113,6 @@ INIT_INTAKE = IntakeSpec(
             target="deliverable_type",
             target_kind="deal-context",
             required=True,
-            group="deal",
             question="Which deliverable is this?",
             options=(
                 IntakeOption(
@@ -126,7 +141,6 @@ INIT_INTAKE = IntakeSpec(
             target="subject_company.legal_name",
             target_kind="deal-context",
             required=True,
-            group="deal",
             hint='e.g. "ACME Corp"',
         ),
         IntakeField(
@@ -138,7 +152,6 @@ INIT_INTAKE = IntakeSpec(
             ),
             target_kind="deal-context",
             required=True,
-            group="deal",
             question="Is the subject company public or private?",
             options=(
                 IntakeOption(
@@ -150,25 +163,6 @@ INIT_INTAKE = IntakeSpec(
             ),
         ),
         IntakeField(
-            key="Sector",
-            prompt_label="Sector / industry",
-            target="subject_company.sector / subject_company.industry",
-            target_kind="deal-context",
-            group="deal",
-            question="Sector / industry (one line)?",
-            options=(
-                IntakeOption(
-                    "Infer from the web",
-                    "I'll look it up and use it — no confirmation needed.",
-                    default=True,
-                ),
-                IntakeOption(
-                    "I'll type it",
-                    "Put the one-line sector / industry in the Other box.",
-                ),
-            ),
-        ),
-        IntakeField(
             key="Filings",
             prompt_label="Financial statements / filings",
             target=(
@@ -177,7 +171,6 @@ INIT_INTAKE = IntakeSpec(
             ),
             target_kind="attachment",
             required=True,
-            group="deal",
             checklist=(
                 "the latest four annual financial statements / 10-Ks (they cover "
                 "five fiscal years for the financial-summary history), plus the "
@@ -192,27 +185,61 @@ INIT_INTAKE = IntakeSpec(
             ),
         ),
     ),
+    # Deal-init's first default (v0.5.51). `name` IS the target — the same
+    # string the Sector question carried — so a spec that re-added the question
+    # while keeping this entry is rejected rather than collecting the sector
+    # twice.
+    defaults=(
+        IntakeDefault(
+            name="subject_company.sector / subject_company.industry",
+            label="Sector / industry",
+            rule=(
+                "researched on the web and verified by search, then used without "
+                "confirmation — the one-line sector / industry"
+            ),
+            supplied=True,
+            target_kind="deal-context",
+            echo="{sector}",
+        ),
+    ),
 )
 
 # Question header -> where the answer lands on the DealContext. Derived from
 # the spec's dialog fields, so it cannot list a question that is not asked.
 INIT_DIALOG_FIELDS: dict[str, str] = INIT_INTAKE.targets("deal-context")
 
+# DealContext field -> the default rule, for the items the conductor computes
+# and sets rather than asking about. Kept apart from the plan-input default
+# tables (`deck_spec.*_DEFAULT_SUPPLIED_INPUTS`) by `target_kind`: these land on
+# the DealContext, and one leaking into `plan_inputs` would have the conductor
+# set an input named after a DealContext path.
+INIT_DEFAULT_FIELDS: dict[str, str] = INIT_INTAKE.default_rules(
+    supplied=True, target_kind="deal-context"
+)
+
 
 def render_init_dialogs(*, include_deliverable: bool = False) -> list[list[dict]]:
-    """Return the locked deal-init dialogs, generated from `INIT_INTAKE`.
+    """Return deal-init's half of the run's dialogs, generated from `INIT_INTAKE`.
 
-    Each inner list is one `AskUserQuestion` call's `questions` payload —
-    render them in order, unchanged. The slash-command entry points preset
-    the deliverable type, so the deliverable question is only included when
-    `include_deliverable=True` (generic conductor entry with no deliverable
-    named). Fresh payloads every call, so a caller mutating the result cannot
-    affect the next render.
+    **Prefer `deck_spec.render_run_dialogs(<deliverable>)`** when the deliverable
+    is known — a slash-command run asks deal-init's questions and the
+    deliverable's in ONE `AskUserQuestion` call, and that is the merged
+    renderer. This function renders deal-init's questions alone, which is what
+    **generic** conductor entry needs: the Deliverable answer decides which deck
+    spec exists, so with no deliverable named the run is inherently two rounds —
+    this call, then `deck_spec.render_deck_spec_dialogs(<answer>)`.
+
+    Each inner list is one call's `questions` payload — render them in order,
+    unchanged. The slash-command entry points preset the deliverable type, so
+    the deliverable question is only included when `include_deliverable=True`.
+    Fresh payloads every call, so a caller mutating the result cannot affect the
+    next render.
 
     Ask for the subject company name as a plain chat question when it was not
     preset. The codename is never a dialog question: derive it silently with
     `codename.codename_from_company(<subject company name>)` (the analyst can
-    override it in chat).
+    override it in chat). The sector is never a dialog question either — it is
+    researched and echoed for override (`INIT_DEFAULT_FIELDS`).
 
     Nothing here asks about attachments. The G7 filings reach the analyst
     through the run's one attachment request

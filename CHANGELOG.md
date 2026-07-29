@@ -2,6 +2,52 @@
 
 All notable changes to `infor-beta` are documented here. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The plugin has a single version, recorded in `.claude-plugin/marketplace.json`, `infor-beta/.claude-plugin/plugin.json`, and `pyproject.toml`. Skills carry no `version:` frontmatter (retired in 0.5.35).
 
+## [0.5.51] — 2026-07-29
+
+**One dialog per run.** A `/pitch` run walked the analyst through **three sequential `AskUserQuestion` calls** and seven questions: deal-init's `[Listing, Sector]`, then the deck spec's `[Notes, Valuation, Risk notes]` and `[Targets, Highlights]`. It is now **one call of four** — `[Listing, Notes, Targets, Highlights]`. `/earnings-update` was already one call; it is now one call of one question. Nothing was dropped from the run: three of the seven were already-defaulted questions, and they are echoed for override instead.
+
+### Why it could not just be batched
+
+`AskUserQuestion` accepts at most **4 questions per call**, and `intake_spec.DIALOG_MAX_QUESTIONS` mirrors that limit. Seven questions cannot be one call at any batch size, so this had to get the count to four before merging was even possible. Three moves, in that order.
+
+### 1. The specs merge
+
+`render_dialogs`, `render_attachment_request` and `render_defaults_echo` all take `*specs` now and merge deal-init's declarations with the deliverable's in spec order, each raising on a repeated declaration — the shape v0.5.50 established for attachments, applied to the other two live surfaces. `deck_spec.render_run_dialogs` / `render_run_attachment_request` / `render_run_defaults` are the conductor-facing wrappers that pair the two specs; `render_deck_spec_defaults` is gone, replaced by the merged echo, because a run posts one.
+
+`render_prompt` deliberately did **not** join them. It *numbers* its items, and those numbers are the text fallback's answer mapping (`*_ITEM_PLAN_INPUTS`), so a merged prompt would key deal-init's items off numbers a deck spec's table also claims. The fallback stays two prompts in sequence, each numbering its own half — and `test_the_fallback_is_two_prompts_asking_the_merged_dialog_in_order` asserts that between them they ask exactly the merged dialog's questions in the merged dialog's order, which is the property that actually mattered.
+
+### 2. `group` is deleted
+
+`render_dialogs` batched fields by a declared `group` and only *then* chunked at the cap, which is precisely what held the pitch questionnaire's content and slide-mix sections apart as two calls. Batching is now spec order chunked at `DIALOG_MAX_QUESTIONS`, and nothing reads a section label — so the field went, along with the `__post_init__` contiguity check whose error message justified itself with *"so dialog batching is deterministic"*. The `# -- content inputs --` / `# -- slide mix --` comments in `deck_spec.py` stay; they were always the documentation the field looked like it was providing.
+
+Its two tests were **replaced, not deleted**: `test_dialog_batches_respect_the_declared_groups` → `test_dialog_batches_are_spec_order_chunked_at_the_cap` (every call full but the last — the property a group-aware batcher did not have), and `test_a_split_group_is_rejected` → `test_the_merged_dialog_refuses_a_repeated_header`, which exercises a key collision *between* deal-init and a deck spec, since collisions within one spec were already rejected.
+
+### 3. Three defaulted questions were demoted
+
+`deck_spec.py`'s docstring already stated the principle — *only the judgement items are asked; everything with a sensible default is defaulted instead and echoed once* — and three questions violated it, each by offering "the default" as one of its options:
+
+| Question | Its default | Now |
+|---|---|---|
+| Sector | "Infer from the web — I'll look it up and use it, no confirmation needed" | researched, set on the `DealContext`, echoed |
+| Valuation | "None — the executive summary carries no valuation range" | `valuation_range` left unset, echoed |
+| Risk notes | "None — drafted from the filings and your notes" | `risk_notes` left unset, echoed |
+
+In each case the question's entire content was *an invitation to type something instead*, which a reply to the defaults echo does. `valuation_range` and `risk_notes` are optional in `pitch.yaml` and the old "None" option already meant *leave the input out*, so `supplied=False` is exact rather than approximate. **Listing could not absorb the fourth slot instead** — it is `required=True`, and `test_required_field_cannot_also_declare_a_default_option` enforces that a required field declares no default.
+
+### `IntakeDefault` learns about deal-context targets
+
+Sector needed the design work, because it targets `subject_company.sector / subject_company.industry` — a `DealContext` field — while `IntakeDefault` was documented and validated as plan-input-only. It now carries the same `target_kind` `IntakeField` does, and **`name` IS the target**: for a plan-input default it already was (`client_name`), so the asked-and-defaulted clash check is plain string equality against the field's old `target`, per kind. No second field, no resolver.
+
+`default_rules(supplied=…, target_kind=…)` splits the tables the same way, and that split is load-bearing rather than tidy: the conductor turns `*_DEFAULT_SUPPLIED_INPUTS` into `plan_inputs` entries, so a deal-context default leaking into one would have it write an input literally named `subject_company.sector / subject_company.industry`, which no plan declares. `deal_init.INIT_DEFAULT_FIELDS` is the deal-context table, `test_a_deal_context_default_never_reaches_the_plan_input_table` is the guard, and `"attachment"` is rejected as a default's kind outright — a missing OPTIONAL document is an absent path, and its `checklist` line is where that consequence lives.
+
+### The guard, and where the headroom went
+
+Four questions is the cap exactly, so **there is none**. Adding a fifth raises nothing — `render_dialogs` chunks it into a silent second call — which makes `test_a_slash_command_run_renders_exactly_one_dialog` the only thing between a new question and a quietly two-dialog run. It asserts the exact headers, not just the count, and its docstring says what to do when it fails: default the new item and echo it.
+
+**Generic conductor entry stays two rounds**, and that is stated in the conductor SKILL.md rather than designed around: with no `/pitch` or `/earnings-update`, the `Deliverable` answer is what decides which deck spec exists, so there is nothing to merge until it is answered. `render_init_dialogs` and `render_deck_spec_dialogs` remain as those two rounds' renderers — each one call now, so generic entry is two, not four.
+
+Also fixed: five empty `skills/<transform>/` directories left behind by the Phase D/F deletions (git does not track empty directories, so they survived locally) were removed — `test_no_transform_left_a_skill_directory_behind` had started failing on `deck-assembler`.
+
 ## [0.5.50] — 2026-07-29
 
 **Attachments stop being questions.** A pitch run put **three `AskUserQuestion` status gates** in front of the analyst — the G7 filings at deal-init, then the SEDI PDF and the Bloomberg export — asked one dialog at a time, each pausing the run to collect *attached / I'll drop it next message / none*. All three are gone, along with the CIM's and the EEO snip's. Every document a run needs is now one bullet of a **single plain-text request**, posted after every question has been answered, followed by **one** pause while the analyst drops the files into chat.

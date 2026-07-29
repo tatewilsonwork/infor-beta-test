@@ -25,10 +25,11 @@ from deck_spec import (
     market_entry_targets_from_slides,
     metric_count_from_slides,
     prior_year_quarter,
-    render_deck_spec_defaults,
     render_deck_spec_dialogs,
     render_deck_spec_prompt,
     render_run_attachment_request,
+    render_run_defaults,
+    render_run_dialogs,
 )
 from intake_spec import (
     ATTACHMENT_OPTIONAL_HEADER,
@@ -69,6 +70,23 @@ def _assert_askuserquestion_shape(dialogs: list[list[dict]]) -> None:
 
 def test_pitch_dialogs_are_valid_askuserquestion_payloads():
     _assert_askuserquestion_shape(render_deck_spec_dialogs("pitch"))
+    # And merged with deal-init's — the payload a slash-command run actually
+    # sends, which is the one that has to satisfy the tool's shape contract.
+    _assert_askuserquestion_shape(render_run_dialogs("pitch"))
+    _assert_askuserquestion_shape(render_run_dialogs("earnings-update"))
+
+
+def test_a_slash_command_run_asks_once():
+    """One `AskUserQuestion` call per `/pitch` or `/earnings-update` run.
+
+    The same property `test_intake_spec.test_a_slash_command_run_renders_exactly_
+    one_dialog` pins from the spec side, asserted here through the deck-spec API
+    the conductor actually calls, plus the per-question count that makes it fit.
+    """
+    for deliverable, questions in (("pitch", 4), ("earnings-update", 1)):
+        dialogs = render_run_dialogs(deliverable)
+        assert len(dialogs) == 1, f"/{deliverable} asks {len(dialogs)} times, not once"
+        assert len(dialogs[0]) == questions
 
 
 def test_earnings_update_asks_nothing_at_all():
@@ -108,15 +126,23 @@ def test_dialogs_render_verbatim_and_immutably():
 
 
 def test_unknown_deliverable_raises_everywhere():
+    # The per-deliverable renderers need a questionnaire to render.
     with pytest.raises(ValueError):
         render_deck_spec_dialogs("overview")
     with pytest.raises(ValueError):
         render_deck_spec_prompt("overview")
-    with pytest.raises(ValueError):
-        render_deck_spec_defaults("overview")
-    # A typo is still an error, even for the request.
-    with pytest.raises(ValueError, match="unknown deliverable type"):
-        render_run_attachment_request("pitchh")
+    # The run-level renderers degrade for a declared stub instead — the deal
+    # still has a listing to ask, a sector to default, and filings to request.
+    assert render_run_dialogs("overview") == render_run_dialogs()
+    assert "Sector / industry" in render_run_defaults("overview", sector="Software")
+    # A typo is still an error on all three.
+    for render in (
+        render_run_attachment_request,
+        render_run_dialogs,
+        render_run_defaults,
+    ):
+        with pytest.raises(ValueError, match="unknown deliverable type"):
+            render("pitchh")
 
 
 # ---------------------------------------------------------------------------
@@ -261,14 +287,16 @@ def _flat(text: str) -> str:
 def test_pitch_prompt_covers_every_questionnaire_topic():
     prompt = _flat(render_deck_spec_prompt("pitch"))
     for token in (
-        # Asked items.
+        # Asked items — three of them since v0.5.51.
         "Analyst notes",
         "CIM",
-        "Valuation range",
-        "Risk notes",
         "Acquisition-target slides",
         "Key Investment Highlights",
-        # Defaulted items (listed so a reply can override them).
+        # Defaulted items (listed so a reply can override them). Valuation range
+        # and risk notes moved here from the asked list in v0.5.51: both
+        # defaulted to "None" as questions, so nothing is lost by listing them.
+        "Valuation range",
+        "Risk notes",
         "Client name on the cover",
         "Presentation date",
         "Reporting quarter",
@@ -280,6 +308,12 @@ def test_pitch_prompt_covers_every_questionnaire_topic():
         "Bloomberg ownership export",
     ):
         assert token in prompt, f"pitch deck-spec prompt lost its {token!r} item"
+    # The demoted pair are default lines now, not numbered questions.
+    for gone in (
+        "Valuation range language for the executive summary?",
+        "Any specific risks / mitigants",
+    ):
+        assert gone not in prompt, f"{gone!r} is still asked as a question"
     # Generated deterministically, twice the same — the consistency contract.
     assert _flat(render_deck_spec_prompt("pitch")) == prompt
 
@@ -300,8 +334,6 @@ def test_fallback_prompt_numbering_matches_dialog_order():
     """The numbered text items and the dialogs are the same list, same order."""
     labels = {
         "analyst_notes": "Analyst notes",
-        "valuation_range": "Valuation range",
-        "risk_notes": "Risk notes",
         "market_entry_target_count": "Acquisition-target slides",
         "include_investment_highlights": "Key Investment Highlights",
     }
@@ -325,9 +357,16 @@ def test_fallback_prompt_numbering_matches_dialog_order():
                 f"{deliverable} prompt item {number} is not {labels[name]!r}"
             )
     # The CIM and the EEO snip left this numbering when they became attachments;
-    # neither is a numbered item in any prompt any more.
+    # neither is a numbered item in any prompt any more. The valuation range and
+    # the risk notes left it in v0.5.51 when they became defaults — the numbering
+    # closed up behind them, which is why the tables are derived and not written.
     assert "cim_path" not in PITCH_ITEM_PLAN_INPUTS.values()
     assert EARNINGS_UPDATE_ITEM_PLAN_INPUTS == {}
+    assert PITCH_ITEM_PLAN_INPUTS == {
+        1: "analyst_notes",
+        2: "market_entry_target_count",
+        3: "include_investment_highlights",
+    }
 
 
 def test_prompts_embed_their_half_of_the_attachment_request():
@@ -370,17 +409,23 @@ def test_prompts_embed_their_half_of_the_attachment_request():
 
 
 def test_pitch_defaults_echo_lists_every_default():
-    echo = render_deck_spec_defaults(
+    """One merged echo per run: deal-init's sector, then the deliverable's."""
+    echo = render_run_defaults(
         "pitch",
+        sector="Enterprise software",
         client_name="ACME Corp",
         presentation_date="July 2026",
         reporting_quarter="Q2 2026",
         comparison_quarter="Q2 2025",
     )
     for token in (
+        "Enterprise software",
         "ACME Corp",
         "July 2026",
         "Q2 2026 vs Q2 2025",
+        # The two v0.5.51 demotions — asked through v0.5.50, echoed now.
+        "Valuation range",
+        "Risk notes",
         "Financial Summary slides",
         "Section divider labels",
         "override",
@@ -389,23 +434,32 @@ def test_pitch_defaults_echo_lists_every_default():
 
 
 def test_earnings_update_defaults_echo():
-    echo = render_deck_spec_defaults(
-        "earnings-update", reporting_quarter="Q2 2026", comparison_quarter="Q2 2025"
+    echo = render_run_defaults(
+        "earnings-update",
+        sector="Enterprise software",
+        reporting_quarter="Q2 2026",
+        comparison_quarter="Q2 2025",
     )
     assert "Q2 2026 vs Q2 2025" in echo
+    assert "Enterprise software" in echo
     assert "override" in echo
 
 
 def test_defaults_echo_requires_the_computed_values():
     with pytest.raises(ValueError, match="presentation_date"):
-        render_deck_spec_defaults(
+        render_run_defaults(
             "pitch",
+            sector="Enterprise software",
             client_name="ACME Corp",
             reporting_quarter="Q2 2026",
             comparison_quarter="Q2 2025",
         )
     with pytest.raises(ValueError):
-        render_deck_spec_defaults("earnings-update", reporting_quarter="Q2 2026")
+        render_run_defaults("earnings-update", reporting_quarter="Q2 2026")
+    # The sector is deal-init's, so every run needs it — including a deliverable
+    # with no questionnaire of its own.
+    with pytest.raises(ValueError, match="sector"):
+        render_run_defaults("overview")
 
 
 def test_default_presentation_date():
