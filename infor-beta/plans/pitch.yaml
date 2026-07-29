@@ -132,8 +132,9 @@ stages:
     checkpoint: informational
 
   # LTM metrics run *before* the cap table (mirrors the earnings-update plan) so
-  # its LTM revenue / Adj. EBITDA totals flow into the cap table's LTM valuation
-  # column (D47 / D48). Without this, the cap table falls back to CapIQ LTM
+  # the cap table's LTM valuation column (D47 / D48) can LINK to its LTM revenue /
+  # Adj. EBITDA bridge totals — one copy of each figure, so correcting a bridge
+  # moves the cap table with it. Without this, the cap table falls back to CapIQ LTM
   # formulas that render empty / #NAME? in the slide-7 picture. In the pitch plan
   # it also bridges the extra metrics named in `financial-summary`'s
   # `ltm_bridge_specs` so the Financial Summary tab can link their LTM totals.
@@ -152,10 +153,10 @@ stages:
         description: Absolute path to the deal workbook, whose `ltm-metrics` tab this stage wrote (revenue overview + revenue/EBITDA bridges; feeds the overview slide pie).
       - name: ltm_revenue
         type: float
-        description: LTM revenue total (millions, filing reporting currency) — fed to the cap table D47.
+        description: LTM revenue total (millions, filing reporting currency) — the figure the cap table stage REPORTS and cross-checks; its D47 links to this tab's bridge total rather than storing the number.
       - name: ltm_adj_ebitda
         type: float
-        description: LTM Adj. EBITDA total (millions, filing reporting currency) — fed to the cap table D48.
+        description: LTM Adj. EBITDA total (millions, filing reporting currency) — the figure the cap table stage REPORTS and cross-checks; its D48 links to this tab's bridge total rather than storing the number.
     checkpoint: informational
 
   - id: captable
@@ -169,7 +170,7 @@ stages:
     outputs:
       - name: workbook_path
         type: Path
-        description: Absolute path to the deal workbook, whose `captable` tab this stage wrote (with LTM revenue/EBITDA in D47/D48).
+        description: Absolute path to the deal workbook, whose `captable` tab this stage wrote (D47/D48 linked to the `ltm-metrics` bridge totals, or the CapIQ fallback when that tab is absent).
     checkpoint: informational
 
   # Ownership (Canadian public targets only). Runs *after* captable so F35

@@ -36,6 +36,7 @@ import financial_charts
 import stage_transforms
 from deal_init import save_deal_context
 from excel_to_powerpoint import find_soffice
+from font_probe import probe_font_resolution
 from run_log import create_run_dir, stage_dir, write_stage_inputs
 from schemas import Company, DealContext, Plan, SlidePlan
 from stage_io import stage_io
@@ -399,6 +400,26 @@ def test_deck_transform_assembles_and_writes_the_vision_review(tmp_path: Path):
     # renders are on disk and the note says what to look for in them.
     assert "text drawn over other text" in body
     assert list((io.stage_dir / "vision" / "slides").glob("*.png"))
+
+
+def test_the_vision_review_names_the_font_the_geometry_was_measured_in(tmp_path: Path):
+    """The one durable record of what the render oracle actually resolved.
+
+    `converge_deck` logs it too, but a transform's log is console output — the run
+    that surfaced this had to have the resolution reconstructed from a report
+    because it appeared nowhere on disk. The review is at `vision_review_path`,
+    which the run summary names, so this is where it survives.
+    """
+
+    class _NoAgenda:
+        targets: list = []
+        findings: list = []
+        review_images: dict = {}
+
+    body = stage_transforms.render_vision_review(tmp_path / "Deck.pptx", _NoAgenda())
+
+    assert probe_font_resolution().log_line() in body
+    assert "Palatino Linotype" in body
 
 
 def test_vision_review_records_the_reason_it_could_not_run(tmp_path: Path):

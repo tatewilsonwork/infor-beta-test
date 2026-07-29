@@ -18,6 +18,7 @@ import pytest
 from pptx import Presentation
 from pptx.util import Emu, Pt
 
+import deck_repair
 from deck_contract import default_library_path, verify_deck
 from deck_repair import (
     REPAIRABLE_KINDS,
@@ -28,7 +29,8 @@ from deck_repair import (
     converge_deck,
 )
 from excel_to_powerpoint import find_soffice
-from pptx_helpers import normal_autofit_scale
+from font_probe import FontResolution
+from pptx_helpers import PALATINO, normal_autofit_scale
 
 _FIXTURES = Path(__file__).parent / "fixtures"
 _REGRESSIONS = _FIXTURES / "regressions"
@@ -138,6 +140,137 @@ def test_does_not_converge_when_the_content_is_over_budget(tmp_path):
 
 def test_assert_converged_is_silent_on_a_converged_result(tmp_path):
     assert_converged(tmp_path / "any.pptx", ConvergeResult(converged=True, iterations=0)) is None
+
+
+# ─── QA scratch is ephemeral unless the stage fails ──────────────────────────
+# The loop writes ~170 files and ~10 MB per deck. The assemblers used to point
+# that at the deal's artefacts directory, which is cloud-synced: the same code
+# and the same warm render cache took 11.7 s for the first repair on local disk
+# and 26.9 s on the mount, and eight consecutive live pitch attempts were killed
+# at ~43 s having never converged.
+
+
+@pytest.fixture
+def scratch_roots(monkeypatch):
+    """Record every ephemeral scratch root `converge_deck` creates.
+
+    Records rather than redirects, so nothing about where LibreOffice puts its
+    profile or its PDF cache changes underneath the test.
+    """
+    made: list[Path] = []
+    real_mkdtemp = deck_repair.tempfile.mkdtemp
+
+    def spy(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        if str(kwargs.get("prefix", "")).startswith(deck_repair.SCRATCH_PREFIX):
+            made.append(Path(path))
+        return path
+
+    monkeypatch.setattr(deck_repair.tempfile, "mkdtemp", spy)
+    return made
+
+
+@needs_render
+def test_a_converged_run_leaves_no_scratch_anywhere(tmp_path, scratch_roots):
+    """The happy path writes nothing durable — not beside the deck, not in temp."""
+    deck = _copy(_REGRESSIONS / "prl18-risk-table.pptx", tmp_path)
+    beside_the_deck = set(tmp_path.iterdir())
+
+    result = converge_deck(deck, keep_on_failure=tmp_path / ".qa")
+
+    assert result.converged, result.summary()
+    assert result.kept_dir is None
+    assert not (tmp_path / ".qa").exists(), "a converged run kept QA artefacts"
+    assert set(tmp_path.iterdir()) == beside_the_deck, (
+        "the loop wrote scratch into the deck's own directory"
+    )
+    assert scratch_roots, "the loop did not stage its renders under tempfile"
+    assert [root for root in scratch_roots if root.exists()] == [], (
+        "the ephemeral scratch root was left behind"
+    )
+
+
+@needs_render
+def test_a_failing_run_keeps_the_last_pass_and_names_it(tmp_path, scratch_roots):
+    """Failure is the one case worth keeping: the renders ARE the diagnosis.
+
+    Only the last pass, and only what the analyst would open — the earlier passes
+    are what made this ~10 MB per deck.
+    """
+    deck = _copy(_REGRESSIONS / "prl14-overview-bullets.pptx", tmp_path)
+    qa = tmp_path / "artefacts" / ".qa"
+
+    result = converge_deck(deck, keep_on_failure=qa)
+
+    assert not result.converged
+    assert result.kept_dir == qa and qa.is_dir()
+    kept = sorted(path.name for path in qa.iterdir())
+    assert any(name.startswith("verify-") for name in kept), kept
+    assert list(qa.rglob("*.png")), "the kept pass carries no renders to look at"
+    assert [root for root in scratch_roots if root.exists()] == [], (
+        "keeping the failing pass must not keep the whole scratch tree"
+    )
+
+    with pytest.raises(DeckNotConvergedError) as excinfo:
+        assert_converged(deck, result)
+    assert str(qa) in str(excinfo.value), (
+        "the error must name where the failing renders were kept"
+    )
+
+
+@needs_render
+def test_an_explicit_out_dir_still_persists(tmp_path):
+    """A caller that asks for the whole tree gets it — tests, hands-on debugging."""
+    deck = _copy(_REGRESSIONS / "prl18-risk-table.pptx", tmp_path)
+
+    converge_deck(deck, out_dir=tmp_path / "qa")
+
+    assert (tmp_path / "qa" / "verify-0").is_dir()
+
+
+# ─── The font the ladder is calibrated against ───────────────────────────────
+
+
+@needs_render
+def test_the_converge_records_which_font_the_oracle_resolved(tmp_path):
+    """Every size in the deck is measured in this face; the run must say which.
+
+    A silent substitution is the worst case — the deck converges and every point
+    size is calibrated against the wrong advance widths — and it left no trace
+    anywhere until this line existed.
+    """
+    deck = _copy(default_library_path(), tmp_path)
+    logged: list[str] = []
+
+    result = converge_deck(deck, out_dir=tmp_path / "qa", log=logged.append)
+
+    assert result.font is not None
+    assert result.font.requested == PALATINO
+    assert any("font" in line.lower() for line in logged), logged
+    assert any(result.font.log_line() in line for line in logged), (
+        "the resolution itself must reach the stage log, pass or fail"
+    )
+
+
+def test_a_substituted_font_is_named_in_the_failure(tmp_path):
+    """A deck that will not fit in the WRONG metrics may fit in the right ones.
+
+    So the substitution has to be in front of whoever is about to rewrite copy,
+    not only in the stage log they may not still have.
+    """
+    substituted = FontResolution(
+        requested=PALATINO,
+        family="DejaVu Serif",
+        file="/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+        method="fontconfig",
+        metric_compatible=False,
+    )
+    result = ConvergeResult(converged=False, iterations=3, font=substituted)
+
+    with pytest.raises(DeckNotConvergedError) as excinfo:
+        assert_converged(tmp_path / "any.pptx", result)
+
+    assert "DejaVu Serif" in str(excinfo.value)
 
 
 # ─── Scope: what the loop must NOT touch ─────────────────────────────────────

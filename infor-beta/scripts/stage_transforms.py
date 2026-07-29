@@ -121,7 +121,15 @@ def render_vision_review(deck: Path | str, vision) -> str:
     is the *reader's* half of deck QA: geometry was already measured and repaired
     inside the assembler, so what is left is whether the slides read correctly,
     which no measurement answers.
+
+    It opens by naming the typeface the geometry was measured in, because that is
+    the caveat on the sentence before it: `deck_repair` chose every font size from a
+    render, and a substituted face means those sizes were measured against advance
+    widths the analyst will not see. `converge_deck` logs the same line, but a log
+    is not on disk — this is, at `vision_review_path`.
     """
+    from font_probe import probe_font_resolution
+
     deck = Path(deck)
     lines = [
         f"# Deck vision review — {deck.name}",
@@ -133,6 +141,8 @@ def render_vision_review(deck: Path | str, vision) -> str:
             "**reading the slides**. Open each render below and check for "
             f"{_vision_checklist()}."
         ),
+        "",
+        probe_font_resolution().log_line(),
         "",
     ]
 

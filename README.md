@@ -56,7 +56,7 @@ Every stage is one of two kinds. A **judgment** stage — research, drafting, or
 ## Conventions
 
 - One plugin version, recorded in `marketplace.json` / `plugin.json` / `pyproject.toml` only — skills carry no `version:` frontmatter. Skill directory names carry no `-infor` suffix; deliverable-specific skills are prefixed by deliverable (`earningsupdate-*`, `pitch-*`).
-- Output files land in the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), not the analyst's `cwd`.
+- Output files land in the **deal directory** (`<deals root>/<codename>/`), not the analyst's `cwd`. The deals root is discovered at deal-init and reported before anything is written — the mounted workspace folder (`INFOR Deals` under a folder shared into the session) when there is one, `~/Documents/INFOR Deals` otherwise. An existing root holding your deals is always preferred to a new one.
 - Templates are resolved via the plugin-aware `find_template.sh` helper, never hardcoded paths.
 - Inside a template, cells are reached through the `infor_`-prefixed **defined names** it carries and library slides through their **marker shapes** — never a hardcoded address or slide index, so an analyst can re-save a template or insert a library slide without a code change.
 - Excel does the math, not the LLM — arithmetic lives in cell formulas for auditability.
