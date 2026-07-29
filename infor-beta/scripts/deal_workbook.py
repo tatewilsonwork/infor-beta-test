@@ -27,6 +27,19 @@ their absence:
    load → mutate → save cycle; two stages cannot interleave and lose one
    another's tab.
 
+The lock releases without deleting anything
+-------------------------------------------
+The deal directory is the analyst's, which means it can be a cloud-synced mount
+that refuses `unlink()`. So the lock's state is its file's **content** and release
+truncates when it cannot delete — see `_workbook_lock`. **No stage should ever
+have a reason to patch the locking**, and two did once (one no-op'd
+`_workbook_lock`, the other wrote to a `/tmp` copy and copied back) because a
+denied unlink wedged the workbook for 120 s per write and the error text asked for
+a deletion the filesystem forbade. Serialization is not optional here — without it
+a wave's last save wins and the other tabs are gone — so if the lock ever looks
+like the thing standing between a stage and forward progress, that is a defect in
+the lock, not a case for working around it.
+
 Template fidelity
 -----------------
 The five template tabs are copied in at init by copying the shipped
@@ -49,10 +62,12 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from openpyxl import load_workbook
 
@@ -146,6 +161,80 @@ def _template_path(template_name: str = DEAL_WORKBOOK_TEMPLATE) -> Path:
     )
 
 
+# ─── Filesystem capability ───────────────────────────────────────────────────
+#: Whether a deal directory permits `unlink()`, probed once per directory. The
+#: lock does NOT need unlink — release falls back to truncation — so this exists
+#: to say out loud that a directory denies it, not to change how the lock behaves.
+#: There is deliberately no lock-free degraded mode: going unserialized would
+#: trade a 120 s hang for a lost tab, which is the worse of the two defects, and
+#: `write_tab` is the only mutation path precisely so a wave cannot lose one.
+_UNLINK_PROBED: dict[str, bool] = {}
+
+#: The probe file's name. **Fixed, not unique per process**, because on the
+#: filesystem this exists to detect the probe file cannot be deleted either — a
+#: unique name would accumulate one permanent scrap per deal-init, littering the
+#: analyst's deal directory to report that littering it is unavoidable. One file,
+#: overwritten by every later probe, whose surviving presence is itself the finding.
+_UNLINK_PROBE_NAME = ".infor-fs-probe"
+_UNLINK_PROBE_BODY = (
+    "Written and immediately deleted by infor-beta to check whether this directory "
+    "permits file deletion. If you are reading it, the answer was no — the deal "
+    "workbook's lock releases by emptying its .lock file here instead of removing "
+    "it. Safe to delete if your filesystem ever lets you.\n"
+)
+
+
+def deal_dir_permits_unlink(deal_dir: Path | str, *, refresh: bool = False) -> bool:
+    """Whether this directory lets us delete a file we just created.
+
+    A real create + unlink, because the answer is a property of the mount (a
+    cloud-sync mount can refuse) and not of the platform, and cached per directory
+    because the answer cannot change under a run. An inconclusive probe — one that
+    could not even create the file — reports True and is not cached: the deal
+    directory is unwritable, which `init_deal_workbook` is about to fail on for a
+    much more direct reason.
+    """
+    key = str(Path(deal_dir).expanduser())
+    if refresh:
+        _UNLINK_PROBED.pop(key, None)
+    if key in _UNLINK_PROBED:
+        return _UNLINK_PROBED[key]
+
+    probe = Path(key) / _UNLINK_PROBE_NAME
+    try:
+        probe.write_text(_UNLINK_PROBE_BODY, encoding="utf-8")
+    except OSError:
+        return True
+    try:
+        probe.unlink()
+    except FileNotFoundError:
+        pass  # a concurrent probe removed it, which answers the question
+    except OSError:
+        _UNLINK_PROBED[key] = False
+        return False
+    _UNLINK_PROBED[key] = True
+    return True
+
+
+def _report_unlink_capability(path: Path) -> None:
+    """Say so, once per deal directory, when the lock will release by truncation.
+
+    Named at deal-init rather than discovered mid-wave, because a 0-byte `.lock`
+    file surviving in the deal directory is otherwise the kind of thing a reader
+    diagnoses as the bug instead of the accommodation.
+    """
+    if deal_dir_permits_unlink(path.parent):
+        return
+    print(
+        f"deal_workbook: {path.parent} denies unlink(). The workbook lock will "
+        f"release by emptying {path.name}.lock instead of deleting it, so a 0-byte "
+        f"lock file (and a {_UNLINK_PROBE_NAME} explaining itself) may stay in the "
+        f"deal directory — an empty lock is a free lock. Writes stay serialized; "
+        f"nothing degrades.",
+        file=sys.stderr,
+    )
+
+
 def init_deal_workbook(
     *,
     deal_dir: Path | str,
@@ -163,10 +252,11 @@ def init_deal_workbook(
     an earnings-update workbook does not carry an empty comps section.
     """
     path = deal_workbook_path(deal_dir, deliverable_type, deal_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _report_unlink_capability(path)
     if path.exists() and not overwrite:
         return path
 
-    path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(_template_path(), path)
 
     wanted = DELIVERABLE_TABS.get(deliverable_type)
@@ -213,63 +303,168 @@ _LOCK_POLL_S = 0.1
 #: A lock older than this is from a writer that died (the conductor's stages are
 #: single writes, not long sessions), so it is broken rather than waited out.
 _LOCK_STALE_S = 300.0
+#: Pause between claiming a free lock file and confirming the claim survived. Two
+#: writers that both found it empty both write their token; whichever token is
+#: still there after this owns the lock and the other retries, so exactly one
+#: proceeds. It only has to cover a rival's gap between reading "empty" and
+#: writing — two adjacent syscalls — so 50 ms is generous.
+_LOCK_CONFIRM_S = 0.05
+
+#: `_read_state` outcomes that are not a holder token.
+_VANISHED = object()  # the file is gone: free, take the fast path again
+_UNREADABLE = object()  # a transient read error: assume held, retry
 
 
 class _workbook_lock:
     """Exclusive lock on one workbook, held for a whole load → mutate → save.
 
-    A sibling `.lock` file created with `O_CREAT | O_EXCL` — uniform across
-    Windows and Linux, unlike `msvcrt.locking` / `fcntl.flock`, and visible to a
-    developer wondering why a stage is waiting. Waits up to `_LOCK_TIMEOUT_S`,
-    breaks a lock left behind by a killed writer after `_LOCK_STALE_S`.
+    A sibling `.lock` file — uniform across Windows and Linux, unlike
+    `msvcrt.locking` / `fcntl.flock`, and visible to a developer wondering why a
+    stage is waiting. Waits up to `_LOCK_TIMEOUT_S`, breaks a lock left behind by
+    a killed writer after `_LOCK_STALE_S`.
+
+    **The lock's state is the file's CONTENT, not its existence.** A non-empty
+    lock is held by the token it names; an empty one is free. That is what makes
+    it survive a filesystem that refuses `unlink()`, which a cloud-synced deal
+    directory does. The previous revision released by unlinking inside
+    `except OSError: pass`, so a denied unlink left the *holder's own* lock behind
+    silently, and `_break_if_stale` could not recover it either — it returned
+    False when unlink raised. Every later `write_tab` then waited the full 120 s
+    and failed with a message telling the analyst to delete a file nothing on that
+    mount could delete. In one pitch run two sub-agents reached the same
+    conclusion independently and monkeypatched this class — one to a no-op, the
+    other onto a `/tmp` copy — and patching the serialization out is exactly how a
+    wave loses a tab. So the lock has to work here, and it does not need to delete
+    anything to do it.
+
+    Release tries `unlink()` first (identical to the old behaviour wherever it is
+    allowed: no leftover file) and falls back to truncating in place. Truncation
+    is a *write*, and a directory we just saved a workbook into always permits
+    one. Exactly one of the two makes the lock free, never both — truncating and
+    *then* unlinking would let a rival claim the emptied file and have its claim
+    deleted out from under it.
     """
 
     def __init__(self, path: Path):
         self._lock_path = Path(path).with_suffix(Path(path).suffix + ".lock")
-        self._fd: int | None = None
+        # pid for a human reading the file; the uuid makes the claim confirmable
+        # even against another writer in this same process (a conductor wave's
+        # stages are threads as often as processes).
+        self._token = f"{os.getpid()}:{uuid4().hex}"
+        self._held = False
 
     def __enter__(self) -> "_workbook_lock":
         deadline = time.monotonic() + _LOCK_TIMEOUT_S
         while True:
-            try:
-                self._fd = os.open(str(self._lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.write(self._fd, f"{os.getpid()}".encode())
+            if self._claim():
+                self._held = True
                 return self
-            except FileExistsError:
-                if self._break_if_stale():
-                    continue
-                if time.monotonic() >= deadline:
-                    raise DealWorkbookError(
-                        f"timed out after {_LOCK_TIMEOUT_S:.0f}s waiting for "
-                        f"{self._lock_path.name}. Another stage is writing the deal "
-                        f"workbook, or a killed one left the lock behind — delete "
-                        f"the file to clear it."
-                    ) from None
-                time.sleep(_LOCK_POLL_S)
+            if time.monotonic() >= deadline:
+                raise DealWorkbookError(self._timeout_message()) from None
+            time.sleep(_LOCK_POLL_S)
 
-    def _break_if_stale(self) -> bool:
-        try:
-            age = time.time() - self._lock_path.stat().st_mtime
-        except OSError:
-            return True  # vanished — the holder released it
-        if age <= _LOCK_STALE_S:
+    # ── acquire ──────────────────────────────────────────────────────────────
+
+    def _claim(self) -> bool:
+        """One attempt. True when this instance now holds the lock."""
+        if self._create_exclusive():
+            return True
+        state = self._read_state()
+        if state is _UNREADABLE:
             return False
+        if state is _VANISHED:
+            return self._create_exclusive()  # released between our two calls
+        if state and not self._is_stale():
+            return False  # genuinely held by another writer
+        return self._claim_free()  # empty, or a dead writer's token
+
+    def _create_exclusive(self) -> bool:
+        """The fast path: no lock file at all, so `O_EXCL` settles it atomically."""
+        try:
+            fd = os.open(str(self._lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            raise DealWorkbookError(
+                f"cannot create the deal-workbook lock {self._lock_path}: {exc}. The "
+                f"deal directory has to be writable — the workbook is saved into it."
+            ) from exc
+        try:
+            os.write(fd, self._token.encode())
+        finally:
+            os.close(fd)
+        return True
+
+    def _claim_free(self) -> bool:
+        """Write our token over a free (empty or stale) lock, and confirm it stuck.
+
+        Two writers can both find the lock free and both write. Whichever token is
+        still there after `_LOCK_CONFIRM_S` owns it; the loser reads someone
+        else's token back and retries.
+        """
+        try:
+            self._lock_path.write_text(self._token, encoding="utf-8")
+        except OSError:
+            return False
+        time.sleep(_LOCK_CONFIRM_S)
+        return self._read_state() == self._token
+
+    def _read_state(self):
+        """The holder's token, `""` when free, or a sentinel. Never raises."""
+        try:
+            return self._lock_path.read_text(encoding="utf-8", errors="replace").strip()
+        except FileNotFoundError:
+            return _VANISHED
+        except OSError:
+            return _UNREADABLE
+
+    def _is_stale(self) -> bool:
+        try:
+            return (time.time() - self._lock_path.stat().st_mtime) > _LOCK_STALE_S
+        except OSError:
+            return True  # cannot stat it, so nobody is holding it
+
+    def _timeout_message(self) -> str:
+        state = self._read_state()
+        holder = state if isinstance(state, str) and state else "unknown"
+        return (
+            f"timed out after {_LOCK_TIMEOUT_S:.0f}s waiting for "
+            f"{self._lock_path.name} (held by {holder}). Another stage is writing "
+            f"the deal workbook. If none is running, a killed writer left the lock "
+            f"held: EMPTY the file to clear it — an empty lock file is a free lock, "
+            f"and emptying it works even on a mount that refuses to remove files."
+        )
+
+    # ── release ──────────────────────────────────────────────────────────────
+
+    def __exit__(self, *_exc) -> None:
+        if not self._held:
+            return
+        self._held = False
+        if self._unlink() or self._truncate():
+            return
+        print(
+            f"deal_workbook: WARNING — could not release {self._lock_path}: neither "
+            f"unlink nor truncation was permitted. Later writes will wait for it to "
+            f"age out after {_LOCK_STALE_S:.0f}s. Empty the file to clear it now.",
+            file=sys.stderr,
+        )
+
+    def _unlink(self) -> bool:
         try:
             self._lock_path.unlink()
+        except FileNotFoundError:
+            return True  # already gone — free either way
         except OSError:
             return False
         return True
 
-    def __exit__(self, *_exc) -> None:
-        if self._fd is not None:
-            try:
-                os.close(self._fd)
-            except OSError:
-                pass
+    def _truncate(self) -> bool:
         try:
-            self._lock_path.unlink()
+            self._lock_path.write_text("", encoding="utf-8")
         except OSError:
-            pass
+            return False
+        return True
 
 
 def _tab_index(tab_name: str, present: list[str]) -> int:

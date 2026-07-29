@@ -998,6 +998,43 @@ def test_overview_copy_past_every_shrink_fails_the_stage(tmp_path: Path):
     )
 
 
+# ─── The converge loop's scratch does not land in the deal directory ─────────
+
+
+def test_a_converged_assembly_leaves_no_qa_scratch_in_the_deal_directory(tmp_path: Path):
+    """The output directory is the analyst's, and it is cloud-synced.
+
+    The assembler used to hand the converge loop `out_dir / ".qa"`, so every deck
+    left ~170 render files and ~10 MB there permanently — and paid the mount's
+    per-file sync overhead while doing it, which is what turned a 23.5 s transform
+    into eight consecutive killed attempts. A successful assembly must leave the
+    deck and nothing else.
+    """
+    deck_path = _assemble(tmp_path, _sample_content(), converge=True)
+
+    assert deck_path.is_file()
+    assert not (tmp_path / ".qa").exists(), "the QA scratch tree is back in the deal directory"
+    strays = sorted(path.name for path in tmp_path.iterdir() if path.is_dir())
+    assert strays == [], f"the assembler left directories in the deal directory: {strays}"
+
+
+def test_a_failed_assembly_keeps_the_failing_renders_where_the_error_says(tmp_path: Path):
+    """Failure is the one case that leaves something: the evidence for why.
+
+    Same over-budget copy as `test_overview_copy_past_every_shrink_fails_the_stage`
+    — the point here is where the renders end up and that the error names it.
+    """
+    with pytest.raises(DeckNotConvergedError) as excinfo:
+        _assemble(tmp_path, _overview_content(10, 185), converge=True)
+
+    qa = tmp_path / ".qa"
+    assert qa.is_dir(), "a failing converge must keep the failing pass for the analyst"
+    assert list(qa.rglob("*.png")), "the kept pass carries no renders to look at"
+    assert str(qa) in str(excinfo.value), (
+        f"the error must name where the renders were kept: {excinfo.value}"
+    )
+
+
 def test_market_entry_long_content_converges(tmp_path: Path):
     """A filled market-entry table must render inside its clamp, measured.
 

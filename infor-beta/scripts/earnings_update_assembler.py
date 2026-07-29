@@ -362,10 +362,15 @@ def assemble_earnings_update_deck(
     # python-pptx, and doing that after the COM insertion would round-trip the
     # pasted picture for no reason. A picture cannot overflow its box anyway —
     # only text and tables re-grow — so nothing the insertion adds needs fitting.
+    #
+    # No `out_dir`: the loop's renders are scratch and stage under `tempfile`, so a
+    # successful converge leaves nothing in the deal directory (see deck_repair's
+    # module docstring). `keep_on_failure` preserves the failing pass's renders —
+    # and only those — for the analyst.
     if converge:
         assert_converged(
             output_path,
-            converge_deck(output_path, library=template, out_dir=out_dir / ".qa"),
+            converge_deck(output_path, library=template, keep_on_failure=out_dir / ".qa"),
         )
 
     if captable_workbook_path is not None:

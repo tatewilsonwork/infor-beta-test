@@ -325,6 +325,11 @@ def test_assembled_earnings_deck_converges_against_the_contract(tmp_path: Path):
     """
     deck_path = _assemble_sample_deck(tmp_path, converge=True)
 
+    # The loop's ~170 renders per deck are scratch and stage under `tempfile`. This
+    # assembler used to hand it `out_dir / ".qa"`, which left them permanently in
+    # the analyst's cloud-synced deal directory.
+    assert not (tmp_path / ".qa").exists(), "the QA scratch tree is back in the deal directory"
+
     findings = verify_deck(deck_path, vision=False, out_dir=tmp_path / "qa")
     geometric = [
         f
