@@ -19,7 +19,7 @@ Today's date is available from the system context (`currentDate`) — do not she
 When invoked as a stage of a conductor plan, your dispatch envelope carries three paths — plugin root, `inputs.json`, `outputs.json` — and every command below takes them **as arguments**. Nothing is exported; nothing is read from the environment.
 
 - Read your inputs (ticker, optional company facts) from the resolved inputs instead of asking the analyst. If a field you need is missing, surface the gap with `io.fail("missing input: <field>")` and stop — the conductor halts on that.
-- The inputs may also carry `ltm_revenue` and `ltm_adj_ebitda` (millions, in the **filing's reporting currency**) handed off by the upstream `ltm-metrics` stage. Use them in Step 6b to populate the cap table's LTM valuation column (D47 / D48). They are optional — when absent (e.g. direct `/captable` invocation, or a plan with no `ltm-metrics` stage), Step 6b restores the CapIQ fallback formulas instead.
+- The inputs may also carry `ltm_revenue` and `ltm_adj_ebitda` (millions, in the **filing's reporting currency**) handed off by the upstream `ltm-metrics` stage. They are the figures you **report** in Step 8 and cross-check against — they are **not** what Step 6b writes into the LTM valuation column (D47 / D48). Those cells **link** to the `ltm-metrics` tab that computed them, so a corrected bridge flows through to the cap table; a figure written as a number is the defect Step 6b opens by forbidding. When there is no `ltm-metrics` tab (direct `/captable` invocation, or a plan with no `ltm-metrics` stage), Step 6b restores the CapIQ fallback formulas instead.
 - The inputs carry `deal_workbook` — the deal's ONE workbook, whose `captable` tab you write. Do NOT create a standalone cap table file.
 - At the end of Step 8, write the structured handoff — the conductor will not proceed past this stage until `outputs.json` exists and parses as JSON:
   ```python
@@ -269,28 +269,53 @@ The Financial Metrics block reads its **LTM** column from `D47` (Revenue) and `D
 
 **Currency / units.** The CapIQ estimate columns next to them (`E47`/`F47`, `E48`/`F48`) are expressed in the **Output currency (F5), in millions**. Whatever you write to `D47`/`D48` must match: millions, in F5 currency.
 
-**Case A — LTM values supplied (`ltm_revenue` / `ltm_adj_ebitda` in your resolved inputs).** These arrive in the filing's reporting currency, in millions. Convert to the Output currency the same way the rest of the template does — by **multiplying by F7** (Output per Input/filing currency; F7 is `1.0` when the filing currency equals F5, so this is a safe no-op then). Write each as a formula embedding the figure so the conversion stays auditable, and apply blue font (it is an authored hardcoded-derived value, like the Section IV OTM rows):
+> ### NEVER write an LTM figure into `D47` / `D48` as a number.
+>
+> LTM Revenue and LTM Adj. EBITDA are computed on the deal workbook's **`ltm-metrics` tab**, by the bridges that show `LTM = FY + YTD − prior-year YTD`. That tab is the **only** copy of each figure. Two tabs consume it — the `financial-summary` tab and this one — and both must **link** to it.
+>
+> `=5207.912*F7` is the defect this rule exists for. Correct a bridge component on `ltm-metrics` and every linked consumer follows; a cell holding the number silently does not, so the deck ships a Financial Summary slide and a cap-table picture carrying **two different LTM revenues, with no error value anywhere to catch it**. Your resolved `ltm_revenue` / `ltm_adj_ebitda` inputs are for the Step 8 summary and as a cross-check on the linked result — they are **not** what goes in the cell.
+
+**Case A — the deal workbook has an `ltm-metrics` tab** (the conductor scheduled `ltm-metrics` ahead of this stage in both shipped plans, so this is the normal path). Link each cell to the matching bridge total, multiplied by the FX cell so the value stays in the Output currency. `ltm_metrics.ltm_total_link` builds the formula — do not hand-write an `INDEX`/`MATCH`, and resolve the FX cell through `NAME_FX_RATE`, never as the literal `F7`:
 
 ```python
+from ltm_metrics import LTM_EBITDA_RESULT_LABELS, LTM_REVENUE_RESULT_LABEL, ltm_total_link
 from template_layout import (
     NAME_FX_RATE, NAME_LTM_EBITDA_VALUATION, NAME_LTM_REVENUE_VALUATION, resolve_name_cell,
 )
 
-fx = resolve_name_cell(ws, NAME_FX_RATE)  # 'F7' as shipped
-if ltm_revenue is not None:
+fx = resolve_name_cell(ws, NAME_FX_RATE)  # 'F7' as shipped — resolved, never typed
+
+# `wb` is the workbook your fill(wb, ws) callback receives, so the sibling tab is
+# already open. Each call returns None when that bridge is not on the tab.
+rev_link = ltm_total_link(wb, LTM_REVENUE_RESULT_LABEL, times=fx)
+ebitda_link = ltm_total_link(wb, *LTM_EBITDA_RESULT_LABELS, times=fx)
+# rev_link is now:
+#   =INDEX('ltm-metrics'!$B:$B, MATCH("(=) LTM Revenue", 'ltm-metrics'!$A:$A, 0))*F7
+
+if rev_link is not None:
     c = ws[resolve_name_cell(ws, NAME_LTM_REVENUE_VALUATION)]   # 'D47' as shipped
-    c.value = f"={ltm_revenue}*{fx}"; c.font = BLUE  # Palatino-9 blue (see Color coding)
-if ltm_adj_ebitda is not None:
+    c.value = rev_link; c.font = BLUE  # Palatino-9 blue (see Color coding)
+if ebitda_link is not None:
     c = ws[resolve_name_cell(ws, NAME_LTM_EBITDA_VALUATION)]    # 'D48' as shipped
-    c.value = f"={ltm_adj_ebitda}*{fx}"; c.font = BLUE
+    c.value = ebitda_link; c.font = BLUE
 ```
 
-**Case B — no LTM values (direct invocation / no `ltm-metrics` stage).** Restore the CapIQ LTM formulas so the cap table still auto-populates in Excel with the CapIQ add-in. Do **not** color these blue (they are formula cells):
+The bridge totals are in the **filing's reporting currency**, so `*F7` converts them the same way the rest of the template does (Output per Input/filing currency; F7 is `1.0` when the filing currency equals F5, a safe no-op). Keep the blue authored-value font — you authored these formulas, exactly as with the Section IV OTM rows.
+
+`LTM_EBITDA_RESULT_LABELS` is a *preference order*: the tab's bridge is labelled `LTM Adj. EBITDA` when the company discloses an Adjusted figure and `LTM EBITDA` when it does not, and the helper links to whichever is there. That is why you pass the constants rather than a string you chose.
+
+**Cross-check the link against your inputs.** Divide nothing and convert nothing by hand — just confirm the bridge total the link points at matches your `ltm_revenue` / `ltm_adj_ebitda` input to the rounding. If they disagree, say so in the Step 8 summary; the tab wins, because it is the audited derivation.
+
+**Case B — no `ltm-metrics` tab in the deal workbook** (direct `/captable` invocation, or a plan with no `ltm-metrics` stage — `ltm_total_link` returns `None` for both cells). Restore the CapIQ LTM formulas so the cap table still auto-populates in Excel with the CapIQ add-in. Do **not** color these blue (they are formula cells):
 
 ```python
-ws["D47"] = '=_xll.SNL.Clients.Office.Excel.Functions.SPG($F$3,"IQ_REV",D$33,$F$6,"Options:Mag=Millions,NA=NA,Curr="&$F$5)'
-ws["D48"] = '=_xll.SNL.Clients.Office.Excel.Functions.SPG($F$3,"SP_EBITDA",D$33,$F$6,"Options:Mag=Millions,NA=NA,Curr="&$F$5)'
+if rev_link is None:
+    ws[resolve_name_cell(ws, NAME_LTM_REVENUE_VALUATION)] = '=_xll.SNL.Clients.Office.Excel.Functions.SPG($F$3,"IQ_REV",D$33,$F$6,"Options:Mag=Millions,NA=NA,Curr="&$F$5)'
+if ebitda_link is None:
+    ws[resolve_name_cell(ws, NAME_LTM_EBITDA_VALUATION)] = '=_xll.SNL.Clients.Office.Excel.Functions.SPG($F$3,"SP_EBITDA",D$33,$F$6,"Options:Mag=Millions,NA=NA,Curr="&$F$5)'
 ```
+
+The two cells are decided independently: a tab carrying a revenue bridge but no EBITDA bridge links `D47` and falls back on `D48`. Never leave either cell empty, and never substitute a literal for a missing link.
 
 Write the file.
 
@@ -315,7 +340,7 @@ Report to the user:
 
 1. **Output file:** path to the saved file
 2. **Web-sourced market values:** the FX rate (F7) and share price (F16) you wrote, each with its source and as-of date (the same citation is appended to each cell's comment as `Source: <url> — retrieved <YYYY-MM-DD>`). Remind the user these are static snapshots — the analyst can paste the CapIQ formula stored in each cell's comment to refresh them live in Excel.
-3. **LTM valuation metrics (D47 / D48):** state whether LTM Revenue and Adj. EBITDA came from the `ltm-metrics` handoff (give the figures and note `*F7` FX conversion to the F5 currency) or fell back to the CapIQ `IQ_REV`/`SP_EBITDA` formula because no LTM values were supplied.
+3. **LTM valuation metrics (D47 / D48):** state, per cell, whether it **links** to the `ltm-metrics` tab (give the bridge total each link resolves to, note the `*F7` FX conversion to the F5 currency, and confirm it matches your `ltm_revenue` / `ltm_adj_ebitda` input — flag any disagreement) or fell back to the CapIQ `IQ_REV`/`SP_EBITDA` formula because the workbook has no such bridge. Say "linked", not the number alone: the point of the link is that the figure is not stored here.
 4. **CapIQ auto-populated fields** (will refresh when file is opened in Excel with CapIQ connection): company name, FYE, currency, report dates, revenue & EBITDA consensus estimates, analyst coverage, average target price
 5. **Fields populated from MD&A:** list each section and what was found
 6. **Subsequent events applied:** for each adjustment made in Step 5, list the event date, description, source (filing note vs. press release), and which row it adjusted. If none were found, state "No subsequent events identified in filing sub-events note or newsroom screen through [today's date]."
@@ -332,7 +357,7 @@ Report to the user:
 |---------|-------------|---------------|------|----------------------------------|
 | Header | Ticker | F3 | — | — |
 | Header | FX Rate (web-sourced, Output per Input), Share Price (web-sourced, in F5 currency) | F7, F16 | — | — |
-| LTM | LTM Revenue (D47), LTM Adj. EBITDA (D48) — `=<value>*F7` from `ltm-metrics`, else CapIQ fallback (Step 6b) | D47, D48 | — | D34/D35 read these (do NOT overwrite D34/D35) |
+| LTM | LTM Revenue (D47), LTM Adj. EBITDA (D48) — `=INDEX('ltm-metrics'!…)*F7` linked to the bridge total, else CapIQ fallback (Step 6b). **Never a literal figure.** | D47, D48 | — | D34/D35 read these (do NOT overwrite D34/D35) |
 | I | Preferred Shares, NCI | F52, F53 | — | — |
 | II | Options / Warrants / RSUs / DSUs | B (type), C (amount, M shares), D (strike) | 57–81 | E82, F82, F84, F85, F86 |
 | III | Convertible Debentures / Preferred | B (type), C (face, $M), D (shares/1000), E (strike) | 90–103 | F104 |
@@ -455,5 +480,5 @@ Apply the following event types when found in the filing's sub-events note or in
 9. Every row populated in Section III has a matching `=IF(E[row]<F$16,0,C[row])` row in Section IV, with F$7 applied to the strike or share price whenever filing currency ≠ Output currency (F5)
 10. Section II option/warrant strikes in col D are stated in the Output currency (F5) — if filing currency ≠ F5, each strike has been converted by multiplying by F7 (Output per Input) so the template's ITM comparison against F$16 works correctly
 11. F7 (FX Rate) and F16 (Share Price) carry web-sourced numeric values in blue font; each cell's comment still holds the CapIQ formula for the analyst to refresh AND ends with the appended `Source: <url> — retrieved <YYYY-MM-DD>` citation line, rendered from the `FigureSource` recorded for that figure (Step 3b), and this stage wrote its `provenance.json` fragment to `io.stage_dir`
-12. D47/D48 (LTM Revenue / Adj. EBITDA) are populated — either `=<value>*F7` in blue from the `ltm-metrics` handoff (millions, FX-converted to F5 currency), or the CapIQ `IQ_REV`/`SP_EBITDA` fallback when no LTM values were supplied — so D34/D35 and the EV multiples (D39/D40) resolve to numbers, not `n/a`
+12. D47/D48 (LTM Revenue / Adj. EBITDA) are populated — either a blue `=INDEX('ltm-metrics'!$B:$B, MATCH("(=) …", …))*F7` **link** to the bridge total (built by `ltm_total_link`, FX-converted to F5 currency), or the CapIQ `IQ_REV`/`SP_EBITDA` fallback when the workbook carries no such bridge — so D34/D35 and the EV multiples (D39/D40) resolve to numbers, not `n/a`. **Neither cell contains a hardcoded figure:** grep your own formulas — a `*F7` with a number in front of it is the two-different-LTM-revenues defect
 13. Subsequent-events scan completed: both the filing's sub-events note (ASC 855 / IAS 10) and a company-source-only newsroom screen (IR page and company press releases — no third-party news wires or analyst coverage) have been reviewed. Every applied adjustment is deduplicated against the filing's disclosures and documented in the relevant row's cell comment

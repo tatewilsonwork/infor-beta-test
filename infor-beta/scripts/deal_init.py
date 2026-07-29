@@ -36,7 +36,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from codename import DEFAULT_DEALS_ROOT, find_existing, resolve
+from codename import DealsRoot, find_existing, resolve, resolve_deals_root
 from intake_spec import (
     IntakeDefault,
     IntakeField,
@@ -307,7 +307,7 @@ def load_deal_context(deal_dir: Path | str) -> DealContext:
 def load_or_locate_deal(
     codename: str,
     *,
-    deals_root: Path | str = DEFAULT_DEALS_ROOT,
+    deals_root: Path | str | DealsRoot | None = None,
 ) -> tuple[DealContext | None, Path]:
     """Look up an existing deal by codename.
 
@@ -318,12 +318,20 @@ def load_or_locate_deal(
         existing directory found by case-insensitive lookup, or the
         fresh path that would be created if the analyst proceeds.
 
+    `deals_root=None` resolves it via `codename.resolve_deals_root()` — the
+    mounted workspace folder in production, `~/Documents/INFOR Deals` on a dev
+    box — rather than assuming the E1 default, which does not exist on the
+    production runtime. The conductor passes the resolved root explicitly and
+    states it (SKILL.md Step 2); the default is here so a caller that omits it
+    still finds the deals the analyst can see instead of starting a fresh root
+    beside them.
+
     This helper does NOT mutate disk. It is intended to be called by the
     conductor right after the analyst types a codename, so the conductor
     can decide whether to render the G7 prompt (no existing deal) or skip
     to "what would you like to do for `<codename>`?" (existing deal).
     """
-    root = Path(deals_root).expanduser()
+    root = Path(resolve_deals_root() if deals_root is None else deals_root).expanduser()
     existing = find_existing(root, codename)
     if existing is not None:
         try:

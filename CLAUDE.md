@@ -64,7 +64,7 @@ Load-bearing decisions made before any code was written. Full record in Obsidian
 
 **Data** — Company facts: analyst-provided at deal-init, verified by WebSearch, cached in `deal.facts/company.json`. Filings: analyst attaches in chat; the conductor persists them to the deal directory. URL allow-lists are **per-skill**, calibrated to each skill's data-quality bar.
 
-**Operational** — Deal directory `~/Documents/INFOR Deals/<codename>/`. Concurrent deals are supported, scoped by codename. Single plugin version in three files.
+**Operational** — Deal directory `<deals root>/<codename>/`, and **the deals root is resolved, never hardcoded** (`codename.resolve_deals_root()`): an explicit argument, else an existing `INFOR Deals` folder discovered under `$HOME/mnt/*/` — the production shape, where `$HOME` is `/sessions/<session>` and the mounted folder's name is analyst-chosen, so neither half can be written down — else `~/Documents/INFOR Deals`, which is created only as a last resort. E1's `~/Documents/INFOR Deals` **does not exist in production**: through v0.5.51 it was the default, so following the conductor doc literally created the deal where the analyst could not see it while `find_existing` reported none of the ten deals that were really there. A root **holding deals never loses to an empty one**, the runners-up come back in `.alternatives`, and the conductor states `root.describe()` before it writes anything. Concurrent deals are supported, scoped by codename. Single plugin version in three files.
 
 ## v1 stage portfolio
 
@@ -101,7 +101,7 @@ Long workflows split into a short `SKILL.md` (workflow + step outline) plus `ref
 Arithmetic lives in cell formulas for analyst auditability. Skills write inputs and let the workbook compute.
 
 ### Output files
-Skills write to the **deal directory** (`~/Documents/INFOR Deals/<codename>/`), resolved by the conductor at deal-init. The cwd default is preserved for ad-hoc skill invocation, but the conductor always sets an explicit output target.
+Skills write to the **deal directory** (`<deals root>/<codename>/` — see Operational; never assume `~/Documents`), resolved by the conductor at deal-init. The cwd default is preserved for ad-hoc skill invocation, but the conductor always sets an explicit output target.
 
 ### Shared helpers — don't re-implement
 Templates, filename sanitization, python-pptx formatting, brand constants, and the typed I/O contract live in `infor-beta/scripts/`. Skills import via `CLAUDE_PLUGIN_ROOT`:

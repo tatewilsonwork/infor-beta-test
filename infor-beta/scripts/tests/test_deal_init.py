@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from codename import resolve_deals_root
 from deal_init import (
     DEAL_SUBDIRS,
     INIT_DEFAULT_FIELDS,
@@ -250,3 +251,19 @@ def test_load_or_locate_dir_exists_no_deal_json(tmp_path: Path):
     assert ctx is None
     # Path should be the existing directory (case-insensitive match)
     assert path == tmp_path / "Project Half-Built"
+
+
+def test_load_or_locate_accepts_a_resolved_deals_root(tmp_path: Path):
+    """The conductor passes `resolve_deals_root()`'s result straight through.
+
+    The plumbing already took `deals_root`; what was missing was a resolver that
+    finds the mounted workspace folder the production runtime actually uses. A
+    `DealsRoot` is os.PathLike so it needs no unwrapping at the call site.
+    """
+    root = resolve_deals_root(tmp_path / "mnt" / "Workspace" / "INFOR Deals")
+    save_deal_context(_ctx(root.path))
+
+    loaded, path = load_or_locate_deal("Project OpenText", deals_root=root)
+
+    assert loaded is not None
+    assert path == root.path / "Project OpenText"

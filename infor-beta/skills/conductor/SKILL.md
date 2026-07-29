@@ -12,7 +12,8 @@ description: >
   slash-command run, loads the plan YAML
   for the deliverable, runs each deterministic stage in-process and dispatches each
   judgment stage to its skill via the Agent tool with a file-based input / output handoff,
-  and emits a run log under ~/Documents/INFOR Deals/<codename>/runs/<run-id>/.
+  and emits a run log under <deals root>/<codename>/runs/<run-id>/, where the deals root is
+  resolved and reported at deal-init (codename.resolve_deals_root) rather than assumed.
 allowed-tools: [Read, Write, Bash, Glob, Task, AskUserQuestion]
 ---
 
@@ -37,7 +38,11 @@ The architectural backbone — DealContext schema, codename rules, deliverable t
 import sys, os
 sys.path.insert(0, os.environ.get("CLAUDE_PLUGIN_ROOT", "./infor-beta") + "/scripts")
 
-from codename import codename_from_company, disambiguate
+from codename import (
+    codename_from_company, disambiguate,
+    resolve_deals_root,   # WHERE the deals live — discovered, never hardcoded
+    split_listing,        # "Open Text (TSX:OTEX)" -> ("Open Text", Listing("TSX", "OTEX"))
+)
 from deal_init import (
     INIT_DIALOG_FIELDS, INIT_DEFAULT_FIELDS,
     render_init_dialogs, render_init_prompt,   # deal-init's half alone — generic entry only
@@ -72,12 +77,32 @@ from conductor import (      # the driver — everything mechanical
 
 Extract the **deliverable type** (`pitch` / `earnings-update` / `overview` / `one-off-skill`; ask if ambiguous — `overview` is a stub, say so if selected) and the **codename**. Never ask for the codename: use the analyst's `Project <target>` string if they typed one, else derive it silently with `codename_from_company(<subject company>)` and state it when announcing the deal directory (overridable in chat until the directory is created). `/pitch` and `/earnings-update` pre-answer the deliverable **and** the company — do not re-ask either. A **one-off skill** needs no plan: say so and stop.
 
+**Split the listing hint off the company string first.** `/pitch Open Text (TSX:OTEX)` is the documented invocation and that parenthetical is a listing, not part of the name:
+
+```python
+company_name, listing = split_listing(company_arg)   # ("Open Text", Listing("TSX", "OTEX"))
+codename = codename_from_company(company_arg)        # "Project Open Text" — splits it itself
+```
+
+Use `company_name` as `subject_company.legal_name`, and when `listing` is not None **the Listing question is already answered**: set `subject_company.exchange = listing.exchange` and `subject_company.ticker = listing.ticker` (`listing.capiq` is the Capital IQ `Exchange:Ticker` render), then drop `Listing` from Step 2's dialog via `omit=("Listing",)` and note "(from your message: TSX:OTEX)". A trailing parenthetical with **no colon** in it is part of the name — `"Acme (Canada)"` stays whole and `listing` is None, so the Listing question still gets asked. Never re-derive the codename from a string you have already stripped: `codename_from_company` takes the raw argument.
+
 ## Step 2 — Deal-init + the run's one dialog
 
-`load_or_locate_deal(codename)` → an existing deal means one `AskUserQuestion` ("Continue `<codename>`" / "Different deal"; on the latter, present `disambiguate(...)`'s 1–4 alternatives as another dialog).
+**Resolve the deals root before anything else, and state it.** The E1 default `~/Documents/INFOR Deals` **does not exist on the production runtime** — real deals live under the mounted workspace folder (`$HOME/mnt/<mounted folder>/INFOR Deals/`, `$HOME` being `/sessions/<session>`), and both variable parts mean it cannot be hardcoded. Discover it, report it, then pass it to everything:
+
+```python
+root = resolve_deals_root()          # or resolve_deals_root(<path>) if the analyst named one
+print(root.describe())               # "Deals root: … — discovered under $HOME/mnt/, holding 11 existing deals."
+ctx_or_none, deal_dir = load_or_locate_deal(codename, deals_root=root)
+```
+
+`root.describe()` is a **reported decision**: post that line before you write anything, so a wrong root is caught by the analyst in one message rather than after a deck lands somewhere they cannot see. `resolve_deals_root` prefers a root that already **holds deals** over an empty one and returns the runners-up in `root.alternatives` — if the analyst names one of those, or any other path, re-resolve with `resolve_deals_root(<their path>)` and pass that. Never assume `~/Documents/INFOR Deals`, never build a deals path by string concatenation, and never call the `deals_root=`-taking helpers (`load_or_locate_deal`, `find_existing`, `disambiguate`, `resolve`) without passing the resolved root — the whole point of stating it is that every subsequent lookup agrees with it.
+
+An existing deal means one `AskUserQuestion` ("Continue `<codename>`" / "Different deal"; on the latter, present `disambiguate(root, codename)`'s 1–4 alternatives as another dialog).
 
 A fresh deal means **`render_run_dialogs(<deliverable>)` — a single `AskUserQuestion` call, verbatim**, carrying deal-init's questions *and* the deliverable's. This is the whole questionnaire: `/pitch` → `[Listing, Notes, Targets, Highlights]`, `/earnings-update` → `[Listing]`. Pass `omit=(...)` to drop any question an earlier message already answered, and note "(from your message: …)" for each one you drop. If the company name is not preset, ask it as a plain chat question — it is free text with nothing to suggest, so it is in no dialog. Then:
 
+- **A `Listing` from Step 1's `split_listing`** → the question was already dropped; do not ask it again, and do not "confirm" the ticker.
 - **"Public — I'll give the ticker" with no ticker** → ask ticker + exchange as a follow-up.
 - **The sector is not asked** (v0.5.51). Research it, verify by web search, set `subject_company.sector` / `.industry` from the one-liner, and let the Step 4 echo report it — `INIT_DEFAULT_FIELDS` is the table. No confirmation, and no dialog question: its old question already defaulted to "Infer from the web".
 - Build the `DealContext` and `save_deal_context(ctx)` — which creates the deal directory, so `filings/` exists before anything is dropped. Hold the deck-spec answers; they become `plan_inputs` in Step 4.
