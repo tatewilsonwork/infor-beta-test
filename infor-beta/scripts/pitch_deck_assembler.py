@@ -22,6 +22,7 @@ size; disclaimer/contact remain the last two slides.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from excel_to_powerpoint import (
 from naming import safe_filename
 from pptx_helpers import (
     clone_slide_after,
+    delete_shape,
     delete_slide,
     fill_footnote_currency,
     find_shape,
@@ -47,6 +49,7 @@ from pptx_helpers import (
     set_cell_text,
     set_table_height,
     set_text,
+    shapes_in_reading_order,
     write_bullets_or_plain,
 )
 from schemas import PitchDeckContent, SlidePlan
@@ -56,6 +59,7 @@ from template_layout import (
     CAP_TABLE_PICTURE_NAMES,
     CAP_TABLE_PICTURE_RANGE,
     MARKER_COMPS,
+    MARKER_CONTACT,
     MARKER_COVER,
     MARKER_EARNINGS_SUMMARY,
     MARKER_FINANCIAL_SUMMARY,
@@ -67,6 +71,7 @@ from template_layout import (
     MARKER_RISKS,
     NAME_CAP_OUTPUT_CCY,
     NAME_CAP_PICTURE_RANGE,
+    NAME_FX_RATE,
     NAME_OWN_INSIDERS_PICTURE,
     NAME_OWN_INSTITUTIONS_PICTURE,
     OWNERSHIP_INSIDERS_PICTURE_NAMES,
@@ -83,9 +88,39 @@ from template_layout import (
 
 # Financial Summary slide title shape + the four metric-label tiles it carries
 # (each cloned FS slide has the same shape names).
+#
+# ORDERING: the tiles are addressed BY NAME, and this list is in the reading
+# order the `financial-summary` stage emits its labels in — Rectangle 13 is the
+# top-left tile, 12 the top-right, 15 the bottom-left, 14 the bottom-right. The
+# names are the contract (Phase C: never a position), and because they read out
+# of order alphabetically, `test_the_financial_summary_tiles_are_named_in_reading_order`
+# checks the library's geometry still agrees with this list. That test is the
+# whole safeguard: nothing else here would notice the mapping going stale.
 _FS_TITLE_SHAPE = "Title 6"
 _FS_METRIC_TILES = ["Rectangle 13", "Rectangle 12", "Rectangle 15", "Rectangle 14"]
 _FS_TILES_PER_SLIDE = len(_FS_METRIC_TILES)
+
+# The footnote shape that carries each slide's source/note lines. Every one of
+# these slides is populated with figures, so every one is labelled with a
+# currency — see `_label_slide_currency`. Two figure-bearing slides are
+# deliberately absent: the ownership slide states share counts and percentages
+# (its "Source: Bloomberg" line is complete as shipped), and the considerations /
+# mitigants slide is prose.
+_FOOTNOTE_OVERVIEW = "Text Placeholder 1"
+_FOOTNOTE_FINANCIAL_SUMMARY = "Text Placeholder 11"
+_FOOTNOTE_COMPS = "Text Placeholder 1"
+_FOOTNOTE_PRECEDENTS = "Text Placeholder 1"
+_FOOTNOTE_KIH = "Text Placeholder 13"
+_FOOTNOTE_MARKET_ENTRY = "Text Placeholder 3"
+
+# Contact slide. The library ships a 2x2 grid of banker cards — three rows of one
+# column each: "<name>, <title>", phone, email — plus a one-row address table it
+# must not be confused with. Cards are identified by that shape, never by name or
+# index, and filled in reading order.
+_CONTACT_CARD_ROWS = 3
+_CONTACT_CARD_COLS = 1
+_CONTACT_NAME_SIZE = 12   # the library's own sizes on its filled card
+_CONTACT_DETAIL_SIZE = 10
 
 # Every workbook this module reads is the DEAL workbook, so its sheets are
 # addressed by `deal_workbook.TAB_*` — never by a `template_layout`
@@ -116,17 +151,54 @@ def _bullet_tuple(bullet) -> tuple[str, int]:
     return (bullet.text, bullet.level)
 
 
+# The library's own "an analyst fills this in" token. Any of these left on a
+# delivered deck is a build failure — see `_unfilled_placeholders`.
+_PLACEHOLDER_TOKEN = "[x]"
+
+
+def _iter_slide_text(slide):
+    """Yield ``(shape_name, text)`` for every text-bearing thing on `slide`.
+
+    Recurses into groups and into table cells. Both matter: the Key Investment
+    Highlights bodies are nested two groups deep and the Contact cards are table
+    cells, so a top-level-only walk — which this was — could not see either of
+    the two slides that shipped the worst placeholder text.
+    """
+    for shape in iter_all_shapes(slide.shapes):
+        if getattr(shape, "has_text_frame", False):
+            yield shape.name, shape.text
+        if getattr(shape, "has_table", False):
+            for row in shape.table.rows:
+                for cell in row.cells:
+                    yield shape.name, cell.text
+
+
 def _all_text(prs: Presentation) -> str:
-    parts: list[str] = []
-    for slide in prs.slides:
-        for shape in slide.shapes:
-            if getattr(shape, "has_text_frame", False):
-                parts.append(shape.text)
-            if getattr(shape, "has_table", False):
-                for row in shape.table.rows:
-                    for cell in row.cells:
-                        parts.append(cell.text)
-    return "\n".join(parts)
+    return "\n".join(text for slide in prs.slides for _, text in _iter_slide_text(slide))
+
+
+def _unfilled_placeholders(prs: Presentation) -> list[str]:
+    """Every library `[x]` the fill left behind, named by slide and shape.
+
+    Swept across EVERY slide rather than the handful known to be at risk. The
+    three defects this closes were found by reading a delivered deck, not by a
+    check: two market-entry slides carried an unsubstituted `[x]$MM` footnote,
+    the ownership slide a bare `[x]` where a takeaway belonged, and the Contact
+    slide three cards of `[x]`. None of them is a rendering problem, so
+    `deck_contract` had nothing to say about them, and each was a review finding
+    on a deck that had already gone out.
+
+    The deck's *deferred* placeholders — `[Pie Chart Placeholder]`,
+    `[Placeholder for Comps Chart]`, `[Placeholder for <target> Logo]` — are a
+    different thing and deliberately ship: they name work the analyst finishes in
+    PowerPoint. They carry no `[x]`, which is what separates the two.
+    """
+    return [
+        f"slide {index}: {name} — {text.strip()!r}"
+        for index, slide in enumerate(prs.slides, start=1)
+        for name, text in _iter_slide_text(slide)
+        if _PLACEHOLDER_TOKEN in text
+    ]
 
 
 def _shape_text(shape) -> str:
@@ -140,8 +212,20 @@ def _replace_first_line(shape, first_line: str, remaining_lines: list[str] | Non
     set_text(shape, lines)
 
 
-def _rounded_rectangles(slide):
-    return [shape for shape in slide.shapes if shape.name == "Rounded Rectangle 19"]
+def _section_boxes(slide):
+    """The divider's four label boxes, TOP TO BOTTOM.
+
+    ORDERING: geometric, and it has to be. All four ship as "Rounded Rectangle
+    19", so a name lookup cannot tell them apart, and `slide.shapes` hands them
+    back in document order — which on this library is the 1st, 3rd, 2nd and 4th
+    box down the slide. Zipping `section_labels` onto that put "Valuation" in the
+    second box and "Financial Summary" in the third on every deck INFOR shipped;
+    the labels were right and the wireframe was right, and the reader still saw
+    the deck's contents in the wrong order.
+    """
+    return shapes_in_reading_order(
+        shape for shape in slide.shapes if shape.name == "Rounded Rectangle 19"
+    )
 
 
 def _write_flexible_bullets(shape, bullets) -> None:
@@ -150,9 +234,19 @@ def _write_flexible_bullets(shape, bullets) -> None:
 
 
 def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
-    """Fill the four numbered highlight quadrants; leave placeholders if no content."""
-    if not content.investment_highlights:
-        return
+    """Fill the four numbered highlight quadrants, blanking any the content skips.
+
+    ORDERING: by the number the library PRINTS in each quadrant's oval, which is
+    the strongest ordering available — it is what the reader sees, so it cannot
+    disagree with the render the way a document-order index can. The four groups
+    arrive in document order 1, 4, 3, 2, so the sort is doing real work. The
+    library's numbering also runs top-to-bottom, which
+    `test_the_highlight_quadrants_are_numbered_in_reading_order` pins, so the sort
+    agrees with geometry rather than merely being self-consistent.
+
+    A quadrant the content has no highlight for is BLANKED, not left alone: the
+    library ships it as "[x]", and a deck must never deliver that.
+    """
     quadrants: list[tuple[int, object, object]] = []
     for group in slide.shapes:
         if group.shape_type != MSO_SHAPE_TYPE.GROUP or not group.name.startswith("Group"):
@@ -176,10 +270,10 @@ def _fill_investment_highlights(slide, content: PitchDeckContent) -> None:
         else:
             set_text(header_shape, [""])
             set_text(body_shape, [""])
-    if content.investment_highlights_tagline:
-        for shape in slide.shapes:
-            if shape.name == "Text Placeholder 2" and getattr(shape, "has_text_frame", False):
-                set_text(shape, [content.investment_highlights_tagline])
+    # The tagline box ships as "[x]"; with no tagline it is blanked, not skipped.
+    for shape in slide.shapes:
+        if shape.name == "Text Placeholder 2" and getattr(shape, "has_text_frame", False):
+            set_text(shape, [content.investment_highlights_tagline or ""])
 
 
 # Market-entry cell sizing: the label column is white at `_ME_LABEL_SIZE`, the
@@ -251,17 +345,85 @@ def _fill_risk_table(slide, content: PitchDeckContent) -> None:
     set_table_height(table_frame, library_height)
 
 
-def _output_currency_letter(workbook_path) -> str:
-    """Derive the footnote currency token from the deal workbook's output currency.
+# ─── Currency labelling ──────────────────────────────────────────────────────
+#
+# A slide's currency label is a property of WHAT POPULATES THE SLIDE, and there
+# is more than one answer per deck. Three sources fill this deck:
+#
+#   - the content bundle's authored copy, in `content.figure_currency` — the
+#     target's filing reporting currency, which the `financial-summary` and
+#     `ltm-metrics` tabs are locked to as well;
+#   - the cap table, in its own OUTPUT currency, pasted onto the overview slide;
+#   - deferred chart placeholders, which carry no figures yet.
+#
+# Until v0.5.51 one letter was read off the cap table and applied to the overview
+# slide, the highlights slide and the market-entry slides regardless of what those
+# slides said — while the comps, precedents and Financial Summary slides were
+# reached by no call at all. On the Project Open Text deck that shipped four
+# distinct failures in one file: two slides carrying the literal `[x]$MM`, one
+# carrying no note, five labelled C$ over US$ content, and — the expensive one —
+# LTM revenue stated as C$7,344.2 on the overview slide and $5,207.9 on the
+# Financial Summary slide, the same figure 1.4102x apart, with nothing on the deck
+# to reconcile them. Hence: label from the content, and where a slide is populated
+# from two currencies, say both and print the rate between them.
+
+
+@dataclass(frozen=True)
+class _SecondCurrency:
+    """A second currency on one slide: what it populates, its code, and the rate."""
+
+    what: str                 # 'capitalization table'
+    code: str                 # ISO code of that element
+    fx_rate: float | None     # multiplier from the slide's base currency, if known
+
+
+def _currency_letter(code: str) -> str:
+    """Map an ISO currency code to the footnote's ``[x]$MM`` token replacement.
+
+    USD / CAD map explicitly to the ``'US'`` / ``'C'`` dollar letters (so the
+    token resolves to ``US$MM`` / ``C$MM``); **any other code is returned as-is**
+    and `fill_footnote_currency` renders the ISO code without a dollar sign
+    (``GBP MM``) — a non-dollar filer is never silently mislabelled as C$.
+    """
+    code = code.strip().upper()
+    if code in {"USD", "US$", "US"}:
+        return "US"
+    if code in {"CAD", "C$", "C"}:
+        return "C"
+    return code
+
+
+def _currency_phrase(code: str) -> str:
+    """How a currency reads in a note: ``'US$MM'``, ``'C$MM'``, ``'GBP MM'``.
+
+    The same rendering `fill_footnote_currency` produces from the library's
+    token, so a note this module writes from scratch (the Financial Summary
+    slide, which the library ships with no note at all) is indistinguishable
+    from one the library templated.
+    """
+    letter = _currency_letter(code)
+    return f"{letter}$MM" if letter in ("US", "C") else f"{letter} MM"
+
+
+def _currency_unit(code: str) -> str:
+    """One unit of `code` as it reads in an FX quote: ``'US$1.00'`` / ``'GBP 1.00'``."""
+    letter = _currency_letter(code)
+    return f"{letter}$1.00" if letter in ("US", "C") else f"{letter} 1.00"
+
+
+def _currency_amount(code: str, value: float) -> str:
+    """`value` of `code` as it reads in an FX quote: ``'C$1.4102'`` / ``'GBP 1.4102'``."""
+    letter = _currency_letter(code)
+    return f"{letter}${value:,.4f}" if letter in ("US", "C") else f"{letter} {value:,.4f}"
+
+
+def _read_output_currency(workbook_path) -> str:
+    """The deal workbook's cap-table OUTPUT currency, as an ISO code.
 
     Reads the ``captable`` tab's output-currency cell, located by its
-    ``infor_cap_output_ccy`` defined name (``F5`` as shipped). USD / CAD map
-    explicitly to the ``'US'`` / ``'C'`` dollar letters (so the ``[x]$MM``
-    footnote token resolves to ``US$MM`` / ``C$MM``); **any other code is
-    returned as-is** and `fill_footnote_currency` renders the ISO code without a
-    dollar sign (``GBP MM``) — a non-dollar filer is never silently mislabelled
-    as C$. An empty or non-text cell falls back to ``C`` (the template default),
-    so a footnote never ships the literal ``[x]``.
+    ``infor_cap_output_ccy`` defined name (``F5`` as shipped). An empty or
+    non-text cell falls back to ``CAD`` (the template default), so a footnote
+    never ships the literal ``[x]``.
 
     A **missing tab** is a hard failure, not a fallback. Until v0.5.45 this read
     ``wb[CAP_TABLE_SHEET] if … in wb.sheetnames else wb.active`` — and since
@@ -289,13 +451,83 @@ def _output_currency_letter(workbook_path) -> str:
         code = str(ws[addr].value or "").strip().upper()
     finally:
         wb.close()
-    if not code:
-        return "C"  # template default — the cell is empty/unreadable
-    if code in {"USD", "US$", "US"}:
-        return "US"
-    if code in {"CAD", "C$", "C"}:
-        return "C"
-    return code  # non-dollar ISO code, rendered verbatim in the footnote
+    return code or "CAD"  # template default — the cell is empty/unreadable
+
+
+def _output_currency_letter(workbook_path) -> str:
+    """The cap table's output currency as a footnote letter (``'US'`` / ``'C'`` / ISO)."""
+    return _currency_letter(_read_output_currency(workbook_path))
+
+
+def _read_fx_rate(workbook_path) -> float | None:
+    """The cap table's FX rate — the multiplier from its input to its output currency.
+
+    This is the number that reconciles the deck's two currencies: the cap table
+    converts its filing-currency inputs by it (``Add: Debt = F122*F7``), so a
+    figure stated in both currencies differs by exactly this. It belongs on the
+    deck for the same reason the figures do — a reader comparing LTM revenue on
+    two slides is otherwise looking at an unexplained 41% gap.
+
+    Returns None when the cell is empty or holds a formula rather than a value
+    (CapIQ ships un-refreshed here, as everywhere): the caller then names both
+    currencies without a rate rather than printing something it made up.
+
+    The tab and the name are both established before this runs — the pre-flight
+    verifies `infor_fx_rate` and `_read_output_currency` raises on a missing
+    `captable` — so there is no fallback here either.
+    """
+    from openpyxl import load_workbook
+
+    from template_layout import resolve_name_cell
+
+    wb = load_workbook(workbook_path, data_only=True)
+    try:
+        ws = wb[TAB_CAPTABLE]
+        value = ws[resolve_name_cell(ws, NAME_FX_RATE, template=Path(workbook_path).name)].value
+    finally:
+        wb.close()
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _label_slide_currency(shape, code: str, *, second: _SecondCurrency | None = None) -> None:
+    """State on `shape` which currency the slide's figures are in.
+
+    `code` is the ISO currency of whatever populates the slide. Where the library
+    ships the ``[x]$MM`` token this substitutes it, preserving the rest of the
+    standardized source/note lines; where the library ships **no note at all** —
+    the Financial Summary footnote reads "Sources: Company filings" and nothing
+    else — this appends one, because a slide of figures with no currency on it
+    is as wrong as one labelled in the wrong currency, and harder to notice.
+
+    `second` is a second currency populating the SAME slide: the overview slide
+    carries a C$ cap-table picture above US$ overview bullets. The note then names
+    both and the rate between them, instead of picking one and leaving the reader
+    to discover the gap against another slide.
+    """
+    lines = [p.text for p in shape.text_frame.paragraphs]
+    if any("[x]" in line for line in lines):
+        fill_footnote_currency(shape, _currency_letter(code))
+    else:
+        lines.append(f"Note: All figures in {_currency_phrase(code)} unless indicated otherwise")
+        set_text(shape, lines)
+
+    if second is None or _currency_letter(second.code) == _currency_letter(code):
+        return
+
+    clause = f"{second.what} in {_currency_phrase(second.code)}"
+    if second.fx_rate:
+        clause += (
+            f" at {_currency_unit(code)} = "
+            f"{_currency_amount(second.code, second.fx_rate)}"
+        )
+    lines = [p.text for p in shape.text_frame.paragraphs]
+    for idx, line in enumerate(lines):
+        if "All figures in" in line:
+            lines[idx] = f"{line}; {clause}"
+            break
+    else:  # pragma: no cover — every branch above leaves an 'All figures in' line
+        lines.append(f"Note: {clause}")
+    set_text(shape, lines)
 
 
 def _ownership_has_bloomberg(workbook_path) -> bool:
@@ -327,7 +559,7 @@ def _fill_market_entry_targets(
     row_labels: list[str],
     targets: list,
     market: str | None,
-    currency_letter: str | None,
+    currency: str,
     slide_number: int,
     total_slides: int,
 ) -> None:
@@ -339,28 +571,22 @@ def _fill_market_entry_targets(
     written white at 11 pt (stepping down per-label so no label wraps in the
     column) and the target value columns at `_ME_VALUE_SIZE` (9 pt —
     deliberately below the library's 10 pt so the 5.71" table clamp holds; see
-    the constant's comment). Each populated column's logo box is relabelled
-    '[<target name> Logo]' (generic '[Company Name Logo]' when the target has no
-    name); the unused box is blanked on an odd final slide so a single-target
-    slide shows no stray logo box.
+    the constant's comment).
+
+    `currency` is the content bundle's, because the cells on this slide are the
+    content bundle's. It used to be the cap table's output currency, which is the
+    currency of a different slide's picture.
     """
     title = "Potential " + (f"{market} " if market else "") + "Market Entry Targets"
     if total_slides > 1:
         title += f" ({slide_number} of {total_slides})"
     set_text(find_shape(slide, "Title 1"), [title])
+    _label_slide_currency(find_shape(slide, _FOOTNOTE_MARKET_ENTRY), currency)
 
-    if currency_letter is not None:
-        footnote = next(
-            (s for s in slide.shapes
-             if s.name == "Text Placeholder 3" and getattr(s, "has_text_frame", False)),
-            None,
-        )
-        if footnote is not None:
-            fill_footnote_currency(footnote, currency_letter)
-
-    if not targets:
-        return
-
+    # No early return on an empty `targets`: the library ships this table as 24
+    # cells of "[x]", and returning here left every one of them on the deck. The
+    # loops below blank what they do not fill, so a target-less slide comes out
+    # empty rather than covered in placeholders.
     table_frame = find_table_shape(slide)
     table = table_frame.table
     n_cols = len(table.columns)  # label column + target columns (3 in the library)
@@ -379,20 +605,27 @@ def _fill_market_entry_targets(
         for col in range(n_cols):
             set_cell_text(table.cell(row, col), "", size_pt=_ME_VALUE_SIZE)
 
-    # Align logo placeholders left→right with the target columns (sort by .left).
-    # The library ships each box as the default '[Placeholder for Logo]'; for a
-    # populated column, relabel it '[<target name> Logo]' (generic '[Company Name
-    # Logo]' when the target carries no name) so the box names whose logo belongs
-    # there. Blank any box whose column has no target (odd final slide).
-    logos = sorted(
-        (s for s in slide.shapes
-         if getattr(s, "has_text_frame", False) and "[Placeholder for Logo]" in s.text),
-        key=lambda s: s.left,
+    # ORDERING: geometric. The logo boxes must line up left→right with the target
+    # columns they sit above, and they are one row, so reading order is `.left`.
+    #
+    # The library ships each box as '[Placeholder for Logo]'; for a populated
+    # column, name the target inside that phrase so the box says WHOSE logo goes
+    # there while still reading as a placeholder. It used to become
+    # '[Glean Logo]', which is guidance shaped like a caption — the delivered deck
+    # printed "[Glean Logo]", "[Pinecone Logo]" across four slides and they read as
+    # content rather than as something to clear. Keeping the library's own
+    # '[Placeholder for …]' vocabulary (the same wording as the deferred chart
+    # boxes the deck deliberately ships) makes it unmistakable, and the whole box
+    # is one shape the analyst clears in one action. Blank any box whose column has
+    # no target (odd final slide).
+    logos = shapes_in_reading_order(
+        s for s in slide.shapes
+        if getattr(s, "has_text_frame", False) and "[Placeholder for Logo]" in s.text
     )
     for col_idx, logo in enumerate(logos):
         if col_idx < len(targets):
             name = getattr(targets[col_idx], "name", None)
-            set_text(logo, [f"[{name} Logo]" if name else "[Company Name Logo]"])
+            set_text(logo, [f"[Placeholder for {name} Logo]" if name else "[Placeholder for Logo]"])
         else:
             set_text(logo, [""])
 
@@ -402,6 +635,53 @@ def _fill_market_entry_targets(
     # and the converge loop measures the render and steps the body font down when
     # it happens. That replaced per-row content-height estimates here.
     set_table_height(table_frame, _ME_TABLE_HEIGHT)
+
+
+def _contact_cards(slide):
+    """The Contact slide's banker cards, in reading order.
+
+    ORDERING: geometric, over a shape-identified set. A card is a 3x1 table, which
+    is what distinguishes it from the 1x1 address table beside it; the four cards
+    are a 2x2 grid, so document order says nothing about which is top-left.
+    """
+    return shapes_in_reading_order(
+        shape for shape in slide.shapes
+        if getattr(shape, "has_table", False)
+        and len(shape.table.rows) == _CONTACT_CARD_ROWS
+        and len(shape.table.columns) == _CONTACT_CARD_COLS
+    )
+
+
+def _fill_contact_cards(slide, contacts) -> None:
+    """Fill the Contact slide's cards, and DELETE every card left unfilled.
+
+    The library ships four cards, one of them already carrying INFOR's own
+    details and three reading "[x]" down all three rows. The assembler used to
+    treat the whole slide as static, so a delivered deck ended on three empty
+    contact cards — which reads as an unfinished deck, and is the one slide a
+    client is most likely to act on.
+
+    `contacts` supplied: the first N cards are written in reading order and the
+    rest deleted. `contacts` empty — the default: whatever the library ships
+    filled is kept and the placeholder cards are deleted. That default is
+    deliberately the template's own card rather than a name written down here;
+    INFOR is single-tenant, so the deal team is knowable, but it is knowable from
+    the artefact the analyst maintains, not from this module.
+    """
+    cards = _contact_cards(slide)
+    for idx, card in enumerate(cards):
+        table = card.table
+        if idx < len(contacts):
+            contact = contacts[idx]
+            set_cell_text(
+                table.cell(0, 0), f"{contact.name}, {contact.title}", size_pt=_CONTACT_NAME_SIZE
+            )
+            set_cell_text(table.cell(1, 0), contact.phone, size_pt=_CONTACT_DETAIL_SIZE)
+            set_cell_text(table.cell(2, 0), contact.email, size_pt=_CONTACT_DETAIL_SIZE)
+        elif contacts or any("[x]" in row.cells[0].text for row in table.rows):
+            # Unfilled: either the content overrode the cards and this one is
+            # surplus, or it is a library placeholder nothing filled.
+            delete_shape(card)
 
 
 class _PitchLayout:
@@ -431,6 +711,7 @@ class _PitchLayout:
                 f"but none carries the {MARKER_FINANCIAL_SUMMARY.shape_name!r} marker"
             )
         self.ownership = find(MARKER_OWNERSHIP)
+        self.contact = find(MARKER_CONTACT)
         self.risks = find(MARKER_RISKS)
         self.comps = find(MARKER_COMPS)
         self.precedents = find(MARKER_PRECEDENTS)
@@ -500,14 +781,15 @@ def assemble_pitch_deck(
     output_path = out_dir / f"Pitch Deck - {safe_filename(content.client_name, default='Client')}.pptx"
 
     # Layout pre-flight on the companion workbooks whose cells and picture
-    # ranges are resolved below (the output currency for the footnote letter,
-    # then the cap-table / insiders picture ranges) — a workbook that lost those
-    # names raises here instead of pasting the wrong rows.
+    # ranges are resolved below (the output currency and the FX rate behind the
+    # slide-7 note, then the cap-table / insiders picture ranges) — a workbook
+    # that lost those names raises here, naming all of them at once, instead of
+    # part-way through the fill.
     if captable_workbook_path is not None:
         verify_workbook_names(
             captable_workbook_path,
             sheet=TAB_CAPTABLE,
-            names=(*CAP_TABLE_OUTPUT_CCY_NAMES, *CAP_TABLE_PICTURE_NAMES),
+            names=(NAME_FX_RATE, *CAP_TABLE_OUTPUT_CCY_NAMES, *CAP_TABLE_PICTURE_NAMES),
         )
     if ownership_workbook_path is not None:
         verify_workbook_names(
@@ -516,13 +798,29 @@ def assemble_pitch_deck(
             names=OWNERSHIP_INSIDERS_PICTURE_NAMES,
         )
 
-    # Footnote currency letter for the slide-7 + market-entry '[x]$MM' tokens,
-    # derived from the cap table's output currency (None when no workbook).
-    currency_letter = (
-        _output_currency_letter(captable_workbook_path)
+    # Every slide's currency label comes from what populates that slide. The
+    # content bundle states its own (`figure_currency`, the filing reporting
+    # currency), and it labels every slide the bundle's copy fills. The cap table
+    # states its OUTPUT currency, which may differ — it converts — so it labels
+    # only the one slide its picture lands on, alongside the content's.
+    content_currency = content.figure_currency
+    cap_currency = (
+        _read_output_currency(captable_workbook_path)
         if captable_workbook_path is not None
         else None
     )
+    # The rate is only read when the two currencies actually differ — there is
+    # nothing for it to reconcile otherwise, and the read is a second open of a
+    # workbook on the analyst's (cloud-synced) deal directory.
+    cap_table_second_currency = None
+    if cap_currency is not None and _currency_letter(cap_currency) != _currency_letter(
+        content_currency
+    ):
+        cap_table_second_currency = _SecondCurrency(
+            what="capitalization table",
+            code=cap_currency,
+            fx_rate=_read_fx_rate(captable_workbook_path),
+        )
 
     # The SlidePlan drives the deck's slide mix: the Financial Summary slide
     # count and the Key Investment Highlights toggle come from the wireframe's
@@ -613,8 +911,7 @@ def assemble_pitch_deck(
 
     # Section divider labels — the last front-matter slide before the overview.
     slide6 = prs.slides[layout.overview - 1]
-    rects = _rounded_rectangles(slide6)
-    for idx, rect in enumerate(rects):
+    for idx, rect in enumerate(_section_boxes(slide6)):
         if idx < len(content.section_labels):
             set_text(rect, [content.section_labels[idx]])
         else:
@@ -631,8 +928,14 @@ def assemble_pitch_deck(
     overview_shape = find_shape(slide7, "TextBox 9")
     _write_flexible_bullets(overview_shape, content.company_overview_bullets)
     fit_overview_textbox(slide7, overview_shape)
-    if currency_letter is not None:
-        fill_footnote_currency(find_shape(slide7, "Text Placeholder 1"), currency_letter)
+    # THE mixed-currency slide: the bullets are the content bundle's, the pasted
+    # picture is the cap table's, and on a cross-border deal those are different
+    # currencies. Name both, and the rate between them.
+    _label_slide_currency(
+        find_shape(slide7, _FOOTNOTE_OVERVIEW),
+        content_currency,
+        second=cap_table_second_currency,
+    )
 
     # Financial Summary slide(s) — metric labels only (from the financial-summary
     # stage); charts remain placeholders. Left as template placeholders when no
@@ -640,6 +943,15 @@ def assemble_pitch_deck(
     # each slide is retitled '(k of n)'.
     for k, fs_index in enumerate(layout.financial_summary):
         fs_slide = prs.slides[fs_index]
+        # The library ships this footnote as "Sources: Company filings" and
+        # nothing else, so the note is APPENDED rather than substituted. The tab
+        # behind these tiles is locked to millions in the filing currency, which
+        # is the content bundle's — the same figures the overview slide restates
+        # in the cap table's currency, which is why the two disagreed by 1.4102x
+        # with no note on either to say so.
+        _label_slide_currency(
+            find_shape(fs_slide, _FOOTNOTE_FINANCIAL_SUMMARY), content_currency
+        )
         if n_financial_summary > 1:
             set_text(
                 find_shape(fs_slide, _FS_TITLE_SHAPE),
@@ -658,22 +970,38 @@ def assemble_pitch_deck(
     set_text(find_shape(slide_risks, "Text Placeholder 6"), [content.risks_tagline])
     _fill_risk_table(slide_risks, content)
 
+    # Ownership takeaway. The insider/institution tables are pasted after save;
+    # the takeaway line is the content bundle's, and until v0.5.51 there was no
+    # field for it, so the slide shipped a bare '[x]' below 24 insiders and 118
+    # institutions. No currency note: this slide states share counts and
+    # percentages, and its "Source: Bloomberg" line is complete as shipped.
+    slide_own = prs.slides[layout.ownership]
+    set_text(find_shape(slide_own, "Text Placeholder 4"), [content.ownership_takeaway])
+
     # Comps takeaway; chart placeholder remains unless insertion later replaces it.
+    # The footnote's currency is the content bundle's, because the takeaway is the
+    # only thing on this slide that carries figures — the comps table is a deferred
+    # placeholder. When that table lands, the label must come from the tab that
+    # populates it; `infor_comps_output_ccy` is stamped for exactly that and is
+    # written by nothing today, so it cannot be the source yet.
     slide_comps = prs.slides[layout.comps]
     set_text(find_shape(slide_comps, "Text Placeholder 5"), [content.comps_takeaway])
+    _label_slide_currency(find_shape(slide_comps, _FOOTNOTE_COMPS), content_currency)
 
     # Precedent-transactions takeaway; chart placeholder remains (no
-    # Excel→PowerPoint while Capital IQ can't be refreshed), mirroring comps.
+    # Excel→PowerPoint while Capital IQ can't be refreshed), mirroring comps —
+    # including where its footnote currency comes from and why.
     slide_prec = prs.slides[layout.precedents]
     set_text(find_shape(slide_prec, "Text Placeholder 5"), [content.precedents_takeaway])
+    _label_slide_currency(find_shape(slide_prec, _FOOTNOTE_PRECEDENTS), content_currency)
 
-    # Key investment highlights — only when the plan carries the slide;
-    # placeholders remain unless content supplies them.
+    # Key investment highlights — only when the plan carries the slide. Every box
+    # on it is the content bundle's, so the footnote is the content's currency;
+    # it used to be the cap table's, which labelled US$ quadrants C$MM.
     if layout.investment_highlights is not None:
         slide_kih = prs.slides[layout.investment_highlights]
         _fill_investment_highlights(slide_kih, content)
-        if currency_letter is not None:
-            fill_footnote_currency(find_shape(slide_kih, "Text Placeholder 13"), currency_letter)
+        _label_slide_currency(find_shape(slide_kih, _FOOTNOTE_KIH), content_currency)
 
     # Market-entry targets, two per slide. The section was grown above; fill
     # each slide with its pair and title it '(N of M)'.
@@ -684,12 +1012,14 @@ def assemble_pitch_deck(
             row_labels=content.market_entry_row_labels,
             targets=pair,
             market=content.market_entry_market,
-            currency_letter=currency_letter,
+            currency=content_currency,
             slide_number=j + 1,
             total_slides=n_market_entry,
         )
 
-    # Disclaimer + contact are static library entries — left untouched.
+    # The disclaimer is a static library entry — left untouched. Contact is NOT:
+    # it ships three of its four cards as '[x]'.
+    _fill_contact_cards(prs.slides[layout.contact], content.contacts)
 
     prs.save(output_path)
 
@@ -809,6 +1139,13 @@ def _verify_pitch_output(
     leftovers = [token for token in forbidden if token in text]
     if leftovers:
         raise ValueError(f"assembled pitch deck still contains required-field placeholders: {leftovers}")
+    unfilled = _unfilled_placeholders(prs)
+    if unfilled:
+        raise ValueError(
+            "assembled pitch deck still contains unfilled '[x]' placeholders — a "
+            "deck that reaches a client with these on it reads as unfinished:\n  "
+            + "\n  ".join(unfilled)
+        )
     required_placeholders = [
         "[Pie Chart Placeholder]",
         "[Placeholder for Metric #1 Chart]",

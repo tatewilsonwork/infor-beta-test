@@ -85,6 +85,44 @@
       "title": "PitchBullet",
       "type": "object"
     },
+    "PitchContact": {
+      "additionalProperties": false,
+      "description": "One banker card on the deck's Contact slide.\n\nThe library ships a 2x2 grid of three-row cards \u2014 ``\"<name>, <title>\"``, then\nthe phone, then the email. INFOR is single-tenant and the deal team is\nknowable, so the cards are a declared input; a card the deck has no contact\nfor is **deleted**, never left as the template's ``[x]``. A deck reaching a\nclient with three empty contact cards reads as unfinished.",
+      "properties": {
+        "email": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Email",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "phone": {
+          "maxLength": 40,
+          "minLength": 1,
+          "title": "Phone",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 80,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "title",
+        "phone",
+        "email"
+      ],
+      "title": "PitchContact",
+      "type": "object"
+    },
     "PitchSourceNote": {
       "additionalProperties": false,
       "description": "Source note for analyst-auditable citations.",
@@ -161,6 +199,15 @@
       "title": "Comps Takeaway",
       "type": "string"
     },
+    "contacts": {
+      "description": "Deal-team cards for the Contact slide, in reading order (the library ships a 2x2 grid of four). Left empty, the deck keeps whichever cards the library ships already filled and DELETES the placeholder ones \u2014 so the default is INFOR's own card rather than a name invented here.",
+      "items": {
+        "$ref": "#/$defs/PitchContact"
+      },
+      "maxItems": 4,
+      "title": "Contacts",
+      "type": "array"
+    },
     "current_section": {
       "maxLength": 80,
       "minLength": 1,
@@ -175,6 +222,11 @@
       "minItems": 1,
       "title": "Executive Summary Bullets",
       "type": "array"
+    },
+    "figure_currency": {
+      "description": "ISO 4217 code for the currency every figure in THIS bundle is stated in \u2014 the target's filing reporting currency, which is also what the financial-summary and ltm-metrics tabs are locked to. The deck labels each slide from whatever populates it, so this is the label on every slide the bundle's own copy fills. It is NOT necessarily the cap table's output currency: the cap table converts, and where the two differ the overview slide names both plus the rate between them.",
+      "title": "Figure Currency",
+      "type": "string"
     },
     "investment_highlights": {
       "items": {
@@ -235,6 +287,13 @@
       "title": "Market Entry Targets",
       "type": "array"
     },
+    "ownership_takeaway": {
+      "description": "One sentence on the ownership slide's takeaway line \u2014 the sibling of comps_takeaway / precedents_takeaway. Required: the slide ships a takeaway box, and with no field to fill it the delivered deck printed a bare '[x]' under a table of 24 insiders and 118 institutions.",
+      "maxLength": 180,
+      "minLength": 1,
+      "title": "Ownership Takeaway",
+      "type": "string"
+    },
     "precedents_takeaway": {
       "maxLength": 180,
       "minLength": 1,
@@ -281,6 +340,7 @@
   "required": [
     "client_name",
     "presentation_date",
+    "figure_currency",
     "executive_summary_bullets",
     "section_labels",
     "current_section",
@@ -288,7 +348,8 @@
     "risk_mitigants",
     "risks_tagline",
     "comps_takeaway",
-    "precedents_takeaway"
+    "precedents_takeaway",
+    "ownership_takeaway"
   ],
   "title": "PitchDeckContent",
   "type": "object"

@@ -104,6 +104,11 @@ _FIRST_DATA_ROW = _HEADER_ROW + 1
 # carry one or two — a cloned FS slide keeps the same shape names). In tile
 # order: #1 top-left, #2 top-right, #3 / #4 below. Slide k charts the tab's
 # metric rows 4k..4k+3 (rows 6-9 on the first slide, 10-13 on the second).
+#
+# ORDERING: the names are the contract, and this list's ORDER pairs them to the
+# tab's metric rows, so a stale mapping would put each chart under the wrong
+# label with nothing failing. `test_the_chart_placeholders_are_named_in_reading_order`
+# checks the library's geometry against it.
 _PLACEHOLDER_NAMES: list[str] = [
     "Rectangle 17",  # Metric #1 (label tile Rectangle 13)
     "Rectangle 7",   # Metric #2 (label tile Rectangle 12)
