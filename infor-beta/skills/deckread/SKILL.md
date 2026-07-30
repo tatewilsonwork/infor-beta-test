@@ -63,8 +63,11 @@ in front of you at the moment you would otherwise report one.
   measured renders and the `deck` stage would have failed if it had not. Do not re-measure,
   and never edit a shape.
 - **Unsubstituted `[Placeholder for …]` / `[Pie Chart Placeholder]` tokens.** Substitution is
-  `deck_contract`'s check and it has already run; the comps and precedents slides are
-  placeholders the plan defers on purpose.
+  `deck_contract`'s check and it has already run, and it knows which ones ship on purpose:
+  the comps and precedents slides the plan defers, and the market-entry
+  `[Placeholder for <Target> Logo]` boxes, which name the target whose logo the analyst
+  drops into that column. The logo one will look like a defect to you *because* it carries
+  a real company's name in a rendered caption position. It is not one.
 - **Error values in CapIQ-dependent cells.** Capital IQ cannot be refreshed in this
   environment, so `#VALUE!` / `n/a` in the cap table's forward estimates and in the comps /
   precedents formulas is the normal state of a shipped artefact — and it is *visible in the

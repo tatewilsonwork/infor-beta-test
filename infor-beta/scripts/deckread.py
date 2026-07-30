@@ -96,8 +96,11 @@ NOT_YOURS = (
     ),
     (
         "unsubstituted `[Placeholder for …]` tokens",
-        "`deck_contract`'s substitution check has already run; a placeholder region the "
-        "plan defers on purpose (the comps and precedents slides) is expected.",
+        "`deck_contract`'s substitution check has already run, and it knows which ones "
+        "ship on purpose: the comps and precedents regions the plan defers, and the "
+        "market-entry `[Placeholder for <Target> Logo]` boxes, which name the target "
+        "whose logo the analyst drops in — that one reads like a defect precisely "
+        "because it carries a real company's name, and it is not one.",
     ),
     (
         "error values in CapIQ-dependent cells",
