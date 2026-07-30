@@ -14,9 +14,14 @@ from schemas import Company, PitchDeckContent, Plan
 from deck_contract import verify_deck
 from excel_to_powerpoint import find_soffice
 from deck_repair import DeckNotConvergedError
-from pptx_helpers import find_shape
+from pptx_helpers import find_shape, shapes_in_reading_order
 from pitch_deck_wireframe import build_pitch_deck_slide_plan, write_slide_plan
-from pitch_deck_assembler import _output_currency_letter, assemble_pitch_deck
+from pitch_deck_assembler import (
+    _iter_slide_text,
+    _output_currency_letter,
+    _verify_pitch_output,
+    assemble_pitch_deck,
+)
 from slide_library_registry import load_slide_library_registry
 
 
@@ -28,6 +33,7 @@ def _sample_content() -> PitchDeckContent:
     return PitchDeckContent(
         client_name="SampleCo Ltd.",
         presentation_date="April 2026",
+        figure_currency="USD",
         executive_summary_bullets=[
             {"text": "SampleCo is a compelling public-company advisory candidate supported by durable market positions and recurring revenue visibility", "level": 0},
             {"text": "The Company benefits from diversified end-market exposure and a management team focused on profitable growth", "level": 0},
@@ -70,6 +76,7 @@ def _sample_content() -> PitchDeckContent:
         risks_tagline="INFOR will help proactively frame key diligence topics to support a constructive acquiror dialogue.",
         comps_takeaway="SampleCo trades at a discount to higher-growth peers, creating a clear valuation framing opportunity.",
         precedents_takeaway="Recent precedent transactions in the sector cleared at premium multiples, supporting an attractive valuation case.",
+        ownership_takeaway="Institutions hold a clear majority of the register, with insider ownership concentrated in long-tenured management.",
         investment_highlights=[
             {"header": "Durable Recurring Revenue", "bullets": ["High retention across multi-year contracts", "Predictable cash conversion through cycles"]},
             {"header": "Fragmented, Underpenetrated Market", "bullets": ["Few scaled competitors", "Clear whitespace for consolidation"]},
@@ -266,11 +273,11 @@ def test_assemble_pitch_deck_preserves_static_slides_and_fills_allowed_fields(tm
     assert "Potential Canada Market Entry Targets" in all_text
     assert "[Investment Highlight #1]" not in all_text
     assert "Potential [x] Market Entry Targets" not in all_text
-    # Market-entry logo boxes are relabelled to name the company; with no target
-    # name supplied they fall back to the generic label and the template's
-    # '[Placeholder for Logo]' string is gone.
-    assert "[Company Name Logo]" in all_text
-    assert "[Placeholder for Logo]" not in all_text
+    # Market-entry logo boxes name the company INSIDE the library's own
+    # '[Placeholder for …]' wording, so the box says whose logo goes there while
+    # still reading as something to clear. With no target name supplied it stays
+    # the generic '[Placeholder for Logo]'.
+    assert "[Placeholder for Logo]" in all_text
 
     # Static credential slide text remains present.
     assert "INFOR is Canada’s leading provider of innovative, independent, forward thinking financial & strategic advice" in all_text
@@ -467,6 +474,18 @@ def _write_sample_cap_table(deal_dir: Path, currency: str = "CAD") -> Path:
         path, TAB_CAPTABLE, TabSpec(write=_fill, verify_names=(NAME_CAP_OUTPUT_CCY,))
     )
     return path
+
+
+def _set_fx_rate(deal_workbook: Path, rate: float) -> Path:
+    """Write the cap table's FX rate, resolved through `infor_fx_rate` like the skill."""
+    from deal_workbook import TAB_CAPTABLE, TabSpec, write_tab
+    from template_layout import NAME_FX_RATE, resolve_name_cell
+
+    def _fill(_wb, ws):
+        ws[resolve_name_cell(ws, NAME_FX_RATE)] = rate
+
+    write_tab(deal_workbook, TAB_CAPTABLE, TabSpec(write=_fill, verify_names=(NAME_FX_RATE,)))
+    return deal_workbook
 
 
 def _all_slides_text(prs: Presentation) -> str:
@@ -667,11 +686,19 @@ def test_market_entry_odd_count_blanks_unused_column_and_logo(tmp_path: Path):
     assert table.cell(1, 2).text.strip() == "", "the unused target column is blanked"
     boxes = _logo_boxes(last_me)
     assert len(boxes) == 2
-    assert boxes[0].text.strip() == "[Company Name Logo]", "the single target's logo box is labelled"
+    assert boxes[0].text.strip() == "[Placeholder for Logo]", "the single target's logo box is labelled"
     assert boxes[1].text.strip() == "", "the unused (rightmost) logo box is blanked"
 
 
 def test_market_entry_logo_box_names_each_target(tmp_path: Path):
+    """The box says whose logo goes there, and still reads as a placeholder.
+
+    The delivered Project Open Text deck printed "[Glean Logo]" / "[Pinecone
+    Logo]" across four slides. The guidance was deliberate and worth keeping —
+    the analyst has to know which column is whose — but bracketed prose reads as
+    a caption, not as something to clear. Naming the target INSIDE the library's
+    own "[Placeholder for …]" wording keeps both.
+    """
     base = _sample_content().model_dump()
     base["market_entry_targets"] = [
         {"name": "Kueski", "cells": base["market_entry_targets"][0]["cells"]},
@@ -679,7 +706,10 @@ def test_market_entry_logo_box_names_each_target(tmp_path: Path):
     ]
     deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(base))  # 2 targets -> 1 slide
     boxes = _logo_boxes(Presentation(deck_path).slides[13])
-    assert [b.text.strip() for b in boxes] == ["[Kueski Logo]", "[Nubank Logo]"]
+    assert [b.text.strip() for b in boxes] == [
+        "[Placeholder for Kueski Logo]",
+        "[Placeholder for Nubank Logo]",
+    ]
 
 
 # ─── Slide 10: Considerations/Mitigants font sizes match the library ─────────
@@ -1227,3 +1257,435 @@ def test_output_currency_letter_defaults_to_c_only_for_an_empty_cell(tmp_path: P
 
     with pytest.raises(FileNotFoundError):
         _output_currency_letter(tmp_path / "missing.xlsx")
+
+
+# ─── B4: the currency label is a property of the slide's CONTENT ─────────────
+#
+# The delivered Project Open Text deck failed this four ways at once — see the
+# comment block above `_SecondCurrency` in the assembler. These tests cover each
+# way, plus the guard that turns the class into a build failure.
+
+
+def _figure_slides(prs) -> dict[int, str]:
+    """Every slide carrying figures, mapped to its footnote text.
+
+    Keyed off the footnote shape rather than a written-down slide list, because
+    the deck's slide mix is a deck-spec option. The two figure-bearing slides
+    with no currency footnote — ownership (shares and percentages) and
+    considerations/mitigants (prose) — carry no such shape and so are absent by
+    construction, which is the distinction the assembler makes too.
+    """
+    notes: dict[int, str] = {}
+    for index, slide in enumerate(prs.slides, start=1):
+        for shape in slide.shapes:
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            if "All figures in" in shape.text:
+                notes[index] = shape.text
+    return notes
+
+
+def test_no_unfilled_placeholder_survives_on_any_slide(tmp_path: Path):
+    """Not one literal '[x]' anywhere on a delivered deck — swept, not spot-checked.
+
+    The three known cases (the market-entry footnotes, the ownership takeaway,
+    the Contact cards) were each found by reading a shipped deck. Asserting on
+    those three would re-run the same inspection; the point is the sweep, over
+    every slide, every group and every table cell.
+    """
+    deck_path = _assemble(
+        tmp_path,
+        _sample_content(),
+        captable_workbook_path=_write_sample_cap_table(tmp_path / "wb", currency="CAD"),
+    )
+    prs = Presentation(deck_path)
+
+    offenders = [
+        f"slide {index}: {shape_name}"
+        for index, slide in enumerate(prs.slides, start=1)
+        for shape_name, text in _iter_slide_text(slide)
+        if "[x]" in text
+    ]
+    assert offenders == []
+
+    # The deferred placeholders are a different thing and DO ship — the check
+    # must not have passed by scrubbing them too.
+    text = _all_slides_text(prs)
+    assert "[Pie Chart Placeholder]" in text
+    assert "[Placeholder for Comps Chart]" in text
+
+
+def test_an_unfilled_placeholder_fails_the_build(tmp_path: Path):
+    """The sweep is a build failure, not a review finding.
+
+    Without this the guard could rot to a no-op and
+    `test_no_unfilled_placeholder_survives_on_any_slide` would still pass. It
+    re-introduces an `[x]` into a deck that already verified clean, so what is
+    being tested is the check and nothing else.
+    """
+    deck_path = _assemble(tmp_path, _sample_content())
+
+    prs = Presentation(deck_path)
+    find_shape(prs.slides[9], "Text Placeholder 6").text_frame.paragraphs[0].runs[0].text = "[x]"
+    prs.save(deck_path)
+
+    with pytest.raises(ValueError, match=r"unfilled '\[x\]' placeholders"):
+        _verify_pitch_output(deck_path)
+
+
+def test_every_figure_bearing_slide_carries_a_currency_note(tmp_path: Path):
+    """Including the Financial Summary slide, which the library ships without one.
+
+    Slide 8 of the delivered deck read "Sources: Company filings" and stopped
+    there, over a tab locked to millions — while the overview slide restated the
+    same LTM revenue in a different currency two slides earlier.
+    """
+    deck_path = _assemble(
+        tmp_path,
+        _sample_content(),
+        captable_workbook_path=_write_sample_cap_table(tmp_path / "wb", currency="USD"),
+    )
+    prs = Presentation(deck_path)
+    notes = _figure_slides(prs)
+
+    # overview, financial summary, comps, precedents, highlights, market entry
+    assert len(notes) == 6, f"expected six currency-labelled slides, got {sorted(notes)}"
+    for index, note in notes.items():
+        assert "US$MM" in note, f"slide {index} is not labelled in the content's currency: {note!r}"
+        assert "[x]" not in note
+
+    # The Financial Summary footnote is the appended case: the library's own
+    # source line survives alongside the note this module wrote.
+    fs_note = notes[8]
+    assert "Sources: Company filings" in fs_note
+    assert "Note: All figures in US$MM" in fs_note
+
+
+def test_a_mixed_currency_slide_names_both_currencies_and_the_rate(tmp_path: Path):
+    """Slide 7: US$ overview bullets above a C$ cap table, and the rate between.
+
+    The deck stated LTM revenue as C$7,344.2 here and $5,207.9 on the Financial
+    Summary slide. Both were right; the deck said so nowhere, and 7,344.2 /
+    5,207.9 = 1.4102 was only ever in the workbook.
+    """
+    workbook = _write_sample_cap_table(tmp_path / "wb", currency="CAD")
+    _set_fx_rate(workbook, 1.4102)
+
+    deck_path = _assemble(
+        tmp_path, _sample_content(), captable_workbook_path=workbook  # content is USD
+    )
+    note = find_shape(Presentation(deck_path).slides[6], "Text Placeholder 1").text
+
+    assert "US$MM" in note, "the bullets are the content bundle's, and it is USD"
+    assert "capitalization table in C$MM" in note, "the pasted picture is CAD — say so"
+    assert "US$1.00 = C$1.4102" in note, "the rate that reconciles the two slides"
+
+
+def test_a_single_currency_slide_does_not_mention_a_second(tmp_path: Path):
+    """No clause when the cap table converts to the currency the content is in."""
+    deck_path = _assemble(
+        tmp_path,
+        _sample_content(),  # USD
+        captable_workbook_path=_write_sample_cap_table(tmp_path / "wb", currency="USD"),
+    )
+    note = find_shape(Presentation(deck_path).slides[6], "Text Placeholder 1").text
+
+    assert "US$MM" in note
+    assert "capitalization table in" not in note
+
+
+def test_a_missing_fx_rate_still_names_both_currencies(tmp_path: Path):
+    """An un-entered FX cell loses the rate, not the disclosure.
+
+    The rate is read from the cap table, so there is nothing to print when the
+    cell is empty. Naming both currencies without it beats printing a number
+    this module made up, and beats silently picking one.
+    """
+    deck_path = _assemble(
+        tmp_path,
+        _sample_content(),  # USD
+        captable_workbook_path=_write_sample_cap_table(tmp_path / "wb", currency="CAD"),
+    )
+    note = find_shape(Presentation(deck_path).slides[6], "Text Placeholder 1").text
+
+    assert "capitalization table in C$MM" in note
+    assert "=" not in note.split("capitalization table")[1]
+
+
+def test_the_deck_currency_no_longer_comes_from_the_cap_table(tmp_path: Path):
+    """The regression proper: a C$ cap table must not relabel US$ content slides.
+
+    One letter read off `captable!F5` used to label the highlights slide and
+    every market-entry slide, whose every box is the content bundle's. Five
+    slides of the delivered deck said C$MM over US$ figures.
+    """
+    deck_path = _assemble(
+        tmp_path,
+        _sample_content(),  # USD
+        captable_workbook_path=_write_sample_cap_table(tmp_path / "wb", currency="CAD"),
+    )
+    prs = Presentation(deck_path)
+
+    highlights = find_shape(prs.slides[12], "Text Placeholder 13").text
+    assert "US$MM" in highlights and "C$MM" not in highlights
+
+    market_entry = find_shape(prs.slides[13], "Text Placeholder 3").text
+    assert "US$MM" in market_entry and "C$MM" not in market_entry
+
+
+def test_a_non_dollar_content_currency_renders_its_iso_code(tmp_path: Path):
+    """A GBP filer is labelled 'GBP MM', never mislabelled with a dollar sign."""
+    content = _sample_content().model_dump()
+    content["figure_currency"] = "GBP"
+    deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(content))
+
+    note = find_shape(Presentation(deck_path).slides[6], "Text Placeholder 1").text
+    assert "GBP MM" in note and "$" not in note.split("All figures in")[1]
+
+
+def test_figure_currency_rejects_a_rendered_token():
+    """The bundle states a CODE. A token is the thing the deck renders FROM it."""
+    base = _sample_content().model_dump()
+    for bad in ("US$MM", "us dollars", "USDD", ""):
+        base["figure_currency"] = bad
+        with pytest.raises(ValidationError):
+            PitchDeckContent.model_validate(base)
+
+    base["figure_currency"] = "cad"  # case is normalised, not rejected
+    assert PitchDeckContent.model_validate(base).figure_currency == "CAD"
+
+
+# ─── B10: an ordered list of data is paired to shapes in VISUAL order ────────
+
+
+def test_section_divider_boxes_read_in_order_top_to_bottom(tmp_path: Path):
+    """The divider's boxes, read the way a human reads them, match section_labels.
+
+    The delivered deck read Overview / Valuation / Financial Summary / Process
+    against a content bundle holding Overview / Financial Summary / Valuation /
+    Process. Nothing upstream disagreed — `slide.shapes` is XML document order,
+    the four boxes are all named "Rounded Rectangle 19", and document order on
+    this library is the 1st, 3rd, 2nd and 4th box down the slide.
+
+    The library's own document order is what makes this test mean something, so
+    it is asserted rather than assumed: a re-save that happened to align the two
+    orders would turn every assertion below into a tautology, and that is exactly
+    how the bug shipped.
+    """
+    library_boxes = [
+        s for s in Presentation(TEMPLATE).slides[5].shapes if s.name == "Rounded Rectangle 19"
+    ]
+    assert [s.top for s in library_boxes] != sorted(s.top for s in library_boxes), (
+        "the library's divider no longer authors its boxes out of visual order, so "
+        "this test can no longer distinguish a geometric sort from a document-order "
+        "one — rebuild the fixture with a scrambled slide before trusting it"
+    )
+
+    labels = ["Overview", "Financial Summary", "Valuation", "Process"]
+    content = _sample_content().model_dump()
+    content["section_labels"] = labels
+    content["current_section"] = "Overview"
+    deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(content))
+
+    boxes = [s for s in Presentation(deck_path).slides[5].shapes if s.name == "Rounded Rectangle 19"]
+    top_to_bottom = [s.text.strip() for s in sorted(boxes, key=lambda s: s.top)]
+    assert top_to_bottom == labels
+
+
+def test_the_financial_summary_tiles_are_named_in_reading_order():
+    """`_FS_METRIC_TILES` is a name list, so its ORDER is an unchecked claim.
+
+    The tiles are addressed by name (Phase C: never by position), which is right
+    — but the `financial-summary` stage emits its labels in reading order, and
+    nothing else in the assembler would notice if the name→position mapping went
+    stale. The names read out of order alphabetically, so this is not obvious
+    from the list itself.
+    """
+    from pitch_deck_assembler import _FS_METRIC_TILES
+
+    slide = Presentation(TEMPLATE).slides[8]
+    tiles = [find_shape(slide, name) for name in _FS_METRIC_TILES]
+    assert [s.text.strip() for s in tiles] == ["Metric #1", "Metric #2", "Metric #3", "Metric #4"]
+    assert tiles == shapes_in_reading_order(tiles), (
+        "the named tile order no longer matches the library's geometry — the FS "
+        "labels would render top-left, top-right, bottom-left, bottom-right in the "
+        "wrong slots"
+    )
+
+
+def test_the_highlight_quadrants_are_numbered_in_reading_order():
+    """The KIH fill sorts by the printed number; that must agree with geometry.
+
+    Sorting on what the reader sees is the strongest ordering available here, but
+    it is only correct if the library numbers its quadrants down the slide. The
+    four groups arrive in document order 1, 4, 3, 2, so the sort is load-bearing.
+    """
+    slide = Presentation(TEMPLATE).slides[13]
+    groups = [s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.GROUP]
+    numbered = []
+    for group in groups:
+        oval = next(
+            s for s in group.shapes
+            if s.name.startswith("Oval") and s.text.strip().isdigit()
+        )
+        numbered.append((int(oval.text.strip()), group))
+
+    assert [n for n, _ in numbered] != sorted(n for n, _ in numbered), (
+        "the library no longer authors the quadrants out of numeric order, so this "
+        "test can no longer tell a sorted fill from an unsorted one"
+    )
+    by_number = [g for _, g in sorted(numbered, key=lambda pair: pair[0])]
+    assert by_number == shapes_in_reading_order(by_number)
+
+
+# ─── B13b: the Contact slide's cards ─────────────────────────────────────────
+
+
+def test_unfilled_contact_cards_are_removed_not_left_as_placeholders(tmp_path: Path):
+    """Three of the four cards ship as '[x]'; they are deleted, not blanked.
+
+    A deck reaching a client with three empty contact cards reads as unfinished —
+    and blanking them would leave three empty boxes in a 2x2 grid, which reads
+    barely better. The library's own filled card survives untouched, which is
+    what makes "no contacts supplied" a sensible default rather than a gap.
+    """
+    deck_path = _assemble(tmp_path, _sample_content())
+    contact = Presentation(deck_path).slides[-1]
+
+    cards = [
+        s for s in contact.shapes
+        if getattr(s, "has_table", False) and len(s.table.rows) == 3
+    ]
+    assert len(cards) == 1, "the three placeholder cards are gone, not emptied"
+    assert cards[0].table.cell(0, 0).text == "Neil Selfe, Managing Principal"
+    # The address table beside them is not a card and must survive.
+    assert "200 Bay Street" in _all_slides_text(Presentation(deck_path))
+
+
+def test_supplied_contacts_fill_cards_in_reading_order(tmp_path: Path):
+    """Declared contacts replace the library's cards; surplus cards are deleted."""
+    content = _sample_content().model_dump()
+    content["contacts"] = [
+        {"name": "A. Banker", "title": "Managing Principal",
+         "phone": "(416) 555-0101", "email": "abanker@example.com"},
+        {"name": "B. Banker", "title": "Vice President",
+         "phone": "(416) 555-0102", "email": "bbanker@example.com"},
+    ]
+    deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(content))
+    contact = Presentation(deck_path).slides[-1]
+
+    cards = shapes_in_reading_order(
+        s for s in contact.shapes if getattr(s, "has_table", False) and len(s.table.rows) == 3
+    )
+    assert len(cards) == 2, "the two cards with no contact behind them are deleted"
+    assert [c.table.cell(0, 0).text for c in cards] == [
+        "A. Banker, Managing Principal",
+        "B. Banker, Vice President",
+    ]
+    assert [c.table.cell(2, 0).text for c in cards] == [
+        "abanker@example.com",
+        "bbanker@example.com",
+    ]
+    # The library's own card was replaced, not kept alongside.
+    assert "nselfe@inforfg.com" not in _all_slides_text(Presentation(deck_path))
+
+
+# ─── B13c: the ownership slide's takeaway ────────────────────────────────────
+
+
+def test_ownership_takeaway_is_written_onto_the_slide(tmp_path: Path):
+    """Its two siblings were filled; this one had no field at all to fill from."""
+    deck_path = _assemble(tmp_path, _sample_content())
+    slide = Presentation(deck_path).slides[8]
+
+    assert find_shape(slide, "Text Placeholder 4").text == (
+        "Institutions hold a clear majority of the register, with insider "
+        "ownership concentrated in long-tenured management."
+    )
+
+
+def test_ownership_takeaway_is_required():
+    base = _sample_content().model_dump()
+    del base["ownership_takeaway"]
+    with pytest.raises(ValidationError):
+        PitchDeckContent.model_validate(base)
+
+
+def test_a_mixed_currency_footnote_converges(tmp_path: Path):
+    """The longest note this module can write still fits its box, MEASURED.
+
+    The overview footnote is a 0.45"-tall two-column placeholder whose bottom
+    edge is 0.02" from the slide edge, and it already ships two lines. The mixed
+    -currency clause is the most text the assembler ever adds to it, so whether
+    it fits is a rendering question — and the repo's answer to a rendering
+    question is a render, never an estimate. Runs the converge loop, which
+    measures the rendered ink and fails the stage if it lands outside the box.
+    """
+    workbook = _write_sample_cap_table(tmp_path / "wb", currency="CAD")
+    _set_fx_rate(workbook, 1.4102)
+
+    deck_path = _assemble(
+        tmp_path, _sample_content(), captable_workbook_path=workbook, converge=True
+    )
+
+    note = find_shape(Presentation(deck_path).slides[6], "Text Placeholder 1").text
+    assert "US$1.00 = C$1.4102" in note
+
+
+def test_the_logo_placeholder_is_advisory_not_a_blocking_finding(tmp_path: Path):
+    """Naming the target inside the placeholder wording must not create review noise.
+
+    `deck_contract` reports any `[… placeholder …]` it does not recognise as a
+    BLOCKING `unfilled-placeholder`. The old `[Glean Logo]` matched nothing and
+    so was reported as nothing — invisible to the contract while rendering to a
+    client. Moving it into the library's placeholder vocabulary makes it visible,
+    which is the point, but it has to land in the advisory tier the deck's other
+    deliberate placeholders live in: re-flagging expected things is how a review
+    gets ignored.
+    """
+    from deck_contract import SEVERITY_ADVISORY
+
+    base = _sample_content().model_dump()
+    base["market_entry_targets"] = [
+        {"name": "Kueski", "cells": base["market_entry_targets"][0]["cells"]},
+        {"name": "Nubank", "cells": base["market_entry_targets"][1]["cells"]},
+    ]
+    deck_path = _assemble(tmp_path, PitchDeckContent.model_validate(base))
+
+    findings = verify_deck(deck_path, render=False, vision=False, out_dir=tmp_path / "qa")
+    logos = [f for f in findings if "Logo]" in f.detail]
+    assert logos, "the logo boxes should be reported at all — they are work to finish"
+    assert all(f.kind == "expected-placeholder" for f in logos), [f.kind for f in logos]
+    assert all(f.severity == SEVERITY_ADVISORY for f in logos)
+
+
+def test_the_chart_placeholders_are_named_in_reading_order():
+    """`financial_charts._PLACEHOLDER_NAMES` pairs charts to the tab's metric rows.
+
+    The other half of the Financial Summary slide: the label tiles are checked
+    above, and these are the chart boxes beneath them. A stale mapping would put
+    every chart under the wrong label — four correct charts, four correct labels,
+    and a wrong slide.
+    """
+    from financial_charts import _PLACEHOLDER_NAMES
+
+    slide = Presentation(TEMPLATE).slides[8]
+    boxes = [find_shape(slide, name) for name in _PLACEHOLDER_NAMES]
+    assert [s.text.strip() for s in boxes] == [
+        f"[Placeholder for Metric #{n} Chart]" for n in (1, 2, 3, 4)
+    ]
+    assert boxes == shapes_in_reading_order(boxes)
+
+
+def test_the_metric_groups_are_named_in_reading_order():
+    """`earnings_update_assembler._METRIC_GROUPS` is zipped against `kpi_rows`.
+
+    Same class as the pitch deck's divider — an ordered list of data paired to
+    shapes — resolved by name rather than by document order, which is correct.
+    This is the check that keeps the name order honest.
+    """
+    from earnings_update_assembler import _METRIC_GROUPS
+
+    slide = Presentation(TEMPLATE).slides[7]  # the library's earnings-summary slide
+    groups = [find_shape(slide, name) for name, *_ in _METRIC_GROUPS]
+    assert groups == shapes_in_reading_order(groups)

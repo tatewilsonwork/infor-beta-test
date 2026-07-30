@@ -235,6 +235,14 @@ def _set_overview(slide, content: EarningsUpdateContent) -> None:
 
 
 # (group_name, prior_box, current_box, variance_box) for the four metric rows.
+#
+# ORDERING: this tuple is zipped 1:1 against `content.kpi_rows`, so its ORDER is
+# a claim — that "Group 12" is the top metric row and "Group 2" the bottom. The
+# groups are found by name (Phase C: never by position), which is right, but the
+# names sort into no useful order on their own and nothing here would notice the
+# mapping going stale. `test_the_metric_groups_are_named_in_reading_order` checks
+# the library's geometry still agrees; the pitch deck's section divider is what
+# happens when an ordered list meets shapes in the wrong order and no test looks.
 _METRIC_GROUPS = (
     ("Group 12", "Rectangle 1032", "Rectangle 1034", "Rectangle 1041"),
     ("Group 9", "Rectangle 1043", "Rectangle 1037", "Rectangle 1042"),

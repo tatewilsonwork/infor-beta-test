@@ -14,6 +14,9 @@ work and that have a history of regressing when re-derived inline in a skill:
   - `delete_slide(prs, index)` removes a slide and drops its presentation-part
     relationship, so reducing a cloned library deck to the wanted entries
     leaves no orphaned slide parts behind.
+  - `shapes_in_reading_order(shapes)` sorts shapes the way a reader sees them,
+    because `slide.shapes` is XML document order and pairing an ordered list of
+    data against it put the divider's labels in the wrong boxes.
 
 Skills can load these via:
 
@@ -569,6 +572,55 @@ def find_table_shape(slide):
         if getattr(shape, "has_table", False):
             return shape
     raise KeyError("no table shape found on slide")
+
+
+def delete_shape(shape):
+    """Remove `shape` from the slide it sits on.
+
+    The shape-level counterpart to `delete_slide`, and simpler: a shape carries no
+    presentation-part relationship of its own, so dropping its element from the
+    parent `spTree` is the whole operation.
+
+    Used to remove a library box the deck has no content for — an unfilled contact
+    card — rather than shipping the template's `[x]` to a client.
+    """
+    shape._element.getparent().remove(shape._element)
+
+
+# Row band for `shapes_in_reading_order`: two shapes whose tops are within this
+# are the same visual row. 0.2" is well under the smallest gap between rows in
+# the INFOR library (the divider's boxes are 0.54" apart, the tightest of them)
+# and well over the rounding a template re-save introduces.
+_READING_ROW_BAND = Inches(0.2)
+
+
+def shapes_in_reading_order(shapes, *, row_band=_READING_ROW_BAND):
+    """Sort `shapes` into VISUAL reading order — top-to-bottom, then left-to-right.
+
+    `slide.shapes` yields **XML document order**, which is the order the shapes
+    were authored in and has no relationship to where they sit on the slide. Any
+    code that zips an ordered list of data onto shapes found by name or by type
+    must sort them first, or it is relying on the template's authoring history.
+
+    That is not hypothetical: the pitch deck's section divider ships four boxes
+    all named "Rounded Rectangle 19", in document order 1st, 3rd, 2nd, 4th
+    top-to-bottom. Zipping `section_labels` onto `enumerate(...)` of that list put
+    the right four labels in the wrong two boxes on every deck INFOR shipped, and
+    the divider slide is the one that tells a reader what the deck contains.
+
+    Shapes are banded into rows by `row_band` rather than sorted on `.top`
+    outright: a grid's row members are authored at one top in this library, but an
+    exact comparison would let a one-EMU nudge from a re-save silently reshuffle a
+    row. Within a band, order is by `.left`.
+    """
+    ordered = sorted(shapes, key=lambda s: (s.top, s.left))
+    rows: list[list] = []
+    for shape in ordered:
+        if rows and shape.top - rows[-1][0].top <= row_band:
+            rows[-1].append(shape)
+        else:
+            rows.append([shape])
+    return [shape for row in rows for shape in sorted(row, key=lambda s: s.left)]
 
 
 def set_table_height(table_frame, total_height):
