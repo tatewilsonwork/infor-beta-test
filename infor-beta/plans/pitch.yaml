@@ -305,6 +305,40 @@ stages:
     # and as a transform it has no `Task` tool to do it with at all.
     checkpoint: informational
 
+  # The read-the-slides pass. Renders the FINAL artefact, reads every slide and
+  # every rasterised picture at native resolution, and reports what it SAW: text
+  # over text, colliding shapes, faint contrast, label pileup, an illegible pasted
+  # range. Advisory, and it never gates.
+  #
+  # It exists because the `deck` stage's `vision_review_path` is an AGENDA and had
+  # no reader: a list of questions about slides worth a close look, referenced by no
+  # stage, so nothing ever answered one. Reading slides is judgment — a transform
+  # has no `Task` tool and no eyes — so this is dispatched, and it consumes both
+  # halves: the checklist `deck` wrote, and `financial-charts`'s deck_path, so it
+  # reads the deck the analyst receives rather than the pre-chart one whose crops no
+  # longer describe the file on disk. That pairs it with `deckcheck` in the final
+  # wave: same artefact, two questions — does it read, and is it true.
+  - id: deckread
+    skill: deckread
+    inputs:
+      company: $deal.subject_company
+      deck_path: $stages.financial-charts.deck_path
+      vision_review_path: $stages.deck.vision_review_path
+    outputs:
+      - name: report_path
+        type: Path
+        description: The advisory read-the-slides review (markdown) under the deal's artefacts/.
+      - name: finding_count
+        type: int
+        description: Things the reader saw and reported; 0 alongside a non-zero slides_read means every slide was read and nothing was found.
+      - name: slides_read
+        type: int
+        description: How many slide renders were actually read. 0 means no renderer was available and the deck was NOT looked at — which is why it is declared separately from finding_count.
+      - name: worklist_path
+        type: Path
+        description: The generated work list for the final artefact — which slides to look at and why, plus every render and each rasterised picture at native resolution.
+    checkpoint: informational
+
   # Falsification pass (Phase G). Reads the rendered slide PNGs, the run's merged
   # provenance record (every stage's `provenance.json` fragment, figure -> filing
   # -> statement -> page) and the attached filings, and attempts to DISPROVE every

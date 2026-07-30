@@ -4,9 +4,9 @@ Phase F sorts every plan stage into one of two kinds.
 
 **Judgment** — `captable`, `comps`, `precedents`, `ownership`,
 `financial-summary`, `ltm-metrics`, `pitch-content`, `earningsupdate-content`,
-`deckcheck`. These read filings, search the web, choose peer sets, draft copy, and
-argue about whether a figure on a slide is true. They stay sub-agents with a real
-tool allow-list, dispatched by the model.
+`deckread`, `deckcheck`. These read filings, search the web, choose peer sets, draft
+copy, look at rendered slides, and argue about whether a figure on a slide is true.
+They stay sub-agents with a real tool allow-list, dispatched by the model.
 
 **Transform** — `pitch-wireframe`, `earningsupdate-wireframe`, `deck-assembler`,
 `financial-charts`. Each is one call to a function that already exists in
@@ -35,16 +35,25 @@ the run looks like.
 of these skills ended in a *mandatory* analyst-facing QA section — the
 deck-assembler's "read the slides" pass and `financial-charts`' chart check — and
 those are judgment, not transform. Deleting the SKILL.md would have deleted them
-with nothing failing. Both are preserved as *evidence for a reader who is already
-reading*: `deck-assembler` writes a vision review (the agenda `deck_contract`
-already builds, plus the renders and picture crops) and hands back
-`vision_review_path`, which the wave-boundary surface and the run summary name — so
-the analyst is told which slides to look at and why. Since v0.5.49 they read it
-while the run carries on rather than at a gate; it is the same review either way.
-`financial-charts` renders the overview + Financial Summary slides and hands back
-`charts_inserted` / `pie_inserted`, which makes a skipped chart visible at the wave
-boundary where it used to depend on a sub-agent remembering to mention it. The
-finished artefact then goes to `deckcheck`, which is judgment and stays dispatched.
+with nothing failing.
+
+`financial-charts` came out whole: it renders the overview + Financial Summary
+slides and hands back `charts_inserted` / `pie_inserted`, which makes a skipped chart
+visible at the wave boundary where it used to depend on a sub-agent remembering to
+mention it.
+
+The deck's did not, and it took four releases to notice. `deck-assembler` writes a
+vision review (the agenda `deck_contract` already builds, plus the renders and
+picture crops) and hands back `vision_review_path` — but an agenda is only half of a
+QA pass, and the half that was deleted with the SKILL.md was the *reader*. Nothing
+consumed `vision_review_path`, so 19 KB of questions went out with every run and not
+one of them was ever answered; a run's own picture defect sat on a slide that file
+listed by name and the run reported clean. Reading slides is judgment and a transform
+cannot do it, so the reader came back as a stage: `deckread`, dispatched, final wave,
+consuming this checklist plus the finished deck and returning findings. What this
+module writes is the input to that stage — which is what it always was. The finished
+artefact goes to `deckread` and `deckcheck` together, both judgment, both dispatched,
+both advisory.
 """
 
 from __future__ import annotations
@@ -54,9 +63,10 @@ from pathlib import Path
 
 from stage_io import StageIO
 
-#: Filename of the vision-review note the `deck` transform writes into its stage
-#: directory. Reported through the `vision_review_path` output, so the analyst can
-#: open it from the wave-boundary surface and from the run summary.
+#: Filename of the vision-review checklist the `deck` transform writes into its
+#: stage directory. Reported through the `vision_review_path` output, which the
+#: wave-boundary surface names automatically (every declared `Path` output is) and
+#: which the `deckread` stage consumes — it is that stage's agenda, not a review.
 VISION_REVIEW_NAME = "vision_review.md"
 
 
@@ -117,10 +127,16 @@ def render_vision_review(deck: Path | str, vision) -> str:
 
     The agenda is `deck_contract.vision_pass`'s, unchanged — one entry per thing
     worth a close look, each naming the slide, the question, the slide render and
-    (for a rasterised range or chart) the picture blob at native resolution. This
-    is the *reader's* half of deck QA: geometry was already measured and repaired
-    inside the assembler, so what is left is whether the slides read correctly,
-    which no measurement answers.
+    (for a rasterised range or chart) the picture blob at native resolution.
+
+    It is the **agenda** for the reading half of deck QA, and only that: every entry
+    is a question, and this function answers none of them. Geometry was already
+    measured and repaired inside the assembler, so what is left is whether the slides
+    read correctly — which no measurement answers, and which the `deckread` stage
+    answers by looking. `deckread` re-renders the same agenda against the *finished*
+    artefact (`deckread.render_worklist` delegates here), because in the pitch plan
+    the charts land after assembly and these crops describe a file that no longer
+    exists on disk. One wording, one place.
 
     It opens by naming the typeface the geometry was measured in, because that is
     the caveat on the sentence before it: `deck_repair` chose every font size from a

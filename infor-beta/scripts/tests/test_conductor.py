@@ -15,7 +15,9 @@ what these tests are about, and a real transform would assemble a deck. The four
 shipped transforms are exercised for real in `test_stage_transforms.py`.
 """
 
+import io
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -759,3 +761,258 @@ def test_cli_summary_writes_and_prints(run_dir: Path, capsys):
     out = capsys.readouterr().out
     assert "# Run summary — pitch" in out and "Refresh CapIQ." in out
     assert (run_dir / "summary.md").exists()
+
+
+# ─── The wave boundary names every file it produced (B8) ─────────────────────
+
+
+def test_the_checkpoint_surface_names_a_path_typed_output(run_dir: Path):
+    """The conductor used to be *told* to name these, and once did not.
+
+    A real pitch run's wave-5 boundary named no path, so the `deck` stage's written
+    vision review — 19 KB the analyst was meant to open while the run continued —
+    was never mentioned to them. The driver already holds the outputs and the plan's
+    declared types, so nothing about it needed remembering.
+    """
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/pitch-Project OpenText.xlsx"})
+    outcome = complete_wave(run_dir, 1)
+
+    assert outcome.results[0].paths == (
+        ("workbook_path", "/deals/pitch-Project OpenText.xlsx"),
+    )
+    narration = outcome.narration()
+    assert "Open:" in narration
+    assert "`workbook_path`: /deals/pitch-Project OpenText.xlsx" in narration
+    assert outcome.path_outputs == (
+        ("alpha", "workbook_path", "/deals/pitch-Project OpenText.xlsx"),
+    )
+
+
+def test_a_required_gate_names_its_paths_too(run_dir: Path):
+    # One rule, whatever the mode: the analyst being asked to approve a file is the
+    # last person who should have to go looking for it.
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+    _finish(run_dir, "beta", {"deck_path": "/deals/artefacts/Pitch.pptx"})
+    gate = complete_wave(run_dir, 2).gate
+    assert gate is not None
+    assert "Open:\n- `deck_path`: /deals/artefacts/Pitch.pptx" in gate.surface
+
+
+def test_only_declared_path_outputs_are_named(run_dir: Path):
+    """Read off the plan's `type:` labels, not sniffed from the value.
+
+    A stage's `finding_count` is an int and its `charts_inserted` a bool; neither is
+    something to open, and both are already in the inline output list.
+    """
+    write_plan_snapshot(
+        run_dir,
+        _PLAN_YAML.replace(
+            "      - name: workbook_path\n        type: Path\n",
+            "      - name: workbook_path\n        type: Path\n"
+            "      - name: row_count\n        type: int\n",
+        ),
+    )
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx", "row_count": 42})
+
+    result = complete_wave(run_dir, 1).results[0]
+    assert result.paths == (("workbook_path", "/deals/wb.xlsx"),)
+    assert "`row_count=42`" in complete_wave(run_dir, 1).narration()  # inline, not "Open:"
+
+
+def test_a_null_path_output_is_not_offered_to_open(run_dir: Path):
+    """`ownership` legitimately emits `workbook_path: null` (no SEDI PDF attached).
+
+    Telling an analyst to open `None` is worse than saying nothing, and the null is
+    still visible in the inline output list.
+    """
+    _finish(run_dir, "alpha", {"workbook_path": None})
+    outcome = complete_wave(run_dir, 1)
+
+    assert outcome.ok  # a declared output carrying null passes
+    assert outcome.results[0].paths == ()
+    assert "Open:" not in outcome.narration()
+
+
+# ─── A transform leaves a transcript (B12) ───────────────────────────────────
+
+
+def _print_both(io):
+    print("transform stdout: assembling")
+    print("deck_repair: converged after 2 repair iteration(s); 18 blocking / 4 advisory finding(s)", file=sys.stderr)
+    return {"deck_path": "/deals/artefacts/Pitch.pptx"}
+
+
+def test_a_transform_writes_its_stdout_and_stderr_to_the_stage_log(
+    run_dir: Path, monkeypatch, capsys
+):
+    """The one record of what the converge loop decided, made durable.
+
+    `stages/<id>/log.txt` is the same file `write_stage_log` puts a sub-agent's
+    transcript in — until v0.5.51 the eight judgment stages of a pitch run each had
+    one and the four transforms had none, so "18 blocking findings" and every shrink
+    the repair loop applied lived only in a shell nobody kept.
+    """
+    write_plan_snapshot(run_dir, _PLAN_YAML.replace("skill: pitch-content", f"skill: {_STUB_SKILL}"))
+    monkeypatch.setitem(stage_transforms.TRANSFORMS, _STUB_SKILL, _print_both)
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+
+    results = run_transforms(prepare_wave(run_dir, 2, plugin_root=_PLUGIN_ROOT))
+
+    log = stage_dir(run_dir, "beta") / "log.txt"
+    assert results[0].log_path == log
+    text = log.read_text(encoding="utf-8")
+    assert "transform `beta` (skill: stub-transform)" in text  # self-describing
+    assert "transform stdout: assembling" in text
+    assert "18 blocking / 4 advisory finding(s)" in text  # the counts, answerable from disk
+
+    # A TEE, not a redirect: the live run still sees the loop, because a deck 40s
+    # into a repair pass and a hung one look identical otherwise.
+    captured = capsys.readouterr()
+    assert "assembling" in captured.out
+    assert "18 blocking" in captured.err
+
+
+def test_a_raising_transform_still_leaves_its_transcript(run_dir: Path, monkeypatch):
+    """The error path is the one that needs the log most.
+
+    A `DeckNotConvergedError` names the shape it could not fit; what the loop *tried*
+    on the way there is in the transcript and nowhere else, because a failing
+    converge keeps only its last pass's renders.
+    """
+    write_plan_snapshot(run_dir, _PLAN_YAML.replace("skill: pitch-content", f"skill: {_STUB_SKILL}"))
+
+    def _boom(io):
+        print("deck_repair: shrank 'Rectangle 3' to 85%", file=sys.stderr)
+        raise RuntimeError('Rectangle 3 still overflows by 0.31" after 3 iteration(s)')
+
+    monkeypatch.setitem(stage_transforms.TRANSFORMS, _STUB_SKILL, _boom)
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+
+    results = run_transforms(prepare_wave(run_dir, 2, plugin_root=_PLUGIN_ROOT))
+
+    assert results[0].ok is False
+    text = results[0].log_path.read_text(encoding="utf-8")
+    assert "shrank 'Rectangle 3' to 85%" in text     # what it tried
+    assert "FAILED: RuntimeError" in text            # and that it gave up
+    assert "Traceback" in text
+
+
+def test_a_silent_transform_still_gets_a_log_file(transform_run_dir: Path):
+    """An empty transcript is "it ran and said nothing"; an absent one is "no idea"."""
+    _finish(transform_run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+    results = run_transforms(prepare_wave(transform_run_dir, 2, plugin_root=_PLUGIN_ROOT))
+    assert results[0].log_path is not None and results[0].log_path.is_file()
+
+
+def test_the_cli_names_the_transcript_and_tails_it_on_failure(
+    run_dir: Path, monkeypatch, capsys
+):
+    write_plan_snapshot(run_dir, _PLAN_YAML.replace("skill: pitch-content", f"skill: {_STUB_SKILL}"))
+
+    def _boom(io):
+        print("deck_repair: 6 blocking geometric finding(s) remain", file=sys.stderr)
+        raise RuntimeError("Rectangle 3 will not fit")
+
+    monkeypatch.setitem(stage_transforms.TRANSFORMS, _STUB_SKILL, _boom)
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+
+    rc = conductor.main(["run-transforms", str(run_dir), "2", "--plugin-root", str(_PLUGIN_ROOT)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "transcript:" in out
+    # The tail as well as the path — a failure you must open a file to understand is
+    # one the reader acts on with less than they had.
+    assert "6 blocking geometric finding(s) remain" in out
+
+
+# ─── Notes reach Python without a shell eating them (B9) ─────────────────────
+
+
+def test_the_detector_fires_on_a_shell_eaten_dollar_sign():
+    """The five real cases from the run that lost every figure in its notes."""
+    assert conductor.suspect_currency("... the C4.97 share price ...") == ("C4.97",)
+    assert conductor.suspect_currency("proceeds +US50.0MM") == ("US50.0",)
+    assert conductor.suspect_currency("dividend -US6.7MM, net +US3.3MM") == ("US6.7", "US3.3")
+    assert conductor.suspect_currency("roughly C17MM") == ("C17",)
+    assert conductor.suspect_currency("two ~US00MM+ ARR (est.) rows") == ("US00",)
+
+
+def test_the_detector_stays_quiet_on_intact_notes_and_on_prose():
+    for clean in (
+        "... the C$34.97 share price ...",
+        "proceeds +US$150.0MM, dividend -US$66.7MM",
+        "an All figures in C$MM footnote",
+        "the US and Canadian segments both grew",
+        "C is the reporting currency",
+        "",
+    ):
+        assert conductor.suspect_currency(clean) == (), clean
+
+
+def test_the_summary_warns_in_the_document_and_on_stderr(run_dir: Path, capsys):
+    """Loudly, and where each reader is.
+
+    The banker reading `summary.md` needs to know the figures in front of them are
+    not the figures; whoever wrote the notes is looking at a terminal and can still
+    fix it.
+    """
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+    _finish(run_dir, "beta", {"deck_path": "/deals/artefacts/Pitch.pptx"})
+
+    path = write_run_summary(run_dir, notes=["Sale at the C4.97 share price; +US50.0MM proceeds."])
+
+    text = path.read_text(encoding="utf-8")
+    assert "looks shell-mangled" in text
+    assert "`C4.97`" in text and "`US50.0`" in text
+    assert "--notes-file" in text  # and how to fix it
+    assert "shell-mangled" in capsys.readouterr().err
+
+
+def test_an_intact_note_gets_no_warning(run_dir: Path):
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+    _finish(run_dir, "beta", {"deck_path": "/deals/artefacts/Pitch.pptx"})
+    md = render_run_summary(run_dir, notes=["Sale at C$34.97; +US$150.0MM proceeds."])
+    assert "shell-mangled" not in md
+    assert "C$34.97" in md
+
+
+def test_read_notes_takes_a_file_a_bullet_list_or_stdin(tmp_path: Path, monkeypatch):
+    notes_file = tmp_path / "notes.txt"
+    notes_file.write_text(
+        "- Refresh the Capital IQ connector in the deal workbook.\n"
+        "\n"
+        "Proceeds +US$150.0MM against a -US$66.7MM dividend.\n",
+        encoding="utf-8",
+    )
+    assert conductor.read_notes(notes_file) == [
+        "Refresh the Capital IQ connector in the deal workbook.",
+        "Proceeds +US$150.0MM against a -US$66.7MM dividend.",
+    ]
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("Net +US$83.3MM.\n"))
+    assert conductor.read_notes("-") == ["Net +US$83.3MM."]
+
+
+def test_cli_summary_reads_notes_from_a_file(run_dir: Path, tmp_path: Path, capsys):
+    """The documented way in, and the reason it exists.
+
+    Every `$` below would have been eaten had this text travelled as an argv string
+    inside a double-quoted shell command — which is exactly what happened, silently,
+    in a client-facing artefact.
+    """
+    _finish(run_dir, "alpha", {"workbook_path": "/deals/wb.xlsx"})
+    _finish(run_dir, "beta", {"deck_path": "/deals/artefacts/Pitch.pptx"})
+    notes_file = tmp_path / "notes.txt"
+    notes_file.write_text(
+        "Sale at C$34.97: +US$150.0MM proceeds, -US$66.7MM dividend, net +US$83.3MM (~C$117MM).\n",
+        encoding="utf-8",
+    )
+
+    rc = conductor.main(["summary", str(run_dir), "--notes-file", str(notes_file)])
+
+    assert rc == 0
+    text = (run_dir / "summary.md").read_text(encoding="utf-8")
+    for figure in ("C$34.97", "+US$150.0MM", "-US$66.7MM", "+US$83.3MM", "~C$117MM"):
+        assert figure in text
+    assert "shell-mangled" not in text
+    assert "shell-mangled" not in capsys.readouterr().err

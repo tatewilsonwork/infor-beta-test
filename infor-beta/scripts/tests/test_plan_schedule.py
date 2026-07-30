@@ -29,13 +29,18 @@ def _stage(id, skill=None, inputs=None):
 
 
 def test_pitch_plan_waves():
-    """The pitch plan schedules 11 stages into 7 dependency waves.
+    """The pitch plan schedules 12 stages into 7 dependency waves.
 
     Wave 0 overlaps the research-heavy roots (financial-summary / comps /
     precedents / wireframe). financial-summary precedes ltm-metrics because it
     selects the deck's metrics and tells ltm-metrics which extra ones to bridge.
-    `financial-charts` edits the assembled deck, and Phase G's `deckcheck` audits
-    what `financial-charts` produced — so the two tail waves are strictly ordered.
+    `financial-charts` edits the assembled deck, and the two review stages audit
+    what `financial-charts` produced — so the tail waves are strictly ordered.
+
+    The last wave is the **review pair**, added in v0.5.52: `deckread` reads the
+    rendered slides, `deckcheck` reads the filings. Both consume the same finished
+    artefact and neither mutates it, so they are wave-mates rather than a fifth and
+    sixth serial step — the stage count went 11 -> 12 with the wave count unchanged.
 
     Phase D removed the `workbook-aggregation` wave that used to sit between
     `deck` and `financial-charts`. The deal owns one workbook from stage one, so
@@ -50,7 +55,7 @@ def test_pitch_plan_waves():
         ["ownership"],
         ["deck"],
         ["financial-charts"],
-        ["deckcheck"],
+        ["deckread", "deckcheck"],
     ]
 
 
@@ -60,7 +65,7 @@ def test_earnings_update_plan_waves():
         ["wireframe", "ltm-metrics"],
         ["content", "captable"],
         ["deck"],
-        ["deckcheck"],
+        ["deckread", "deckcheck"],
     ]
 
 
@@ -76,6 +81,39 @@ def test_deckcheck_audits_the_final_artefact_not_the_assembled_one():
     pitch = stage_dependencies(_load_plan("pitch.yaml"))
     assert pitch["deckcheck"] == {"financial-charts"}
     assert stage_dependencies(_load_plan("earnings-update.yaml"))["deckcheck"] == {"deck"}
+
+
+def test_deckread_reads_the_final_artefact_and_the_checklist_that_asked():
+    """`deckread` needs BOTH halves, and one of them is what makes it a stage at all.
+
+    `$stages.deck.vision_review_path` is the checklist the `deck` transform writes —
+    which slides to look at and why. Nothing referenced it for four releases, so an
+    agenda went out with every run and no stage ever answered one of its questions.
+    This edge is that reference, and it is the difference between an output the plan
+    has and an output the plan believes it has.
+
+    The other half is the deck the analyst actually receives: in the pitch plan the
+    charts land after assembly, so reading `deck`'s output would review a file whose
+    pictures the run has since replaced — the same reason `deckcheck` reads
+    `financial-charts`. Its edge on `deck` therefore comes from the checklist, and its
+    edge on `financial-charts` from the artefact; both matter, and the pair puts it in
+    the final wave beside `deckcheck` rather than ahead of it.
+    """
+    pitch = stage_dependencies(_load_plan("pitch.yaml"))
+    assert pitch["deckread"] == {"financial-charts", "deck"}
+
+    earnings = _load_plan("earnings-update.yaml")
+    assert stage_dependencies(earnings)["deckread"] == {"deck"}
+
+    for plan in (_load_plan("pitch.yaml"), earnings):
+        stage = next(s for s in plan.stages if s.id == "deckread")
+        assert stage.inputs["vision_review_path"] == "$stages.deck.vision_review_path", (
+            f"{plan.deliverable_type}: deckread stopped consuming the deck stage's "
+            f"checklist — which is the whole reason the stage exists"
+        )
+        # Advisory, and the plan is where that is configured. `SlideFinding` refuses a
+        # gating severity in code; this refuses a gating checkpoint in the plan.
+        assert str(stage.checkpoint) == "informational"
 
 
 def test_financial_charts_depends_on_deck():

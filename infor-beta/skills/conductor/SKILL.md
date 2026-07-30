@@ -23,7 +23,7 @@ The conductor is a thin orchestrator: **dumb about banking, smart about orchestr
 
 Since Phase E the mechanics live in `scripts/conductor.py`, not in this file. **Your job is four things** — intake, issuing the `Task` calls the driver hands back, reporting each wave boundary, and the summary. Everything else is a function call with a return value, so it cannot be skipped on turn 40 of a long run.
 
-Since v0.5.49 **no shipped plan asks the analyst to approve anything mid-run**, and since v0.5.51 the intake is **one `AskUserQuestion` call** on a slash-command run. So a `/pitch` build is: one dialog, one attachment request, one pause, then every wave to the end and a report. Nothing to approve does not mean nothing is checked — the geometry converge loop, the written vision review and the `deckcheck` falsification pass all still run, and none of them needs an answer.
+Since v0.5.49 **no shipped plan asks the analyst to approve anything mid-run**, and since v0.5.51 the intake is **one `AskUserQuestion` call** on a slash-command run. So a `/pitch` build is: one dialog, one attachment request, one pause, then every wave to the end and a report. Nothing to approve does not mean nothing is checked — the geometry converge loop, the `deckread` reading pass and the `deckcheck` falsification pass all still run on the finished artefact, and none of them needs an answer.
 
 Since Phase F the second of those got smaller: a stage is either a **transform** (deterministic — the driver calls the function in-process) or **judgment** (research and drafting — a sub-agent with a real allow-list; `deckcheck` included). You dispatch the judgment stages only. `plan_overview(run_dir).narration()` reports the split for the plan in front of you; no number is written down here, because a written-down wave count went stale once already.
 
@@ -62,6 +62,7 @@ from run_log import make_run_id, create_run_dir, write_plan_snapshot, write_stag
 from conductor import (      # the driver — everything mechanical
     plan_overview, prepare_wave, run_transforms, complete_wave,
     write_plan_inputs, write_run_summary, APPROVE_LABEL, HALT_LABEL,
+    read_notes,               # summary notes come from a FILE; an argv string eats every `$`
 )
 ```
 
@@ -154,18 +155,22 @@ write_plan_inputs(run_dir, plan_inputs)
 Stages run in dependency **waves** derived from the `$stages.*` references in each stage's inputs — the references *are* the DAG, and since Phase D that is the only rule (no hardcoded barriers). Post `plan_overview(run_dir).narration()` (stage list, plan inputs, gates, and the wave schedule) up front, then for each wave `n` in `1..overview.wave_count`:
 
 1. **`dispatch = prepare_wave(run_dir, n)`** — resolves every reference, writes each `inputs.json`, and returns one `PreparedStage` per stage. A **judgment** stage carries a rendered `prompt`; a **transform** carries none.
-2. **`run_transforms(dispatch)`** — executes the wave's in-process stages (`dispatch.transforms`) and writes their `outputs.json`. Returns one `TransformResult` each; a raising transform is recorded as a stage failure, not a crash. Call it for every wave — it is a no-op when the wave has none.
+2. **`run_transforms(dispatch)`** — executes the wave's in-process stages (`dispatch.transforms`) and writes their `outputs.json`. Returns one `TransformResult` each; a raising transform is recorded as a stage failure, not a crash. Call it for every wave — it is a no-op when the wave has none. Each transform's stdout + stderr is teed to `stages/<id>/log.txt` (`TransformResult.log_path`), so the converge loop's decisions land in the run directory the same way a sub-agent's transcript does — you do not write a transform's log yourself.
 3. **Issue one `Task` call per stage in `dispatch.judgment`, all in a single message** so the wave runs concurrently, passing each `stage.prompt` **verbatim** as the prompt. `dispatch.prompts` is the same list. A wave of nothing but transforms needs **no `Task` call at all** — waves 5 and 6 of the pitch plan are exactly that. Wait for every sub-agent to return, then `write_stage_log(run_dir, stage_id, transcript)` for each.
 4. **`outcome = complete_wave(run_dir, n)`** — reads and validates every `outputs.json`, whoever wrote it (missing, malformed, an `error` key, or a missing declared output name all fail), and builds the checkpoint payloads.
 5. **Post `outcome.narration()` and go straight on to the next wave.** If `outcome.halt`, stop — a stage failed, so do not start the next wave. `outcome.gate` is `None` for every shipped plan; on the off chance a plan carries a `required` checkpoint, put `outcome.gate.question` to the analyst with `AskUserQuestion` and halt on `HALT_LABEL`.
 
 **Transform vs judgment is not yours to decide.** `stage_transforms.TRANSFORMS` is the one place the classification lives; `prepare_wave` reads it. Never dispatch a `Task` for a stage in `dispatch.transforms`, and never hand-run a judgment stage's work yourself.
 
-**Do not invent an approval pause.** No shipped stage is `required` (v0.5.49), so a wave boundary is a *report*, not a question: post the narration and dispatch the next wave in the same turn. Asking "shall I continue?" out of caution reinstates by hand the gate the plans deliberately dropped. The deck's QA is automated and unchanged — `deck_repair` converges the geometry from measured renders inside the assembler, and `deck`'s `vision_review_path` is the read-the-slides pass written to disk. **Name that path in the surface** so the analyst can open it while the run continues, and name it again in the summary.
+**Do not invent an approval pause.** No shipped stage is `required` (v0.5.49), so a wave boundary is a *report*, not a question: post the narration and dispatch the next wave in the same turn. Asking "shall I continue?" out of caution reinstates by hand the gate the plans deliberately dropped. The deck's QA is automated and unchanged — `deck_repair` converges the geometry from measured renders inside the assembler, `deck` writes the checklist to `vision_review_path`, and the `deckread` and `deckcheck` stages answer it in the final wave.
+
+**Post `outcome.narration()` verbatim; every file the wave produced is already in it.** `complete_wave` names each stage's declared `Path` outputs under "Open:" (`WaveOutcome.path_outputs` is the same list), so the deck, the vision-review checklist and the two reviews reach the analyst without you remembering to mention them. This used to be an instruction here — "name that path in the surface" — and on a real run the wave-5 boundary named none of them, so a 19 KB written review the analyst was meant to open was never mentioned. Do not summarise the narration down; a path you drop is a file nobody opens.
 
 ## Step 6 — Summary
 
 `write_run_summary(run_dir, notes=[...])` writes `summary.md` with every stage's status, its outputs, and the artefact paths. Pass as `notes` what only you know: manual next steps a sub-skill surfaced (e.g. "refresh the Capital IQ connector in the deal workbook"), an abort reason, or a caveat. Post it back to the analyst.
+
+> **Notes go through a FILE, never an argv string.** Write them to a file (one per line) and run `python "${CLAUDE_PLUGIN_ROOT}/scripts/conductor.py" summary "<run_dir>" --notes-file "<file>"`, or read the file yourself and call `write_run_summary(run_dir, notes=read_notes(path))`. A note like `+US$150.0MM` inside a double-quoted shell command — `python3 -c "... write_run_summary(..., notes=['+US$150.0MM'])"` — arrives as `+US.0MM`: the shell expanded `$150` to nothing before Python started. That happened, and it destroyed **every** dollar figure in one run's notes (`C$34.97` → `C4.97`, `-US$66.7MM` → `-US6.7MM`, `C$MM` → `C`), silently, in the analyst-facing artefact. Banking notes are dollar-dense, so treat the argv path as unusable rather than as something to quote carefully. `suspect_currency` catches most of the damage and warns on stderr and in `summary.md` — a warning there means re-write the notes file and re-run `summary`, which is safe to do (it overwrites `summary.md` and nothing else).
 
 ## Stop conditions
 

@@ -576,6 +576,13 @@ def _converge_into(
         font=font,
     )
     emit(f"deck_repair: {result.summary()}")
+    # And WHAT they were. The summary's counts are the headline, but "18 blocking
+    # finding(s)" on its own is unactionable: the stage that reads this log — since
+    # v0.5.51 the driver captures it to `stages/<id>/log.txt` — has no other route to
+    # the list, because a converged deck deletes its own QA scratch on the way out.
+    # One line each, `Finding.__str__`'s wording, so there is no second rendering.
+    for finding in result.findings:
+        emit(f"deck_repair:   {finding}")
     return result
 
 
