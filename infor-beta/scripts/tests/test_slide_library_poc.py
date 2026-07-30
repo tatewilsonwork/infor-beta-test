@@ -287,6 +287,7 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
         "ltm-metrics",
         "captable",
         "deck",
+        "deckread",
         "deckcheck",
     ]
     deck_stage = next(s for s in plan.stages if s.id == "deck")
@@ -294,10 +295,14 @@ def test_earnings_update_plan_runs_captable_before_deck_for_insertion():
     assert deck_stage.inputs["template_name"] == "INFOR Slide Library.pptx"
     # Since Phase D `deck` produces the final ARTEFACT: there is no aggregation
     # stage, because every producer wrote its own tab of the deal's single
-    # workbook. Phase G's `deckcheck` follows it but writes no deliverable — it
-    # audits the figures on the deck `deck` produced.
-    assert plan.stages[-1].id == "deckcheck"
-    assert plan.stages[-1].inputs["deck_path"] == "$stages.deck.deck_path"
+    # workbook. The two review stages follow it and write no deliverable — they read
+    # the deck `deck` produced, `deckread` for how it looks and `deckcheck` for
+    # whether its figures are true. This plan has no chart stage, so both read
+    # `deck`'s own output.
+    assert [s.id for s in plan.stages[-2:]] == ["deckread", "deckcheck"]
+    for review in plan.stages[-2:]:
+        assert review.inputs["deck_path"] == "$stages.deck.deck_path"
+    assert plan.stages[-2].inputs["vision_review_path"] == "$stages.deck.vision_review_path"
     # No stage gates (v0.5.49): `deck` reports its outputs at the wave boundary and
     # the run continues to `deckcheck` without an approval pause.
     assert deck_stage.checkpoint == "informational"
@@ -319,6 +324,7 @@ def test_pitch_library_poc_plan_stage_order():
         "precedents",
         "deck",
         "financial-charts",
+        "deckread",
         "deckcheck",
     ]
     assert plan.stages[0].skill == "pitch-wireframe"
@@ -331,7 +337,8 @@ def test_pitch_library_poc_plan_stage_order():
     assert plan.stages[7].skill == "precedents"
     assert plan.stages[8].skill == "deck-assembler"
     assert plan.stages[9].skill == "financial-charts"
-    assert plan.stages[10].skill == "deckcheck"
+    assert plan.stages[10].skill == "deckread"
+    assert plan.stages[11].skill == "deckcheck"
     # financial-charts produces the final artefact: it charts the deal workbook and
     # edits the deck. Since Phase D its only ordering constraint is `deck` — the
     # aggregation stage it used to wait for is gone, along with the combined
@@ -339,12 +346,18 @@ def test_pitch_library_poc_plan_stage_order():
     fc_stage = next(s for s in plan.stages if s.id == "financial-charts")
     assert fc_stage.inputs["deal_workbook"] == "$deal.deal_workbook"
     assert fc_stage.inputs["deck_path"] == "$stages.deck.deck_path"
-    # Phase G's `deckcheck` audits that FINAL artefact, so it reads
-    # financial-charts' deck_path, not deck's — a review of the pre-chart deck
-    # would miss every figure the charts carry, and reading a file
-    # financial-charts is editing in place would race it.
-    dc_stage = next(s for s in plan.stages if s.id == "deckcheck")
-    assert dc_stage.inputs["deck_path"] == "$stages.financial-charts.deck_path"
+    # Both review stages audit that FINAL artefact, so they read financial-charts'
+    # deck_path, not deck's — a review of the pre-chart deck would miss every figure
+    # and every chart picture the charts carry, and reading a file financial-charts is
+    # editing in place would race it.
+    for review_id in ("deckread", "deckcheck"):
+        review = next(s for s in plan.stages if s.id == review_id)
+        assert review.inputs["deck_path"] == "$stages.financial-charts.deck_path"
+    # `deckread` also consumes the checklist `deck` wrote. That reference is the whole
+    # point of the stage: without it `vision_review_path` is an agenda nothing reads,
+    # which is what it was for four releases.
+    dr_stage = next(s for s in plan.stages if s.id == "deckread")
+    assert dr_stage.inputs["vision_review_path"] == "$stages.deck.vision_review_path"
     # No stage gates (v0.5.49): `deck` no longer holds the charts and `deckcheck`
     # behind an analyst approval — the run carries on to the final artefact.
     assert next(s for s in plan.stages if s.id == "deck").checkpoint == "informational"

@@ -27,10 +27,11 @@ Reserve `required` for a stage whose approval is a real-world event that has to 
 What replaced the gate is not an absence of review but an automated one, none of which asks the analyst anything:
 
 - `deck_repair`'s converge loop, inside the assembler, decides every font size and autofit scale from a **measured** render and raises `DeckNotConvergedError` if a shape will not fit.
-- `deck`'s `vision_review_path` is the read-the-slides pass written to disk — which slides to look at and why, every slide's render, and each rasterised picture at native resolution.
-- `deckcheck` attempts to **disprove** every figure on the finished artefact and reports what it could not confirm. It is advisory by construction and could never have gated.
+- `deck`'s `vision_review_path` is the read-the-slides **checklist** written to disk — which slides to look at and why, every slide's render, and each rasterised picture at native resolution. It is an agenda, not a review: it asks the questions and answers none.
+- `deckread` answers them, on the finished artefact, and reports what it **saw** — text over text, colliding shapes, faint contrast, label pileup, an illegible pasted range. Advisory by construction. It exists because the checklist above had no reader for four releases: nothing referenced it, so a defect sitting on a slide whose pictures it listed by name went out with a clean run.
+- `deckcheck` attempts to **disprove** every figure on the finished artefact and reports what it could not confirm. Also advisory by construction; both reading stages could never have gated.
 
-All three land in the run summary, so the analyst reads them on a finished deliverable instead of being stopped mid-run to approve an artefact the later waves have not touched yet. What still halts a run is a stage *failure* — `complete_wave` reporting `ok=False`, which is not a checkpoint at all.
+All four land in the run summary, so the analyst reads them on a finished deliverable instead of being stopped mid-run to approve an artefact the later waves have not touched yet. What still halts a run is a stage *failure* — `complete_wave` reporting `ok=False`, which is not a checkpoint at all.
 
 **A gate on an in-process stage would behave identically.** Since Phase F, `deck` is a transform: the driver assembles the deck itself instead of dispatching a sub-agent. The checkpoint is built from the stage's `outputs.json` by `complete_wave`, which cannot tell who wrote it, so a gate on a transform fires at the same boundary with the same locked dialog and holds the same downstream waves. Nothing about removing the `deck` gate changed that.
 
@@ -64,6 +65,6 @@ The final `summary.md` lists every stage regardless of checkpoint mode.
 
 Per A2 the path from medium-HITL to autonomous was **configuration, not code**, and that is how it happened: three `checkpoint: required` lines became `informational` (`pitch.yaml`, `earnings-update.yaml`, `overview.yaml`) and a conductor run now goes end to end without waiting on an analyst. No conductor code changed, no skill changed, and the `required` branch of `_checkpoint_for` — plus `WaveOutcome.gate`, `APPROVE_LABEL` and `HALT_LABEL` — is still there for a future plan that has a genuine authorisation step to gate on.
 
-The QA the gate used to sit in front of did **not** go with it: the converge loop, the written vision review and the `deckcheck` falsification pass all still run, and all three run without asking a question. See "Shipped usage" above.
+The QA the gate used to sit in front of did **not** go with it: the converge loop, the written vision-review checklist, the `deckread` reading pass that answers it and the `deckcheck` falsification pass all still run, and none of them asks a question. See "Shipped usage" above.
 
 Two things a run still stops for, neither of them a checkpoint: a stage **failure** (`complete_wave` reporting `ok=False` — a missing, malformed or `error`-carrying `outputs.json`, including a raising transform), and the **intake** before wave 1, where the analyst supplies the facts, the attachments and the deck spec.

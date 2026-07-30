@@ -155,6 +155,7 @@ _PROVENANCE_TOKENS = (
 _NOT_RECORDING_STAGES = {
     "conductor": "the meta-skill that dispatches stages; it is not a stage",
     "deckcheck": "consumes the merged ledger and writes the run record; records no figures",
+    "deckread": "reports what a rendered slide LOOKS like; a pixel has no filing to cite",
 }
 
 

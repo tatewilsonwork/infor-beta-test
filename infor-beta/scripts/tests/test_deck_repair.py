@@ -128,6 +128,32 @@ def test_does_not_converge_when_the_content_is_over_budget(tmp_path):
     box = next(s for s in Presentation(deck).slides[0].shapes if s.name == "TextBox 9")
     assert normal_autofit_scale(box) == pytest.approx(min(TEXT_SCALES))
 
+
+@needs_render
+def test_the_loop_logs_what_the_findings_WERE_not_only_how_many(tmp_path):
+    """The counts are the headline; the list is the only actionable part.
+
+    A converged run deletes its own QA scratch on the way out, and a failing one
+    keeps just the last pass's renders — so `emit` is the only route these findings
+    have to disk. The conductor tees a transform's stdout and stderr into
+    `stages/<id>/log.txt`, which is where a reader looks; before that, a run
+    reporting "18 blocking / 4 advisory finding(s)" left nothing anywhere saying
+    which eighteen.
+    """
+    deck = _copy(_REGRESSIONS / "prl14-overview-bullets.pptx", tmp_path)
+    logged: list[str] = []
+
+    result = converge_deck(deck, out_dir=tmp_path / "qa", log=logged.append)
+
+    assert result.findings, "the fixture is meant to leave findings behind"
+    assert any(result.summary() in line for line in logged)
+    for finding in result.findings:
+        assert any(str(finding) in line for line in logged), (
+            f"a finding reached the count but not the log: {finding}"
+        )
+    # `Finding.__str__`'s wording, so the log cannot drift from the report.
+    assert any("TextBox 9" in line and "[blocking]" in line for line in logged)
+
     with pytest.raises(DeckNotConvergedError) as excinfo:
         assert_converged(deck, result)
     message = str(excinfo.value)

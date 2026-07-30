@@ -121,6 +121,33 @@ stages:
     # than dispatching a sub-agent to retype the call.
     checkpoint: informational
 
+  # The read-the-slides pass, same as the pitch plan's and for the same reason: the
+  # `deck` stage's `vision_review_path` is an agenda, and an agenda no stage
+  # references is an output the plan believes it has. This plan has no chart stage,
+  # so `deck` IS the final artefact and both inputs come from it. Advisory, never
+  # gates, and it lands in the last wave beside `deckcheck` — same artefact, two
+  # questions.
+  - id: deckread
+    skill: deckread
+    inputs:
+      company: $deal.subject_company
+      deck_path: $stages.deck.deck_path
+      vision_review_path: $stages.deck.vision_review_path
+    outputs:
+      - name: report_path
+        type: Path
+        description: The advisory read-the-slides review (markdown) under the deal's artefacts/.
+      - name: finding_count
+        type: int
+        description: Things the reader saw and reported; 0 alongside a non-zero slides_read means every slide was read and nothing was found.
+      - name: slides_read
+        type: int
+        description: How many slide renders were actually read. 0 means no renderer was available and the deck was NOT looked at — which is why it is declared separately from finding_count.
+      - name: worklist_path
+        type: Path
+        description: The generated work list for the final artefact — which slides to look at and why, plus every render and each rasterised picture at native resolution.
+    checkpoint: informational
+
   # Falsification pass (Phase G). Reads the rendered slide PNGs, the run's merged
   # provenance record (every stage's `provenance.json` fragment, figure -> filing
   # -> statement -> page) and the attached filings, and attempts to DISPROVE every

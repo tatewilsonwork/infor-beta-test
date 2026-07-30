@@ -18,7 +18,14 @@ exactly four things:
     conductor.py prepare-wave   <run_dir> <wave>  # resolve + write inputs, print envelopes
     conductor.py run-transforms <run_dir> <wave>  # execute the wave's in-process stages
     conductor.py complete-wave  <run_dir> <wave>  # read + validate outputs, print checkpoints
-    conductor.py summary        <run_dir>         # write summary.md, print it
+    conductor.py summary        <run_dir> --notes-file <file>   # write summary.md, print it
+
+`summary` takes its notes from a **file** (`-` for stdin), not from an argv string:
+notes are dollar-dense by nature and an argv string reaches Python through a shell,
+which expands every `$34` / `$MM` in it to nothing. That silently destroyed every
+figure in one run's notes. `--note` survives for a one-liner, and either way
+`suspect_currency` warns loudly on a note that looks mangled rather than writing it
+quietly into the analyst-facing artefact.
 
 `<wave>` is 1-based, matching the conductor's "wave 1 / wave 2 / …" narration.
 
@@ -51,11 +58,15 @@ carries its `$stages` edges into the wave schedule, and still reports through
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import re
 import sys
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from io import StringIO
 from pathlib import Path
 
 import yaml
@@ -69,6 +80,7 @@ from run_log import (
     read_stage_outputs,
     stage_dir,
     write_stage_inputs,
+    write_stage_log,
     write_summary,
 )
 from schemas import Plan
@@ -485,6 +497,78 @@ class TransformResult:
     ok: bool
     outputs: dict | None = None
     error: str | None = None
+    #: `stages/<id>/log.txt` — the transform's own stdout + stderr. `None` only when
+    #: the run directory refused the write.
+    log_path: Path | None = None
+
+
+class _Tee:
+    """Fan one stream to the real console and to a stage's transcript.
+
+    A tee rather than a redirect because both readers are real. The analyst (and
+    the model driving the run) needs the converge loop's progress *live* — a deck
+    that is 40s into a repair pass and a deck that has hung look identical
+    otherwise — and the run directory needs it *afterwards*: the only record that a
+    real run's repair loop shrank slide 7 to 85%, or that it finished on "18 blocking
+    / 4 advisory finding(s)", was stdout in a shell nobody kept.
+
+    Unknown attributes delegate to the wrapped stream, so anything that probes
+    `encoding` / `isatty()` / `fileno()` sees the console it would have seen.
+    """
+
+    def __init__(self, buffer: StringIO, stream) -> None:
+        self._buffer = buffer
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        self._buffer.write(text)
+        with contextlib.suppress(Exception):  # a closed console must not fail a stage
+            self._stream.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        with contextlib.suppress(Exception):
+            self._stream.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
+def _write_transform_log(io, stage: PreparedStage, transcript: StringIO, *, error: str | None) -> Path | None:
+    """Persist a transform's output as `stages/<id>/log.txt` and return the path.
+
+    The **same file** `write_stage_log` puts a dispatched stage's transcript in. A
+    pitch run's directory used to hold eight transcripts and four silences, and the
+    four were the deterministic stages — the ones whose whole job is making
+    decisions a reader might want to check. Written unconditionally, including for a
+    stage that printed nothing: an empty transcript is the fact "it ran and said
+    nothing", where an absent file is "we have no idea".
+
+    Writing the log must never be what fails a stage — the deal directory can be a
+    cloud-synced mount — so an `OSError` costs the transcript and nothing else.
+    """
+    body = transcript.getvalue()
+    header = f"=== transform `{stage.stage_id}` (skill: {stage.skill}) ===\n"
+    if error is not None:
+        if body and not body.endswith("\n"):
+            body += "\n"
+        body += f"\n=== FAILED: {error} ===\n{traceback.format_exc()}"
+    try:
+        return write_stage_log(io.run_dir, io.stage_id, header + body)
+    except OSError as exc:  # noqa: BLE001 — reported, never fatal
+        print(f"conductor: could not write {stage.stage_id}'s transcript: {exc}", file=sys.stderr)
+        return None
+
+
+def _log_tail(path: Path | None, *, lines: int = 12) -> str:
+    """The last few lines of a transform's transcript, for the CLI's failure print."""
+    if path is None:
+        return ""
+    try:
+        tail = path.read_text(encoding="utf-8").splitlines()[-lines:]
+    except OSError:
+        return ""
+    return "\n".join(f"    | {line}" for line in tail)
 
 
 def run_transforms(dispatch: WaveDispatch) -> tuple[TransformResult, ...]:
@@ -505,6 +589,16 @@ def run_transforms(dispatch: WaveDispatch) -> tuple[TransformResult, ...]:
     Reads each stage's inputs back off disk through `stage_io.stage_io`, the same
     entry point the dispatched form used, so a transform sees byte-identical
     inputs to what a sub-agent would have read.
+
+    **Every transform leaves a transcript**, at `stages/<id>/log.txt` — the same
+    file `write_stage_log` puts a sub-agent's in. Until v0.5.51 the eight judgment
+    stages of a pitch run each had one and the four transforms had none, so the only
+    record of the decisions the converge loop *makes* — which shape it shrank, to
+    what scale, how many findings survived — was stdout in a shell. `converge_deck`
+    prints to stderr by default and takes no other route, so the capture is a tee
+    around the call (:class:`_Tee`) rather than anything the transforms know about:
+    no contract changes, and a transform that starts printing more is covered by
+    construction.
     """
     results: list[TransformResult] = []
     for stage in dispatch.transforms:
@@ -516,19 +610,34 @@ def run_transforms(dispatch: WaveDispatch) -> tuple[TransformResult, ...]:
                 str(stage.outputs_path),
             ]
         )
+        transcript = StringIO()
         try:
-            outputs = stage_transforms.run_transform(stage.skill, io)
+            with (
+                contextlib.redirect_stdout(_Tee(transcript, sys.stdout)),
+                contextlib.redirect_stderr(_Tee(transcript, sys.stderr)),
+            ):
+                outputs = stage_transforms.run_transform(stage.skill, io)
         except Exception as exc:  # noqa: BLE001 — every failure becomes a stage failure
             error = f"{type(exc).__name__}: {exc}"
             io.fail(error)
             results.append(
-                TransformResult(stage_id=stage.stage_id, skill=stage.skill, ok=False, error=error)
+                TransformResult(
+                    stage_id=stage.stage_id,
+                    skill=stage.skill,
+                    ok=False,
+                    error=error,
+                    log_path=_write_transform_log(io, stage, transcript, error=error),
+                )
             )
             continue
         io.write(outputs)
         results.append(
             TransformResult(
-                stage_id=stage.stage_id, skill=stage.skill, ok=True, outputs=dict(outputs)
+                stage_id=stage.stage_id,
+                skill=stage.skill,
+                ok=True,
+                outputs=dict(outputs),
+                log_path=_write_transform_log(io, stage, transcript, error=None),
             )
         )
     return tuple(results)
@@ -550,6 +659,26 @@ def _missing_declared_outputs(stage, outputs) -> list[str]:
     return [spec.name for spec in stage.outputs if spec.name not in present]
 
 
+def _declared_paths(stage, outputs) -> tuple[tuple[str, str], ...]:
+    """`(name, value)` for every declared **Path** output the stage actually produced.
+
+    Declaration order, and a `null` is dropped — the pitch plan's `ownership` stage
+    legitimately emits `workbook_path: null`, and telling an analyst to open `None`
+    is worse than saying nothing.
+
+    Read off the plan's own `type:` labels rather than by sniffing values for a
+    suffix, because the point is what the stage *declared*: `vision_review_path` is a
+    `.md` file and `chart_qa_dir` a directory, and both are things to open.
+    """
+    if not isinstance(outputs, dict):
+        return ()
+    return tuple(
+        (spec.name, str(outputs[spec.name]))
+        for spec in stage.outputs
+        if spec.type == "Path" and outputs.get(spec.name) is not None
+    )
+
+
 @dataclass(frozen=True)
 class StageResult:
     """One stage's collected + validated outputs."""
@@ -560,6 +689,10 @@ class StageResult:
     ok: bool
     outputs: dict | None = None
     error: str | None = None
+    #: The declared `Path` outputs, `(name, value)` in declaration order. Named in
+    #: the checkpoint surface so a file the analyst is meant to read cannot go
+    #: unmentioned — see :func:`_paths_block`.
+    paths: tuple[tuple[str, str], ...] = ()
 
 
 #: The `required`-checkpoint dialog, code-owned like every other analyst-facing
@@ -609,7 +742,22 @@ class WaveOutcome:
         """True when the run must stop here regardless of the analyst's answer."""
         return bool(self.failures)
 
+    @property
+    def path_outputs(self) -> tuple[tuple[str, str, str], ...]:
+        """`(stage_id, output name, value)` for every declared `Path` this wave wrote."""
+        return tuple(
+            (r.stage_id, name, value) for r in self.results for name, value in r.paths
+        )
+
     def narration(self) -> str:
+        """The wave boundary, ready to post — **including every file it produced**.
+
+        Each stage's `Path` outputs are named here (`_paths_block`), so posting this
+        verbatim is what tells the analyst where the deck, the written vision review
+        and the reviews are. That used to be an instruction in the conductor's
+        SKILL.md, and an instruction that has to be remembered on turn 40 of a long
+        run is one that eventually is not.
+        """
         lines = [c.surface for c in self.checkpoints if c.surface]
         return "\n\n".join(lines)
 
@@ -624,6 +772,22 @@ def _format_outputs_bullets(outputs: Mapping | None) -> str:
     if not outputs:
         return "- (no outputs declared)"
     return "\n".join(f"- `{k}`: {v}" for k, v in sorted(outputs.items()))
+
+
+def _paths_block(result: StageResult) -> str:
+    """The stage's `Path` outputs, as an "Open:" list, or "" when it produced none.
+
+    The driver names these because the alternative was an instruction the model had
+    to remember. The conductor's Step 5 used to say "name that path in the surface
+    so the analyst can open it while the run continues" — and on a real pitch run
+    the wave-5 boundary named no path at all, so the deck's written vision review
+    existed, was 19 KB, and was never mentioned to the analyst who was meant to read
+    it. The driver already holds every stage's outputs and the plan's declared types,
+    so nothing about that needed remembering.
+    """
+    if not result.paths:
+        return ""
+    return "Open:\n" + "\n".join(f"- `{name}`: {value}" for name, value in result.paths)
 
 
 def _checkpoint_for(result: StageResult, *, is_final: bool) -> Checkpoint:
@@ -643,12 +807,15 @@ def _checkpoint_for(result: StageResult, *, is_final: bool) -> Checkpoint:
     if result.checkpoint == "silent":
         return Checkpoint(stage_id=result.stage_id, mode="silent", surface="")
 
+    paths = _paths_block(result)
+
     if result.checkpoint == "required":
         held = "delivery" if is_final else "the remaining waves"
         surface = (
             f"Stage `{result.stage_id}` (`{result.skill}`) finished. Outputs:\n"
             f"{_format_outputs_bullets(result.outputs)}\n\n"
-            f"Review the file(s) above, then answer the approval dialog."
+            + (f"{paths}\n\n" if paths else "")
+            + "Review the file(s) above, then answer the approval dialog."
         )
         return Checkpoint(
             stage_id=result.stage_id,
@@ -686,6 +853,7 @@ def _checkpoint_for(result: StageResult, *, is_final: bool) -> Checkpoint:
         surface=(
             f"Stage `{result.stage_id}` (`{result.skill}`) finished. "
             f"Outputs: {_format_outputs_inline(result.outputs)}. Proceeding."
+            + (f"\n{paths}" if paths else "")
         ),
     )
 
@@ -740,7 +908,11 @@ def complete_wave(run_dir: Path | str, wave: int) -> WaveOutcome:
                 )
             )
             continue
-        results.append(StageResult(**common, ok=True, outputs=outputs))
+        results.append(
+            StageResult(
+                **common, ok=True, outputs=outputs, paths=_declared_paths(stage, outputs)
+            )
+        )
 
     return WaveOutcome(
         wave=wave,
@@ -792,6 +964,79 @@ def _looks_like_artefact(value: object) -> bool:
     return isinstance(value, str) and Path(value).suffix.lower() in _ARTEFACT_SUFFIXES
 
 
+#: A currency letter sitting **directly** on a digit — `US50.0`, `C4.97` — with the
+#: `$` that belongs between them gone. In banking notes that never occurs by
+#: accident, and it has exactly one common cause: the note travelled through a
+#: double-quoted shell command, where `$34` / `$150` / `$MM` are variables that
+#: expand to nothing. The digits are captured so the warning can quote what it found.
+CORRUPT_CURRENCY = re.compile(r"\b(?:US|C)\d[\d.,]*")
+
+
+def suspect_currency(text: str) -> tuple[str, ...]:
+    """Fragments of `text` that look like a dollar sign was eaten, in order.
+
+    A **warning**, not a verdict, and not a complete one either. It catches five of
+    the six mangled fragments in the run that prompted it — "the C4.97 share price",
+    "+US50.0MM", "-US6.7MM", "+US3.3MM", "~C17MM", "~US00MM+" — and misses the sixth,
+    "an All figures in C footnote", because `C$MM` collapses to a letter with no digit
+    after it and nothing distinguishes that from prose. It can also be wrong in the
+    other direction: `C4` is how one refers to a cell. Both are worth it, because the
+    failure is silent and lands in the artefact the analyst reads.
+
+    Deliberately not a guess at the repair: `US50.0MM` could have been `US$50.0MM`
+    or `US$150.0MM` (it was the latter), and only the note's author knows which.
+    """
+    return tuple(CORRUPT_CURRENCY.findall(text or ""))
+
+
+def corrupted_notes(
+    notes: Sequence[str],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """`(note, suspect fragments)` for each note that looks shell-mangled."""
+    found = ((note, suspect_currency(note)) for note in notes)
+    return tuple((note, fragments) for note, fragments in found if fragments)
+
+
+def read_notes(source: Path | str) -> list[str]:
+    """Read summary notes from a file — one per line — or from stdin for `-`.
+
+    **This is the way to pass notes**, and the CLI documents it as such. The
+    alternative is an argv string, and an argv string reaches Python through a shell:
+    `python3 -c "... notes=['+US$150.0MM'] ..."` inside a double-quoted command
+    arrives as `+US.0MM`, silently, in a client-facing artefact.
+
+    A leading `- ` is stripped so a pasted bullet list works, and blank lines are
+    dropped so a trailing newline is not a note.
+    """
+    text = sys.stdin.read() if str(source) == "-" else Path(source).read_text(encoding="utf-8")
+    notes = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            stripped = stripped[2:].strip()
+        if stripped:
+            notes.append(stripped)
+    return notes
+
+
+def _corruption_warning(notes: Sequence[str]) -> list[str]:
+    """The in-document warning for shell-mangled notes, or `[]` when they look fine."""
+    suspects = corrupted_notes(notes)
+    if not suspects:
+        return []
+    quoted = ", ".join(f"`{f}`" for _, fragments in suspects for f in fragments)
+    return [
+        "",
+        f"> **⚠ The note text above looks shell-mangled: {quoted}.** A currency letter "
+        "sits directly on a digit with no `$` — most likely the notes were passed as an "
+        "argv string through a double-quoted shell command, where `$150` / `$MM` expand "
+        "to nothing before Python sees them. The original figures cannot be recovered "
+        "from this file. Re-run "
+        "`python conductor.py summary <run_dir> --notes-file <file>` (or `--notes-file -` "
+        "for stdin) with the intended text.",
+    ]
+
+
 def render_run_summary(run_dir: Path | str, *, notes: Sequence[str] = ()) -> str:
     """Compose the mechanical part of the end-of-run summary as markdown.
 
@@ -799,6 +1044,12 @@ def render_run_summary(run_dir: Path | str, *, notes: Sequence[str] = ()) -> str
     the analyst can open right now. `notes` are appended verbatim under "Manual
     next steps" — that is where the model puts what only it knows (a sub-skill's
     "refresh the Capital IQ connector in the cap table", an abort reason, a caveat).
+
+    Verbatim, but not unexamined: a note whose dollar signs a shell has eaten gets a
+    warning printed beside it (:func:`suspect_currency`). Banking notes are
+    dollar-dense, the corruption is silent, and this file is the analyst-facing
+    record — one real run wrote "proceeds +US50.0MM ... dividend -US6.7MM" for
+    +US$150.0MM and -US$66.7MM and read as if those were the figures.
     """
     run_dir = Path(run_dir)
     plan = load_plan(run_dir)
@@ -829,12 +1080,26 @@ def render_run_summary(run_dir: Path | str, *, notes: Sequence[str] = ()) -> str
     lines += [f"- {a}" for a in dict.fromkeys(artefacts)] or ["- (none produced)"]
     lines += ["", "## Manual next steps", ""]
     lines += [f"- {n}" for n in notes] or ["- (none)"]
+    lines += _corruption_warning(notes)
     lines += ["", f"Full per-stage detail: `{run_dir / 'stages'}`.", ""]
     return "\n".join(lines)
 
 
 def write_run_summary(run_dir: Path | str, *, notes: Sequence[str] = ()) -> Path:
-    """Render the run summary and persist it as `<run_dir>/summary.md`."""
+    """Render the run summary and persist it as `<run_dir>/summary.md`.
+
+    Warns on stderr as well as in the document when a note looks shell-mangled —
+    the writer is who can still fix it, and they are looking at a terminal.
+    """
+    for note, fragments in corrupted_notes(notes):
+        print(
+            f"conductor: WARNING — note looks shell-mangled ({', '.join(fragments)}): "
+            f"{note!r}\n"
+            f"  A currency letter with no `$` before its digits. Pass notes with "
+            f"--notes-file (or read_notes) instead of an argv string, and re-run the "
+            f"summary.",
+            file=sys.stderr,
+        )
     return write_summary(run_dir, render_run_summary(run_dir, notes=notes))
 
 
@@ -868,6 +1133,14 @@ def _print_transforms(results: tuple[TransformResult, ...]) -> int:
             print(f"[ok]   {r.stage_id} ({r.skill}): outputs {keys}")
         else:
             print(f"[FAIL] {r.stage_id} ({r.skill}): {r.error}")
+        if r.log_path is not None:
+            print(f"       transcript: {r.log_path}")
+        if not r.ok:
+            # The tail as well as the path: a failure the reader has to open a file
+            # to understand is one they will act on with less than they had.
+            tail = _log_tail(r.log_path)
+            if tail:
+                print(tail)
     return 1 if any(not r.ok for r in results) else 0
 
 
@@ -914,7 +1187,21 @@ def main(argv: list[str] | None = None) -> int:
 
     p_sum = sub.add_parser("summary", help="write + print the end-of-run summary")
     p_sum.add_argument("run_dir")
-    p_sum.add_argument("--note", action="append", default=[])
+    p_sum.add_argument(
+        "--notes-file",
+        default=None,
+        help=(
+            "PREFERRED: read notes from a file, one per line ('-' for stdin). An argv "
+            "string reaches Python through a shell, which eats every `$` in it — a run's "
+            "summary said 'proceeds +US50.0MM' for +US$150.0MM and nothing complained."
+        ),
+    )
+    p_sum.add_argument(
+        "--note",
+        action="append",
+        default=[],
+        help="a single note (repeatable). Shell-quoting is YOURS to get right; prefer --notes-file.",
+    )
 
     args = parser.parse_args(argv)
 
@@ -930,7 +1217,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "complete-wave":
         return _print_outcome(complete_wave(args.run_dir, args.wave))
     if args.command == "summary":
-        path = write_run_summary(args.run_dir, notes=args.note)
+        notes = (read_notes(args.notes_file) if args.notes_file else []) + list(args.note)
+        path = write_run_summary(args.run_dir, notes=notes)
         print(path.read_text(encoding="utf-8"))
         return 0
     return 2

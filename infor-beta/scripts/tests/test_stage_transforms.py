@@ -66,6 +66,7 @@ _JUDGMENT_SKILLS = {
     "ltm-metrics",
     "pitch-content",
     "earningsupdate-content",
+    "deckread",
     "deckcheck",
 }
 
@@ -114,12 +115,17 @@ def test_the_registry_holds_exactly_the_four_transforms():
 
 
 def test_every_judgment_skill_stays_out_of_the_registry():
-    """`deckcheck` is the one that matters most.
+    """The two review stages are the ones that matter most.
 
     Phase G's falsification pass reads rendered PNGs, provenance records and
     source filings and argues about whether a figure is true. It is judgment by
     construction, and running it in-process would mean a Python function deciding
     whether a target's financial statements support a number on a slide.
+
+    `deckread` is the same argument in its purest form: its whole job is *looking at
+    a picture*. Reclassifying it would recreate the defect it was built to fix — the
+    `deck` transform already writes the agenda, and a transform has no eyes and no
+    `Task` tool, so the reading half would go back to being an unread file.
     """
     for skill in _JUDGMENT_SKILLS:
         assert not is_transform(skill), f"{skill} must stay a dispatched sub-agent"
@@ -195,14 +201,20 @@ def test_the_reclassification_left_the_shipped_orderings_intact():
         gates = [s.id for s in plan.stages if str(s.checkpoint) == "required"]
         assert gates == [], f"{plan.deliverable_type}: expected no gates, got {gates}"
 
-        # 3. `deckcheck` runs LAST, on the finished artefact — after `deck` and,
-        #    for pitch, after `financial-charts`, whose charts carry figures a
-        #    review of the pre-chart deck would never see.
-        assert waves[-1] == ["deckcheck"], (
-            f"{plan.deliverable_type}: deckcheck must be the final wave, alone"
+        # 3. The REVIEW PAIR runs LAST, on the finished artefact — after `deck` and,
+        #    for pitch, after `financial-charts`, whose charts carry figures and
+        #    pictures a review of the pre-chart deck would never see. `deckread`
+        #    reads the rendered slides; `deckcheck` reads the filings. Both are
+        #    advisory by construction, and both only read — which is why they are
+        #    wave-mates rather than serial, and why nothing may be scheduled after
+        #    them: a stage downstream of a review would be acting on it
+        #    automatically, and the reviews are for the analyst.
+        assert waves[-1] == ["deckread", "deckcheck"], (
+            f"{plan.deliverable_type}: the final wave must be the review pair, "
+            f"got {waves[-1]}"
         )
         deck_index = waves.index(deck_wave)
-        assert deck_index < len(waves) - 1, "deck is not the last wave — deckcheck follows it"
+        assert deck_index < len(waves) - 1, "deck is not the last wave — the reviews follow it"
 
 
 def test_run_transform_refuses_a_judgment_skill(tmp_path: Path):
