@@ -23,6 +23,7 @@ from .pitch_deck_content import (
     RiskMitigantRow,
     InvestmentHighlight,
     MarketEntryTarget,
+    PitchContact,
     PitchSourceNote,
 )
 from .deal_context import DealContext, DeliverableType
@@ -45,6 +46,7 @@ __all__ = [
     "RiskMitigantRow",
     "InvestmentHighlight",
     "MarketEntryTarget",
+    "PitchContact",
     "PitchSourceNote",
     "DealContext",
     "DeliverableType",

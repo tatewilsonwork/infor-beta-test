@@ -235,6 +235,23 @@ EXPECTED_PLACEHOLDERS = {
     "[Placeholder for Institutional Ownership]",
 }
 
+# The same contract, for a placeholder whose text is parameterised and so cannot
+# be a literal. The market-entry logo box names the target whose logo belongs in
+# it — '[Placeholder for Kueski Logo]' — which is deliberate guidance: the
+# analyst drops eight logos into four slides and has to know which column is
+# whose. It used to read '[Glean Logo]', which matched nothing here and so was
+# reported as nothing, while rendering to a client as though it were a caption.
+EXPECTED_PLACEHOLDER_PATTERNS = (
+    re.compile(r"^\[Placeholder for (?:.+ )?Logo\]$"),
+)
+
+
+def _placeholder_is_expected(match: str) -> bool:
+    """True when a matched placeholder is one the deck ships on purpose."""
+    return match in EXPECTED_PLACEHOLDERS or any(
+        pattern.match(match) for pattern in EXPECTED_PLACEHOLDER_PATTERNS
+    )
+
 
 # ─── Tolerances ──────────────────────────────────────────────────────────────
 # Every tolerance is set from measurement against the shipped library and the
@@ -1017,7 +1034,7 @@ def _check_forbidden_strings(prs) -> list[Finding]:
                     )
                 )
             for match in _PLACEHOLDER_RE.findall(text):
-                expected = match in EXPECTED_PLACEHOLDERS
+                expected = _placeholder_is_expected(match)
                 findings.append(
                     Finding(
                         "expected-placeholder" if expected else "unfilled-placeholder",

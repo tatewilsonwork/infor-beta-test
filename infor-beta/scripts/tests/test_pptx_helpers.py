@@ -22,12 +22,14 @@ from pptx_helpers import (
     COLOR_DOWN,
     COLOR_UP,
     PALATINO,
+    delete_shape,
     delete_slide,
     fill_footnote_currency,
     find_shape,
     find_shape_in_group,
     set_cell_text,
     set_text,
+    shapes_in_reading_order,
     write_bulleted_shape,
 )
 
@@ -412,6 +414,71 @@ class TestDeleteSlide(unittest.TestCase):
         self.assertEqual(len(prs.slides), 1)
         remaining = [s.name for s in prs.slides[0].shapes]
         self.assertIn("keep-me", remaining)
+
+
+# ─── shapes_in_reading_order / delete_shape ──────────────────────────────────
+
+def _box(slide, name, top_in, left_in):
+    box = slide.shapes.add_textbox(Inches(left_in), Inches(top_in), Inches(1), Inches(0.4))
+    box.name = name
+    return box
+
+
+class TestReadingOrder(unittest.TestCase):
+    """`slide.shapes` is document order; these pin the sort that fixes it.
+
+    The pitch deck's section divider ships four identically-named boxes in
+    document order 1st, 3rd, 2nd, 4th down the slide, and pairing labels against
+    that order put two of them in the wrong box on every deck INFOR shipped.
+    """
+
+    def _slide(self):
+        prs = Presentation()
+        return prs.slides.add_slide(prs.slide_layouts[6])
+
+    def test_single_column_sorts_top_to_bottom(self):
+        slide = self._slide()
+        # Added out of visual order, exactly as the library authors the divider.
+        added = [_box(slide, "a", 1.0, 1.0), _box(slide, "c", 3.0, 1.0),
+                 _box(slide, "b", 2.0, 1.0), _box(slide, "d", 4.0, 1.0)]
+        self.assertEqual([s.name for s in added], ["a", "c", "b", "d"])
+        self.assertEqual(
+            [s.name for s in shapes_in_reading_order(added)], ["a", "b", "c", "d"]
+        )
+
+    def test_grid_sorts_rows_then_left_to_right(self):
+        slide = self._slide()
+        added = [_box(slide, "br", 3.0, 5.0), _box(slide, "tl", 1.0, 1.0),
+                 _box(slide, "bl", 3.0, 1.0), _box(slide, "tr", 1.0, 5.0)]
+        self.assertEqual(
+            [s.name for s in shapes_in_reading_order(added)], ["tl", "tr", "bl", "br"]
+        )
+
+    def test_a_row_survives_a_small_vertical_nudge(self):
+        """Row members are banded, not compared exactly.
+
+        A template re-save that shifts one tile of a row by a hair must not
+        reshuffle the row — that would be the same silent defect in a new place.
+        """
+        slide = self._slide()
+        added = [_box(slide, "right", 1.05, 5.0), _box(slide, "left", 1.0, 1.0)]
+        self.assertEqual(
+            [s.name for s in shapes_in_reading_order(added)], ["left", "right"]
+        )
+
+    def test_a_real_row_gap_is_not_banded_together(self):
+        slide = self._slide()
+        added = [_box(slide, "below", 1.5, 1.0), _box(slide, "above", 1.0, 5.0)]
+        self.assertEqual(
+            [s.name for s in shapes_in_reading_order(added)], ["above", "below"]
+        )
+
+    def test_delete_shape_removes_it_from_the_slide(self):
+        slide = self._slide()
+        keep, drop = _box(slide, "keep", 1.0, 1.0), _box(slide, "drop", 2.0, 1.0)
+        delete_shape(drop)
+        self.assertEqual([s.name for s in slide.shapes], ["keep"])
+        self.assertEqual(keep.name, "keep")
 
 
 # ─── Constants ───────────────────────────────────────────────────────────────

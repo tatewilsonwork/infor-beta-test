@@ -9,6 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _DATE_RE = re.compile(r"^[A-Z][a-z]+\s+\d{4}$")
 
+# An ISO 4217 alphabetic code. The bundle states its currency as a code, not as a
+# rendered footnote token ('US$MM'), because the deck renders the token from the
+# code and two slides rendering it differently is exactly the defect the field
+# exists to close.
+_CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+
 # The market-entry comparison table is a fixed 12-row structure: three fixed
 # top rows, seven industry-relevant metric rows chosen once per deck (and so
 # identical across every target slide), then two fixed bottom rows.
@@ -92,6 +98,24 @@ class MarketEntryTarget(BaseModel):
     cells: list[str] = Field(..., min_length=1, max_length=_MARKET_ENTRY_ROW_COUNT)
 
 
+class PitchContact(BaseModel):
+    """One banker card on the deck's Contact slide.
+
+    The library ships a 2x2 grid of three-row cards — ``"<name>, <title>"``, then
+    the phone, then the email. INFOR is single-tenant and the deal team is
+    knowable, so the cards are a declared input; a card the deck has no contact
+    for is **deleted**, never left as the template's ``[x]``. A deck reaching a
+    client with three empty contact cards reads as unfinished.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(..., min_length=1, max_length=80)
+    title: str = Field(..., min_length=1, max_length=80)
+    phone: str = Field(..., min_length=1, max_length=40)
+    email: str = Field(..., min_length=1, max_length=80)
+
+
 class PitchSourceNote(BaseModel):
     """Source note for analyst-auditable citations."""
 
@@ -111,6 +135,18 @@ class PitchDeckContent(BaseModel):
         ...,
         description="Fully spelled-out month plus four-digit year, e.g. 'April 2026'.",
     )
+    figure_currency: str = Field(
+        ...,
+        description=(
+            "ISO 4217 code for the currency every figure in THIS bundle is stated "
+            "in — the target's filing reporting currency, which is also what the "
+            "financial-summary and ltm-metrics tabs are locked to. The deck labels "
+            "each slide from whatever populates it, so this is the label on every "
+            "slide the bundle's own copy fills. It is NOT necessarily the cap "
+            "table's output currency: the cap table converts, and where the two "
+            "differ the overview slide names both plus the rate between them."
+        ),
+    )
     executive_summary_bullets: list[PitchBullet] = Field(..., min_length=1, max_length=12)
     section_labels: list[str] = Field(..., min_length=1, max_length=8)
     current_section: str = Field(..., min_length=1, max_length=80)
@@ -119,6 +155,17 @@ class PitchDeckContent(BaseModel):
     risks_tagline: str = Field(..., min_length=1, max_length=180)
     comps_takeaway: str = Field(..., min_length=1, max_length=180)
     precedents_takeaway: str = Field(..., min_length=1, max_length=180)
+    ownership_takeaway: str = Field(
+        ...,
+        min_length=1,
+        max_length=180,
+        description=(
+            "One sentence on the ownership slide's takeaway line — the sibling of "
+            "comps_takeaway / precedents_takeaway. Required: the slide ships a "
+            "takeaway box, and with no field to fill it the delivered deck printed "
+            "a bare '[x]' under a table of 24 insiders and 118 institutions."
+        ),
+    )
     investment_highlights: list[InvestmentHighlight] = Field(default_factory=list, max_length=4)
     investment_highlights_tagline: str | None = Field(default=None, max_length=240)
     market_entry_market: str | None = Field(default=None, max_length=60)
@@ -142,8 +189,29 @@ class PitchDeckContent(BaseModel):
             "with the 12 market_entry_row_labels."
         ),
     )
+    contacts: list[PitchContact] = Field(
+        default_factory=list,
+        max_length=4,
+        description=(
+            "Deal-team cards for the Contact slide, in reading order (the library "
+            "ships a 2x2 grid of four). Left empty, the deck keeps whichever cards "
+            "the library ships already filled and DELETES the placeholder ones — "
+            "so the default is INFOR's own card rather than a name invented here."
+        ),
+    )
     sources: list[PitchSourceNote] = Field(default_factory=list)
     manual_steps: list[str] = Field(default_factory=list)
+
+    @field_validator("figure_currency")
+    @classmethod
+    def currency_is_iso_code(cls, value: str) -> str:
+        code = value.strip().upper()
+        if not _CURRENCY_RE.match(code):
+            raise ValueError(
+                "figure_currency must be an ISO 4217 alphabetic code, e.g. 'USD' or "
+                f"'CAD' — not a rendered footnote token like 'US$MM' (got {value!r})"
+            )
+        return code
 
     @field_validator("presentation_date")
     @classmethod

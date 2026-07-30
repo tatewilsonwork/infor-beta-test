@@ -138,6 +138,28 @@ def build_pitch_deck_slide_plan(
 
 
 def _section_for(entry_id: str) -> str:
+    """Which section of the DECK an entry belongs to, for the SlidePlan.
+
+    This vocabulary — Executive Summary / INFOR Credentials / Overview /
+    Valuation / Appendix — is deliberately **not** the divider slide's
+    `section_labels` (Overview / Financial Summary / Valuation / Process). They
+    are two different things and are kept apart on purpose:
+
+    - These five are structural: they classify every library entry, including the
+      front matter and appendix a divider never advertises, and downstream code
+      groups by them.
+    - The divider's labels are the analyst's agenda for the client. "Process" is
+      on it because a pitch promises one; there is no `process` library entry, so
+      no slide can map to it. "Financial Summary" is on it because the client
+      cares about the financials; the slide itself is structurally part of the
+      Overview section.
+
+    So they overlap in three words and agree on none of their jobs. Reconciling
+    them to one constant would mean either putting "Process" on a taxonomy no
+    slide can satisfy, or dropping it from an agenda the analyst wants it on —
+    which is a client-facing decision, not a refactor. The pairing is only ever
+    read by a human, so the cost of the divergence is this comment.
+    """
     if entry_id in {"pitch-cover", "executive-summary"}:
         return "Executive Summary"
     if entry_id.startswith("infor-"):
